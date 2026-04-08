@@ -21,6 +21,12 @@
 *.swp
 *.tmp
 
+AICAS/bin
+AICAS/data
+AICAS/venv
+AICAS/third_party
+AICAS/data.zip
+*.Identifier
 # IDE / OS
 
 .cache/

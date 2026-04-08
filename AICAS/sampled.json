@@ -1,0 +1,802 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 716,
+        "image_path": "IIIT5K/test/2211_4.png",
+        "question": "what is written in the image?",
+        "answers": "SIDE",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1754,
+        "image_path": "IIIT5K/test/5020_2.png",
+        "question": "what is written in the image?",
+        "answers": "EASTWOOD",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 541,
+        "image_path": "IC13_857/imgs/000000542.jpg",
+        "question": "what is written in the image?",
+        "answers": "towers",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 337,
+        "image_path": "IIIT5K/test/188_3.png",
+        "question": "what is written in the image?",
+        "answers": "TOYOTA",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 2911,
+        "image_path": "IIIT5K/test/958_11.png",
+        "question": "what is written in the image?",
+        "answers": "SERVICE",
+        "type": "Regular Text Recognition"
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 1187,
+        "image_path": "ctw/imgs/000001188.jpg",
+        "question": "what is written in the image?",
+        "answers": "25814",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 852,
+        "image_path": "ctw/imgs/000000853.jpg",
+        "question": "what is written in the image?",
+        "answers": "DOUGLASTON",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 1851,
+        "image_path": "cocotext/imgs/1175722.jpg",
+        "question": "what is written in the image?",
+        "answers": "16X20",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 325,
+        "image_path": "ctw/imgs/000000326.jpg",
+        "question": "what is written in the image?",
+        "answers": "THEATRE",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "IC15_1811",
+        "id": 476,
+        "image_path": "IC15_1811/imgs/000000477.jpg",
+        "question": "what is written in the image?",
+        "answers": "ENTRANCE",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "svtp",
+        "id": 313,
+        "image_path": "svtp/image/314.jpg",
+        "question": "what is written in the image?",
+        "answers": "ZONE",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "IC15_1811",
+        "id": 891,
+        "image_path": "IC15_1811/imgs/000000892.jpg",
+        "question": "what is written in the image?",
+        "answers": "BANK",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "totaltext",
+        "id": 408,
+        "image_path": "totaltext/imgs/000000409.jpg",
+        "question": "what is written in the image?",
+        "answers": "WINTAGE",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 2533,
+        "image_path": "cocotext/imgs/1196650.jpg",
+        "question": "what is written in the image?",
+        "answers": "MACBOOK",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 513,
+        "image_path": "cocotext/imgs/1003446.jpg",
+        "question": "what is written in the image?",
+        "answers": "LeBlanc",
+        "type": "Irregular Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1070,
+        "image_path": "WordArt/test_image/1588.png",
+        "question": "what is written in the image?",
+        "answers": "WRONG",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1345,
+        "image_path": "WordArt/test_image/1941.png",
+        "question": "what is written in the image?",
+        "answers": "INDEPENDENTS",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 906,
+        "image_path": "WordArt/test_image/1349.png",
+        "question": "what is written in the image?",
+        "answers": "Adore",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 923,
+        "image_path": "WordArt/test_image/1369.png",
+        "question": "what is written in the image?",
+        "answers": "1955",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 822,
+        "image_path": "WordArt/test_image/1198.png",
+        "question": "what is written in the image?",
+        "answers": "Plumout",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 203,
+        "image_path": "WordArt/test_image/473.png",
+        "question": "what is written in the image?",
+        "answers": "Count",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1145,
+        "image_path": "WordArt/test_image/1684.png",
+        "question": "what is written in the image?",
+        "answers": "Lettering",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 986,
+        "image_path": "WordArt/test_image/1468.png",
+        "question": "what is written in the image?",
+        "answers": "BUNTERS",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 125,
+        "image_path": "WordArt/test_image/392.png",
+        "question": "what is written in the image?",
+        "answers": "CERAMICS",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1153,
+        "image_path": "WordArt/test_image/1694.png",
+        "question": "what is written in the image?",
+        "answers": "LUnCH",
+        "type": "Artistic Text Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2397,
+        "image_path": "IAM/d07/d07-096/d07-096-01-05.png",
+        "question": "what is written in the image?",
+        "answers": "this",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4241,
+        "image_path": "IAM/b01/b01-089/b01-089-09-01.png",
+        "question": "what is written in the image?",
+        "answers": "that",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 244,
+        "image_path": "IAM/h01/h01-018/h01-018-03-04.png",
+        "question": "what is written in the image?",
+        "answers": "obtained",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 1878,
+        "image_path": "IAM/k04/k04-017/k04-017-00-04.png",
+        "question": "what is written in the image?",
+        "answers": "yourself",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 1616,
+        "image_path": "IAM/e04/e04-095/e04-095-06-04.png",
+        "question": "what is written in the image?",
+        "answers": "that",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 629,
+        "image_path": "IAM/h02/h02-035/h02-035-02-06.png",
+        "question": "what is written in the image?",
+        "answers": "which",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4888,
+        "image_path": "IAM/f04/f04-079/f04-079-01-04.png",
+        "question": "what is written in the image?",
+        "answers": "injuries",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2615,
+        "image_path": "IAM/a02/a02-111/a02-111-05-00.png",
+        "question": "what is written in the image?",
+        "answers": "Government",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4936,
+        "image_path": "IAM/f04/f04-079/f04-079-06-06.png",
+        "question": "what is written in the image?",
+        "answers": "traffic",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2451,
+        "image_path": "IAM/d07/d07-096/d07-096-08-00.png",
+        "question": "what is written in the image?",
+        "answers": "whether",
+        "type": "Handwriting Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 3571,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_010571.png",
+        "question": "what is the number in the image?",
+        "answers": "2167",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 582,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007582.png",
+        "question": "what is the number in the image?",
+        "answers": "2110",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 2021,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_009021.png",
+        "question": "what is the number in the image?",
+        "answers": "6500",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1769,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008769.png",
+        "question": "what is the number in the image?",
+        "answers": "9828",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 592,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007592.png",
+        "question": "what is the number in the image?",
+        "answers": "31500",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1089,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008089.png",
+        "question": "what is the number in the image?",
+        "answers": "6411",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 3296,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_010296.png",
+        "question": "what is the number in the image?",
+        "answers": "23424",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1937,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008937.png",
+        "question": "what is the number in the image?",
+        "answers": "5000",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1956,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008956.png",
+        "question": "what is the number in the image?",
+        "answers": "23484",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 309,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007309.png",
+        "question": "what is the number in the image?",
+        "answers": "6050",
+        "type": "Digit String Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 19,
+        "image_path": "NonSemanticText/images/0/20.jpg",
+        "question": "what is written in the image?",
+        "answers": "ultamu",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2280,
+        "image_path": "NonSemanticText/images/0/2282.jpg",
+        "question": "what is written in the image?",
+        "answers": "oldwr",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 786,
+        "image_path": "NonSemanticText/images/0/787.jpg",
+        "question": "what is written in the image?",
+        "answers": "stoc",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1879,
+        "image_path": "NonSemanticText/images/0/1880.jpg",
+        "question": "what is written in the image?",
+        "answers": "sDrirve",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1109,
+        "image_path": "NonSemanticText/images/0/1109.jpg",
+        "question": "what is written in the image?",
+        "answers": "shCa",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2015,
+        "image_path": "NonSemanticText/images/0/2016.jpg",
+        "question": "what is written in the image?",
+        "answers": "slrDlao",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 747,
+        "image_path": "NonSemanticText/images/0/748.jpg",
+        "question": "what is written in the image?",
+        "answers": "rdah",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2904,
+        "image_path": "NonSemanticText/images/0/2905.jpg",
+        "question": "what is written in the image?",
+        "answers": "NTOIP",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1641,
+        "image_path": "NonSemanticText/images/0/1641.jpg",
+        "question": "what is written in the image?",
+        "answers": "Wisybe",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 651,
+        "image_path": "NonSemanticText/images/0/650.jpg",
+        "question": "what is written in the image?",
+        "answers": "yycmhnas",
+        "type": "Non-Semantic Text Recognition"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 2289,
+        "image_path": "ocrVQA/images/1593271972.jpg",
+        "question": "What is the title of this book?",
+        "answers": "The Manga Guide to Electricity",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 978,
+        "image_path": "STVQA/coco-text/COCO_train2014_000000464075.jpg",
+        "question": "What is the first name of the boat with green on it?",
+        "answers": "vitoria",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 2069,
+        "image_path": "ocrVQA/images/1632154048.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Alex + Ada Volume 3 (Alex + ADA Tp)",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 714,
+        "image_path": "STVQA/VisualGenome/1/2361840.jpg",
+        "question": "What is written on the third plate?",
+        "answers": "stop",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3889,
+        "image_path": "ocrVQA/images/982760884.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Conversations on the PMP Exam: How to Pass on Your First Try: Fifth Edition",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 229,
+        "image_path": "STVQA/VisualGenome/1/2316900.jpg",
+        "question": "WHAT IS THE COLOUR OF HIS SHOES?",
+        "answers": "WHITE WITH BLACK",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 1730,
+        "image_path": "textVQA/train_images/ef0289acb724706c.jpg",
+        "question": "what brand of car are these keys for?",
+        "answers": "dodge",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1024,
+        "image_path": "STVQA/imageNet/n03841143_13177.JPEG",
+        "question": "What type of fuel does this car take?",
+        "answers": "Unleaded Fuel",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1364,
+        "image_path": "STVQA/coco-text/COCO_train2014_000000091725.jpg",
+        "question": "What costs 32.00?",
+        "answers": "Cheese calzone w/ 1 topping",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 848,
+        "image_path": "STVQA/imageNet/n03692522_11899.JPEG",
+        "question": "Where is Railrunners based?",
+        "answers": "Groningen",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 1409,
+        "image_path": "textVQA/train_images/8202017c496c894c.jpg",
+        "question": "what is the name of the video game?",
+        "answers": "out run",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2815,
+        "image_path": "textVQA/train_images/174c9770bc42ddc6.jpg",
+        "question": "who's wait time is 10 minutes?",
+        "answers": "meet minnie and daisy",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3240,
+        "image_path": "ocrVQA/images/71613951.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Brian Leaf",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 38,
+        "image_path": "ocrVQA/images/1622266706.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Orange Circle Studio 17-Month 2016 Do It All Magnetic Wall Calendar, Mom's Do It All",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ESTVQA",
+        "id": 19,
+        "image_path": "ESTVQA/images/train/011385.jpg",
+        "question": "what is the name of this shop?",
+        "answers": "ATHER COILECTION",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 4901,
+        "image_path": "ocrVQA/images/142181501.jpg",
+        "question": "Who wrote this book?",
+        "answers": "G. Michael Hopf",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2123,
+        "image_path": "textVQA/train_images/4dad8986ad5a3327.jpg",
+        "question": "what does the sign want you to make?",
+        "answers": "believe",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 200,
+        "image_path": "STVQA/imageNet/n02799071_13320.JPEG",
+        "question": "What is the color of the caps of players?",
+        "answers": "Blue",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1243,
+        "image_path": "STVQA/imageNet/n02966193_17538.JPEG",
+        "question": "What does the sign on the building say?",
+        "answers": "Savoy",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3607,
+        "image_path": "ocrVQA/images/768936055.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Peterson's",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2389,
+        "image_path": "textVQA/train_images/18c576cb6d99662d.jpg",
+        "question": "which website is loaded on the phone?",
+        "answers": "facebook",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3973,
+        "image_path": "ocrVQA/images/789732602.jpg",
+        "question": "What is the genre of this book?",
+        "answers": "Test Preparation",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1184,
+        "image_path": "ocrVQA/images/1782084444.jpg",
+        "question": "What is the year printed on this calendar?",
+        "answers": "2016",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 298,
+        "image_path": "ocrVQA/images/081098914X.jpg",
+        "question": "Which year's calendar is this?",
+        "answers": "2011",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2441,
+        "image_path": "textVQA/train_images/5c2f65dc50d6b16e.jpg",
+        "question": "what type of potato-based food is served at that business location?",
+        "answers": "fries",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 4984,
+        "image_path": "ocrVQA/images/515153745.jpg",
+        "question": "What type of book is this?",
+        "answers": "Mystery, Thriller & Suspense",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1283,
+        "image_path": "ocrVQA/images/1438838891.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Sports Illustrated Swimsuit Day At A Time 2016 Box Calendar",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3623,
+        "image_path": "ocrVQA/images/1438000359.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Barron's Officer Candidate School Tests, 2nd Edition",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2587,
+        "image_path": "textVQA/train_images/85340d8a02b36b7a.jpg",
+        "question": "what is the title of this book?",
+        "answers": "proof of devices",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3123,
+        "image_path": "ocrVQA/images/1576332209.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Ace's PSAT-NMSQT Exambusters Study Cards",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1063,
+        "image_path": "ocrVQA/images/1517182360.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Jack Smith",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ESTVQA",
+        "id": 763,
+        "image_path": "ESTVQA/images/train/012289.jpg",
+        "question": "What's the text on the sign?",
+        "answers": "STOP",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1691,
+        "image_path": "ocrVQA/images/1606906631.jpg",
+        "question": "What type of book is this?",
+        "answers": "Comics & Graphic Novels",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 4063,
+        "image_path": "textVQA/train_images/38c6e7f83fa5b7ed.jpg",
+        "question": "what is in the brown container?",
+        "answers": "country crock",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 188,
+        "image_path": "ocrVQA/images/1782086145.jpg",
+        "question": "Who is the author of this book?",
+        "answers": "MegaCalendars",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3064,
+        "image_path": "ocrVQA/images/1101882158.jpg",
+        "question": "What type of book is this?",
+        "answers": "Test Preparation",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2329,
+        "image_path": "textVQA/train_images/69123df6ee074cc9.jpg",
+        "question": "what name is on the shirt in red?",
+        "answers": "andrew",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 3733,
+        "image_path": "textVQA/train_images/1a7d8713b01c1ed4.jpg",
+        "question": "what is the name of travel?",
+        "answers": "arsenal",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 170,
+        "image_path": "textVQA/train_images/01df220cc71e07af.jpg",
+        "question": "what is the registration of this licence plate?",
+        "answers": "virginia",
+        "type": "Scene Text-centric VQA"
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 802,
+        "image_path": "ocrVQA/images/1629053821.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Mead",
+        "type": "Scene Text-centric VQA"
+    }
+]

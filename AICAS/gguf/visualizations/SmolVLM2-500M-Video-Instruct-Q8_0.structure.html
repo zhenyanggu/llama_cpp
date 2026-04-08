@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmolVLM2 500M Video Instruct structure</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffaf2;
+      --ink: #1f1f1f;
+      --muted: #665f57;
+      --line: #d8ccbd;
+      --accent: #0e6b5c;
+      --accent-2: #ba5d2a;
+      --stack: #efe4d7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(186, 93, 42, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(14, 107, 92, 0.12), transparent 28%),
+        linear-gradient(180deg, #f7f1e9 0%, var(--bg) 100%);
+    }
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+    }
+    .lead {
+      margin: 0 0 24px;
+      color: var(--muted);
+      max-width: 860px;
+      font-size: 18px;
+      line-height: 1.45;
+    }
+    .panel {
+      margin: 24px 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.05);
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+      color: var(--accent);
+      background: #f3fbf8;
+    }
+    .meta {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+    .node, .stack {
+      min-width: 140px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: white;
+    }
+    .node {
+      text-align: center;
+    }
+    .wide {
+      min-width: 210px;
+    }
+    .title {
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .arrow {
+      font-size: 28px;
+      color: var(--accent-2);
+      line-height: 1;
+    }
+    .stack {
+      background: var(--stack);
+      min-width: min(100%, 420px);
+      flex: 1 1 360px;
+    }
+    .stack-count {
+      margin-bottom: 12px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .block-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .bridge {
+      margin: 14px 0 6px;
+    }
+    .bridge-box {
+      padding: 18px 20px;
+      border-left: 6px solid var(--accent-2);
+      background: rgba(186, 93, 42, 0.08);
+      border-radius: 12px;
+      line-height: 1.5;
+    }
+    .footnote {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    code {
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 0.95em;
+    }
+    @media (max-width: 720px) {
+      .flow {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .arrow {
+        align-self: center;
+        transform: rotate(90deg);
+      }
+      .stack {
+        min-width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SmolVLM2 500M Video Instruct</h1>
+    <p class="lead">
+      This page is a static structure view generated from GGUF metadata and tensor names.
+      It shows the model hierarchy stored in the files, not the full per-token runtime ggml compute graph.
+    </p>
+    
+    <section class="panel">
+      <h2>mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf<span class="pill">vision tower + projector</span></h2>
+      <p class="meta">
+        arch=<strong>clip</strong>
+        · vision-blocks=<strong>12</strong>
+        · hidden=<strong>768</strong>
+        · ffn=<strong>3072</strong>
+        · heads=<strong>12</strong>
+        · image=<strong>512</strong>
+        · patch=<strong>16</strong>
+        · projection=<strong>960</strong>
+        · projector-scale=<strong>4</strong>
+        · params/elements=<strong>98.23M</strong>
+      </p>
+      <div class="flow">
+        <div class="node">
+          <div class="title">image input</div>
+          <div class="sub">512x512 RGB</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node wide">
+          <div class="title">patch_embd</div>
+          <div class="sub">[16x16x3x768] F32</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="title">position_embd</div>
+          <div class="sub">[768x1024] F32</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stack">
+          <div class="stack-count">12× vision block</div>
+          <div class="block-grid">
+            <div class="node">ln1</div>
+            <div class="node">attn_q</div>
+            <div class="node">attn_k</div>
+            <div class="node">attn_v</div>
+            <div class="node">attn_out</div>
+            <div class="node">ln2</div>
+            <div class="node">ffn_down</div>
+            <div class="node">ffn_up</div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="title">post_ln</div>
+          <div class="sub">[768] F32</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node wide">
+          <div class="title">mm.model.fc</div>
+          <div class="sub">[12288x960] Q8_0</div>
+        </div>
+      </div>
+    </section>
+    
+    <section class="panel">
+      <h2>SmolVLM2-500M-Video-Instruct-Q8_0.gguf<span class="pill">language backbone</span></h2>
+      <p class="meta">
+        arch=<strong>llama</strong>
+        · blocks=<strong>32</strong>
+        · hidden=<strong>960</strong>
+        · ffn=<strong>2560</strong>
+        · heads=<strong>15</strong>
+        · kv-heads=<strong>5</strong>
+        · ctx=<strong>8192</strong>
+        · vocab=<strong>49280</strong>
+        · params/elements=<strong>409.25M</strong>
+      </p>
+      <div class="flow">
+        <div class="node wide">
+          <div class="title">token_embd</div>
+          <div class="sub">[960x49280] Q8_0</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stack">
+          <div class="stack-count">32× decoder block</div>
+          <div class="block-grid">
+            <div class="node">attn_norm</div>
+            <div class="node">attn_q</div>
+            <div class="node">attn_k</div>
+            <div class="node">attn_v</div>
+            <div class="node">attn_output</div>
+            <div class="node">ffn_norm</div>
+            <div class="node">ffn_gate</div>
+            <div class="node">ffn_up</div>
+            <div class="node">ffn_down</div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="title">output_norm</div>
+          <div class="sub">[960] F32</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node wide">
+          <div class="title">lm_head / output</div>
+          <div class="sub">[960x49280] Q8_0</div>
+        </div>
+      </div>
+    </section>
+    
+    
+        <section class="bridge">
+          <div class="bridge-box">
+            Visual tokens from <strong>mmproj</strong> are projected to width <strong>960</strong>
+            and then injected into the language backbone as multimodal input.
+          </div>
+        </section>
+        
+    <p class="footnote">
+      If you need the actual runtime graph used by <code>llama.cpp</code>/<code>ggml</code>,
+      the usual path is <code>ggml_graph_print()</code> or <code>ggml_graph_dump_dot()</code>
+      inside a debug build, then render the exported DOT with Graphviz.
+    </p>
+  </main>
+</body>
+</html>
