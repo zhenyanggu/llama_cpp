@@ -1,0 +1,56 @@
+{
+  "case": {
+    "model": "SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+    "mmproj": "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+    "image": "IIIT5K/test/2543_2.png",
+    "threads": 4,
+    "alias": "smolvlm2-gguf"
+  },
+  "artifacts": {
+    "throughput_log": "kv260-profile-results/throughput_check_prefill.log",
+    "server_log": "kv260-profile-results/server_check_prefill.log",
+    "text_profile": "kv260-profile-results/full_profile_v2.json",
+    "text_profile_nodes": "kv260-profile-results/full_profile_v2_nodes.json",
+    "mmproj_profile": "kv260-profile-results/mmproj_profile.json",
+    "mmproj_dot": "ggml-dot-dumps/mmproj.dot",
+    "text_prefill_dot": "ggml-dot-dumps/text_prefill.dot",
+    "text_decode_dot": "ggml-dot-dumps/text_decode.dot",
+    "mmproj_svg": "ggml-dot-dumps/mmproj.svg",
+    "text_prefill_svg": "ggml-dot-dumps/text_prefill.sfdp.svg",
+    "text_decode_svg": "ggml-dot-dumps/text_decode.sfdp.svg"
+  },
+  "throughput_eval": {
+    "prompt_tokens": 188,
+    "completion_tokens": 202,
+    "prefill_ms": 45736.15,
+    "decode_ms": 24144.96,
+    "prefill_tps": 4.11,
+    "decode_tps": 8.37
+  },
+  "prefill_breakdown": {
+    "prompt_ms": 45736.15,
+    "image_processed_ms": 36498.0,
+    "mmproj_ms": 32018.068,
+    "image_decode_into_llama_ms": 4479.932,
+    "text_after_image_ms": 9238.15,
+    "mmproj_matmul_ms": 30292.813,
+    "image_processed_share_prompt_pct": 79.8,
+    "mmproj_share_prompt_pct": 70.01,
+    "image_decode_into_llama_share_prompt_pct": 9.8,
+    "text_after_image_share_prompt_pct": 20.2,
+    "mmproj_matmul_share_prompt_pct": 66.23,
+    "mmproj_matmul_share_mmproj_pct": 94.61
+  },
+  "text_profile": {
+    "generated_token_count": 213,
+    "decode_step_count": 212,
+    "prefill_total_ms": 13578.014,
+    "decode_total_ms": 26999.09,
+    "combined_total_ms": 40577.104
+  },
+  "notes": [
+    "llama-server prompt_ms includes the multimodal path.",
+    "image processed in server logs includes mmproj encode plus image embedding decode into llama.",
+    "ggml operator profiles are node-by-node synchronized replays and should be interpreted mainly as operator shares."
+  ]
+}

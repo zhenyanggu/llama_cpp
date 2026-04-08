@@ -1,0 +1,396 @@
+{
+  "profile_kind": "mmproj_operator_latency_share",
+  "timing_unit": "us",
+  "note": "Per-node wall-clock timings captured through ggml eval callback. Profiling forces node-by-node synchronized execution, so totals are from profiled replay and operator shares should be interpreted primarily as proportions.",
+  "node_event_count": 418,
+  "total_us": 32018068.0,
+  "total_ms": 32018.068,
+  "mul_mat_total_us": 30292813.0,
+  "mul_mat_total_ms": 30292.813,
+  "mul_mat_share_of_total_time_pct": 94.6116205387533,
+  "operators": [
+    {
+      "operator_name": "MUL_MAT",
+      "duration_us": 30292813.0,
+      "duration_ms": 30292.813,
+      "share_of_total_time_pct": 94.6116205387533,
+      "node_event_count": 98
+    },
+    {
+      "operator_name": "SOFT_MAX",
+      "duration_us": 921492.0,
+      "duration_ms": 921.492,
+      "share_of_total_time_pct": 2.878037488083291,
+      "node_event_count": 12
+    },
+    {
+      "operator_name": "GELU",
+      "duration_us": 323242.0,
+      "duration_ms": 323.242,
+      "share_of_total_time_pct": 1.0095612264924918,
+      "node_event_count": 12
+    },
+    {
+      "operator_name": "CONT",
+      "duration_us": 208128.0,
+      "duration_ms": 208.128,
+      "share_of_total_time_pct": 0.6500329751314164,
+      "node_event_count": 28
+    },
+    {
+      "operator_name": "ADD",
+      "duration_us": 175226.0,
+      "duration_ms": 175.226,
+      "share_of_total_time_pct": 0.5472722464078719,
+      "node_event_count": 123
+    },
+    {
+      "operator_name": "NORM",
+      "duration_us": 67131.0,
+      "duration_ms": 67.131,
+      "share_of_total_time_pct": 0.20966599233907557,
+      "node_event_count": 25
+    },
+    {
+      "operator_name": "MUL",
+      "duration_us": 22735.0,
+      "duration_ms": 22.735,
+      "share_of_total_time_pct": 0.07100678279526422,
+      "node_event_count": 25
+    },
+    {
+      "operator_name": "IM2COL",
+      "duration_us": 6192.0,
+      "duration_ms": 6.192,
+      "share_of_total_time_pct": 0.019339080671575814,
+      "node_event_count": 1
+    },
+    {
+      "operator_name": "PERMUTE",
+      "duration_us": 555.0,
+      "duration_ms": 0.555,
+      "share_of_total_time_pct": 0.0017333962811247698,
+      "node_event_count": 51
+    },
+    {
+      "operator_name": "RESHAPE",
+      "duration_us": 549.0,
+      "duration_ms": 0.549,
+      "share_of_total_time_pct": 0.001714656861869367,
+      "node_event_count": 42
+    },
+    {
+      "operator_name": "TRANSPOSE",
+      "duration_us": 5.0,
+      "duration_ms": 0.005,
+      "share_of_total_time_pct": 1.5616182712835764e-05,
+      "node_event_count": 1
+    }
+  ],
+  "mul_mat_signatures": [
+    {
+      "src0": {
+        "name": "v.blk.0.ffn_up.weight",
+        "type": "q8_0",
+        "is_quantized": true,
+        "shape": [
+          3072,
+          768,
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "name": "node_41",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          3072,
+          1024,
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_42",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          1024,
+          1,
+          1
+        ]
+      },
+      "duration_us": 6234777.0,
+      "duration_ms": 6234.777,
+      "share_of_total_time_pct": 19.472683361157205,
+      "node_event_count": 12,
+      "example_node_names": [
+        "node_42",
+        "node_75",
+        "node_108"
+      ]
+    },
+    {
+      "src0": {
+        "name": "v.blk.0.attn_q.weight",
+        "type": "q8_0",
+        "is_quantized": true,
+        "shape": [
+          768,
+          768,
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "name": "node_14",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          1024,
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_15",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          1024,
+          1,
+          1
+        ]
+      },
+      "duration_us": 6229460.0,
+      "duration_ms": 6229.46,
+      "share_of_total_time_pct": 19.456077112460378,
+      "node_event_count": 48,
+      "example_node_names": [
+        "node_15",
+        "node_18",
+        "node_21"
+      ]
+    },
+    {
+      "src0": {
+        "name": "v.blk.0.ffn_down.weight",
+        "type": "q8_0",
+        "is_quantized": true,
+        "shape": [
+          768,
+          3072,
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "name": "node_38",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          1024,
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_39",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          3072,
+          1024,
+          1,
+          1
+        ]
+      },
+      "duration_us": 6214346.0,
+      "duration_ms": 6214.346,
+      "share_of_total_time_pct": 19.40887251535602,
+      "node_event_count": 12,
+      "example_node_names": [
+        "node_39",
+        "node_72",
+        "node_105"
+      ]
+    },
+    {
+      "src0": {
+        "name": " (reshaped) (permuted) (cont)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          1024,
+          64,
+          12,
+          1
+        ]
+      },
+      "src1": {
+        "name": "node_29",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          1024,
+          1024,
+          12,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_30",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          64,
+          1024,
+          12,
+          1
+        ]
+      },
+      "duration_us": 6085900.0,
+      "duration_ms": 6085.9,
+      "share_of_total_time_pct": 19.007705274409435,
+      "node_event_count": 12,
+      "example_node_names": [
+        "node_30",
+        "node_63",
+        "node_96"
+      ]
+    },
+    {
+      "src0": {
+        "name": " (reshaped) (permuted)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          64,
+          1024,
+          12,
+          1
+        ]
+      },
+      "src1": {
+        "name": " (reshaped) (permuted)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          64,
+          1024,
+          12,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_28",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          1024,
+          1024,
+          12,
+          1
+        ]
+      },
+      "duration_us": 5218756.0,
+      "duration_ms": 5218.756,
+      "share_of_total_time_pct": 16.299409445941585,
+      "node_event_count": 12,
+      "example_node_names": [
+        "node_28",
+        "node_61",
+        "node_94"
+      ]
+    },
+    {
+      "src0": {
+        "name": "mm.model.fc.weight",
+        "type": "q8_0",
+        "is_quantized": true,
+        "shape": [
+          12288,
+          960,
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "name": " (reshaped) (reshaped) (permuted) (cont) (permuted) (cont)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          12288,
+          64,
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_417",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          960,
+          64,
+          1,
+          1
+        ]
+      },
+      "duration_us": 162228.0,
+      "duration_ms": 162.228,
+      "share_of_total_time_pct": 0.5066764178275841,
+      "node_event_count": 1,
+      "example_node_names": [
+        "node_417"
+      ]
+    },
+    {
+      "src0": {
+        "name": " (reshaped)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          1024,
+          1,
+          1
+        ]
+      },
+      "src1": {
+        "name": "v.patch_embd.weight (reshaped)",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          768,
+          768,
+          1,
+          1
+        ]
+      },
+      "dst": {
+        "name": "node_3",
+        "type": "f32",
+        "is_quantized": false,
+        "shape": [
+          1024,
+          768,
+          1,
+          1
+        ]
+      },
+      "duration_us": 147346.0,
+      "duration_ms": 147.346,
+      "share_of_total_time_pct": 0.4601964116010997,
+      "node_event_count": 1,
+      "example_node_names": [
+        "node_3"
+      ]
+    }
+  ]
+}

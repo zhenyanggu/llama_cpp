@@ -1,0 +1,5131 @@
+{
+  "profile_kind": "ggml_operator_latency_share",
+  "timing_unit": "us",
+  "generated_token_count": 213,
+  "decode_step_count": 212,
+  "note": "Per-node wall-clock timings captured through ggml eval callback. Profiling forces node-by-node synchronized execution, so totals are for profiled replay and should not be compared directly to end-to-end throughput numbers.",
+  "model": "/home/petalinux/npux/aicas_official_baseline_20260407/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+  "mmproj": "/home/petalinux/npux/aicas_official_baseline_20260407/gguf/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+  "images": [
+    "/home/petalinux/npux/aicas_official_baseline_20260407/data/IIIT5K/test/2543_2.png"
+  ],
+  "prompt": "Please analyze this image in detail.\n1.  First, please perform a full OCR (Optical Character Recognition), extract all visible text\n    in the image, and list it in order from top-to-bottom, left-to-right.\n2.  Second, please describe the main visual elements in the image, including but not limited to\n    objects, people, scenery, and atmosphere.\n3.  Finally, based on the extracted text and visual elements, summarize the theme\n    and possible context of this image.\n<__media__>",
+  "threads": 4,
+  "n_predict": 4096,
+  "temperature": 0.0,
+  "prefill": {
+    "node_event_count": 2996,
+    "total_us": 13578014.0,
+    "total_ms": 13578.014,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 12247590.0,
+        "duration_ms": 12247.59,
+        "share_of_phase_time_pct": 90.20163037098061,
+        "node_event_count": 675,
+        "average_duration_per_node_us": 18144.577777777777,
+        "average_duration_per_node_ms": 18.144577777777776
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 1048340.0,
+        "duration_ms": 1048.34,
+        "share_of_phase_time_pct": 7.720864037995542,
+        "node_event_count": 96,
+        "average_duration_per_node_us": 10920.208333333334,
+        "average_duration_per_node_ms": 10.920208333333333
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 86002.0,
+        "duration_ms": 86.002,
+        "share_of_phase_time_pct": 0.63339159909542,
+        "node_event_count": 96,
+        "average_duration_per_node_us": 895.8541666666666,
+        "average_duration_per_node_ms": 0.8958541666666666
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 79992.0,
+        "duration_ms": 79.992,
+        "share_of_phase_time_pct": 0.5891288667105514,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 416.625,
+        "average_duration_per_node_ms": 0.416625
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 38133.0,
+        "duration_ms": 38.133,
+        "share_of_phase_time_pct": 0.28084372280069825,
+        "node_event_count": 195,
+        "average_duration_per_node_us": 195.55384615384617,
+        "average_duration_per_node_ms": 0.19555384615384616
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 35632.0,
+        "duration_ms": 35.632,
+        "share_of_phase_time_pct": 0.26242423965684525,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 185.58333333333334,
+        "average_duration_per_node_ms": 0.18558333333333332
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 24571.0,
+        "duration_ms": 24.571,
+        "share_of_phase_time_pct": 0.18096166346565853,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 127.97395833333333,
+        "average_duration_per_node_ms": 0.12797395833333333
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 10157.0,
+        "duration_ms": 10.157,
+        "share_of_phase_time_pct": 0.07480475421515989,
+        "node_event_count": 195,
+        "average_duration_per_node_us": 52.08717948717949,
+        "average_duration_per_node_ms": 0.05208717948717949
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 3702.0,
+        "duration_ms": 3.702,
+        "share_of_phase_time_pct": 0.027264664773508116,
+        "node_event_count": 384,
+        "average_duration_per_node_us": 9.640625,
+        "average_duration_per_node_ms": 0.009640625
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 1646.0,
+        "duration_ms": 1.646,
+        "share_of_phase_time_pct": 0.012122538686438237,
+        "node_event_count": 480,
+        "average_duration_per_node_us": 3.4291666666666667,
+        "average_duration_per_node_ms": 0.0034291666666666663
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 926.0,
+        "duration_ms": 0.926,
+        "share_of_phase_time_pct": 0.006819848617036335,
+        "node_event_count": 288,
+        "average_duration_per_node_us": 3.2152777777777777,
+        "average_duration_per_node_ms": 0.003215277777777778
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 782.0,
+        "duration_ms": 0.782,
+        "share_of_phase_time_pct": 0.005759310603155955,
+        "node_event_count": 8,
+        "average_duration_per_node_us": 97.75,
+        "average_duration_per_node_ms": 0.09775
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 541.0,
+        "duration_ms": 0.541,
+        "share_of_phase_time_pct": 0.00398438239937004,
+        "node_event_count": 3,
+        "average_duration_per_node_us": 180.33333333333334,
+        "average_duration_per_node_ms": 0.18033333333333335
+      }
+    ],
+    "mul_mat_signatures": [
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 3744527.0,
+        "duration_ms": 3744.527,
+        "share_of_phase_time_pct": 27.5778696354268,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 60395.596774193546,
+        "average_duration_per_node_ms": 60.39559677419355,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 2085735.0,
+        "duration_ms": 2085.735,
+        "share_of_phase_time_pct": 15.361119822088856,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 33640.8870967742,
+        "average_duration_per_node_ms": 33.64088709677419,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1902479.0,
+        "duration_ms": 1902.479,
+        "share_of_phase_time_pct": 14.011467361868974,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 61370.290322580644,
+        "average_duration_per_node_ms": 61.370290322580644,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1453570.0,
+        "duration_ms": 1453.57,
+        "share_of_phase_time_pct": 10.705321116917393,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 22712.03125,
+        "average_duration_per_node_ms": 22.71203125,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1061513.0,
+        "duration_ms": 1061.513,
+        "share_of_phase_time_pct": 7.817881171723641,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 34242.354838709674,
+        "average_duration_per_node_ms": 34.24235483870967,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 809992.0,
+        "duration_ms": 809.992,
+        "share_of_phase_time_pct": 5.965467409298591,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 12656.125,
+        "average_duration_per_node_ms": 12.656125,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 492947.0,
+        "duration_ms": 492.947,
+        "share_of_phase_time_pct": 3.6304793911686937,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 7702.296875,
+        "average_duration_per_node_ms": 7.702296875,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 273953.0,
+        "duration_ms": 273.953,
+        "share_of_phase_time_pct": 2.0176220174761936,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 4280.515625,
+        "average_duration_per_node_ms": 4.280515625,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 202516.0,
+        "duration_ms": 202.516,
+        "share_of_phase_time_pct": 1.4914994195763829,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 3266.3870967741937,
+        "average_duration_per_node_ms": 3.2663870967741935,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 101308.0,
+        "duration_ms": 101.308,
+        "share_of_phase_time_pct": 0.7461179521541221,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 3268.0,
+        "average_duration_per_node_ms": 3.2680000000000002,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 78492.0,
+        "duration_ms": 78.492,
+        "share_of_phase_time_pct": 0.5780815957326306,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 1226.4375,
+        "average_duration_per_node_ms": 1.2264375,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 27502.0,
+        "duration_ms": 27.502,
+        "share_of_phase_time_pct": 0.20254803095651544,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 429.71875,
+        "average_duration_per_node_ms": 0.42971875,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "output.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            49280,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "result_norm",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 11227.0,
+        "duration_ms": 11.227,
+        "share_of_phase_time_pct": 0.0826851408460766,
+        "node_event_count": 1,
+        "average_duration_per_node_us": 11227.0,
+        "average_duration_per_node_ms": 11.227,
+        "example_node_names": [
+          "result_output"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1222.0,
+        "duration_ms": 1.222,
+        "share_of_phase_time_pct": 0.008999843423346006,
+        "node_event_count": 2,
+        "average_duration_per_node_us": 611.0,
+        "average_duration_per_node_ms": 0.611,
+        "example_node_names": [
+          "ffn_gate-31",
+          "ffn_up-31"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 578.0,
+        "duration_ms": 0.578,
+        "share_of_phase_time_pct": 0.004256881750158749,
+        "node_event_count": 1,
+        "average_duration_per_node_us": 578.0,
+        "average_duration_per_node_ms": 0.578,
+        "example_node_names": [
+          "ffn_out-31"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 15.0,
+        "duration_ms": 0.015,
+        "share_of_phase_time_pct": 0.0001104727097792063,
+        "node_event_count": 4,
+        "average_duration_per_node_us": 3.75,
+        "average_duration_per_node_ms": 0.00375,
+        "example_node_names": [
+          "ffn_gate-31",
+          "ffn_up-31"
+        ]
+      },
+      {
+        "src0": {
+          "name": "output.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            49280,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "result_norm",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 8.0,
+        "duration_ms": 0.008,
+        "share_of_phase_time_pct": 5.891877854891003e-05,
+        "node_event_count": 2,
+        "average_duration_per_node_us": 4.0,
+        "average_duration_per_node_ms": 0.004,
+        "example_node_names": [
+          "result_output"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 6.0,
+        "duration_ms": 0.006,
+        "share_of_phase_time_pct": 4.418908391168252e-05,
+        "node_event_count": 2,
+        "average_duration_per_node_us": 3.0,
+        "average_duration_per_node_ms": 0.003,
+        "example_node_names": [
+          "ffn_out-31"
+        ]
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 372,
+        "phase": "prefill",
+        "node_name": "ffn_out-11",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-11",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.11.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-11",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 66124.0,
+        "duration_ms": 66.124,
+        "share_of_phase_time_pct": 0.48699316409601584
+      },
+      {
+        "event_index": 434,
+        "phase": "prefill",
+        "node_name": "ffn_out-13",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-13",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.13.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-13",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61939.0,
+        "duration_ms": 61.939,
+        "share_of_phase_time_pct": 0.4561712780676173
+      },
+      {
+        "event_index": 682,
+        "phase": "prefill",
+        "node_name": "ffn_out-21",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-21",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.21.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-21",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61512.0,
+        "duration_ms": 61.512,
+        "share_of_phase_time_pct": 0.4530264882625692
+      },
+      {
+        "event_index": 744,
+        "phase": "prefill",
+        "node_name": "ffn_out-23",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-23",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.23.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-23",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61414.0,
+        "duration_ms": 61.414,
+        "share_of_phase_time_pct": 0.45230473322534503
+      },
+      {
+        "event_index": 29,
+        "phase": "prefill",
+        "node_name": "ffn_up-0",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_up-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.0.ffn_up.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              2560,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_norm-0",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61363.0,
+        "duration_ms": 61.363,
+        "share_of_phase_time_pct": 0.4519291260120958
+      },
+      {
+        "event_index": 217,
+        "phase": "prefill",
+        "node_name": "ffn_out-6",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-6",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.6.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-6",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61288.0,
+        "duration_ms": 61.288,
+        "share_of_phase_time_pct": 0.45137676246319974
+      },
+      {
+        "event_index": 868,
+        "phase": "prefill",
+        "node_name": "ffn_out-27",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-27",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.27.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-27",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61287.0,
+        "duration_ms": 61.287,
+        "share_of_phase_time_pct": 0.4513693976158811
+      },
+      {
+        "event_index": 248,
+        "phase": "prefill",
+        "node_name": "ffn_out-7",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-7",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.7.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-7",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61284.0,
+        "duration_ms": 61.284,
+        "share_of_phase_time_pct": 0.4513473030739253
+      },
+      {
+        "event_index": 496,
+        "phase": "prefill",
+        "node_name": "ffn_out-15",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-15",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.15.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-15",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61281.0,
+        "duration_ms": 61.281,
+        "share_of_phase_time_pct": 0.4513252085319694
+      },
+      {
+        "event_index": 93,
+        "phase": "prefill",
+        "node_name": "ffn_out-2",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-2",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.2.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-2",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61269.0,
+        "duration_ms": 61.269,
+        "share_of_phase_time_pct": 0.451236830364146
+      },
+      {
+        "event_index": 837,
+        "phase": "prefill",
+        "node_name": "ffn_out-26",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-26",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.26.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-26",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61260.0,
+        "duration_ms": 61.26,
+        "share_of_phase_time_pct": 0.4511705467382785
+      },
+      {
+        "event_index": 527,
+        "phase": "prefill",
+        "node_name": "ffn_out-16",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-16",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.16.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-16",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61235.0,
+        "duration_ms": 61.235,
+        "share_of_phase_time_pct": 0.45098642555531315
+      },
+      {
+        "event_index": 558,
+        "phase": "prefill",
+        "node_name": "ffn_out-17",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-17",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.17.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-17",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61226.0,
+        "duration_ms": 61.226,
+        "share_of_phase_time_pct": 0.4509201419294457
+      },
+      {
+        "event_index": 403,
+        "phase": "prefill",
+        "node_name": "ffn_out-12",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-12",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.12.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-12",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61222.0,
+        "duration_ms": 61.222,
+        "share_of_phase_time_pct": 0.45089068254017123
+      },
+      {
+        "event_index": 930,
+        "phase": "prefill",
+        "node_name": "ffn_out-29",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-29",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.29.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-29",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61209.0,
+        "duration_ms": 61.209,
+        "share_of_phase_time_pct": 0.45079493952502925
+      },
+      {
+        "event_index": 62,
+        "phase": "prefill",
+        "node_name": "ffn_out-1",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-1",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.1.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-1",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61204.0,
+        "duration_ms": 61.204,
+        "share_of_phase_time_pct": 0.4507581152884361
+      },
+      {
+        "event_index": 341,
+        "phase": "prefill",
+        "node_name": "ffn_out-10",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-10",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.10.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-10",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61203.0,
+        "duration_ms": 61.203,
+        "share_of_phase_time_pct": 0.4507507504411175
+      },
+      {
+        "event_index": 186,
+        "phase": "prefill",
+        "node_name": "ffn_out-5",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-5",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.5.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-5",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61202.0,
+        "duration_ms": 61.202,
+        "share_of_phase_time_pct": 0.4507433855937989
+      },
+      {
+        "event_index": 806,
+        "phase": "prefill",
+        "node_name": "ffn_out-25",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-25",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.25.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-25",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61197.0,
+        "duration_ms": 61.197,
+        "share_of_phase_time_pct": 0.4507065613572059
+      },
+      {
+        "event_index": 310,
+        "phase": "prefill",
+        "node_name": "ffn_out-9",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-9",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.9.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-9",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61195.0,
+        "duration_ms": 61.195,
+        "share_of_phase_time_pct": 0.4506918316625686
+      }
+    ]
+  },
+  "decode": {
+    "node_event_count": 211788,
+    "total_us": 26999090.0,
+    "total_ms": 26999.09,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 19161313.0,
+        "duration_ms": 19161.313,
+        "share_of_phase_time_pct": 70.97021788512131,
+        "node_event_count": 47700,
+        "average_duration_per_node_us": 401.7046750524109,
+        "average_duration_per_node_ms": 0.40170467505241086
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 5659098.0,
+        "duration_ms": 5659.098,
+        "share_of_phase_time_pct": 20.960328662929008,
+        "node_event_count": 6784,
+        "average_duration_per_node_us": 834.1830778301887,
+        "average_duration_per_node_ms": 0.8341830778301886
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 541700.0,
+        "duration_ms": 541.7,
+        "share_of_phase_time_pct": 2.006363918191317,
+        "node_event_count": 6784,
+        "average_duration_per_node_us": 79.84964622641509,
+        "average_duration_per_node_ms": 0.0798496462264151
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 349233.0,
+        "duration_ms": 349.233,
+        "share_of_phase_time_pct": 1.293499151267691,
+        "node_event_count": 13780,
+        "average_duration_per_node_us": 25.343468795355587,
+        "average_duration_per_node_ms": 0.025343468795355588
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 317995.0,
+        "duration_ms": 317.995,
+        "share_of_phase_time_pct": 1.1777989554462762,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 23.437131485849058,
+        "average_duration_per_node_ms": 0.023437131485849055
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 266999.0,
+        "duration_ms": 266.999,
+        "share_of_phase_time_pct": 0.9889185154018154,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 19.67858195754717,
+        "average_duration_per_node_ms": 0.01967858195754717
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 227440.0,
+        "duration_ms": 227.44,
+        "share_of_phase_time_pct": 0.8423987623286562,
+        "node_event_count": 13780,
+        "average_duration_per_node_us": 16.505079825834542,
+        "average_duration_per_node_ms": 0.016505079825834542
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 152778.0,
+        "duration_ms": 152.778,
+        "share_of_phase_time_pct": 0.5658635161407292,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 11.260170990566039,
+        "average_duration_per_node_ms": 0.011260170990566037
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 113063.0,
+        "duration_ms": 113.063,
+        "share_of_phase_time_pct": 0.41876596581588493,
+        "node_event_count": 27136,
+        "average_duration_per_node_us": 4.1665315448113205,
+        "average_duration_per_node_ms": 0.00416653154481132
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 105220.0,
+        "duration_ms": 105.22,
+        "share_of_phase_time_pct": 0.38971683860456036,
+        "node_event_count": 33920,
+        "average_duration_per_node_us": 3.1020047169811322,
+        "average_duration_per_node_ms": 0.0031020047169811322
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 60674.0,
+        "duration_ms": 60.674,
+        "share_of_phase_time_pct": 0.2247260926201587,
+        "node_event_count": 20352,
+        "average_duration_per_node_us": 2.98123034591195,
+        "average_duration_per_node_ms": 0.0029812303459119498
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 36813.0,
+        "duration_ms": 36.813,
+        "share_of_phase_time_pct": 0.1363490399120859,
+        "node_event_count": 212,
+        "average_duration_per_node_us": 173.64622641509433,
+        "average_duration_per_node_ms": 0.17364622641509436
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 6764.0,
+        "duration_ms": 6.764,
+        "share_of_phase_time_pct": 0.025052696220502248,
+        "node_event_count": 636,
+        "average_duration_per_node_us": 10.635220125786164,
+        "average_duration_per_node_ms": 0.010635220125786164
+      }
+    ],
+    "mul_mat_signatures": [
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 8477099.0,
+        "duration_ms": 8477.099,
+        "share_of_phase_time_pct": 31.397721182454667,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 624.7861880896227,
+        "average_duration_per_node_ms": 0.6247861880896226,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 4027018.0,
+        "duration_ms": 4027.018,
+        "share_of_phase_time_pct": 14.915384185170685,
+        "node_event_count": 6784,
+        "average_duration_per_node_us": 593.6052476415094,
+        "average_duration_per_node_ms": 0.5936052476415095,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 3122822.0,
+        "duration_ms": 3122.822,
+        "share_of_phase_time_pct": 11.566397237832831,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 230.1608195754717,
+        "average_duration_per_node_ms": 0.23016081957547171,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "output.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            49280,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "result_norm",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 2349232.0,
+        "duration_ms": 2349.232,
+        "share_of_phase_time_pct": 8.701152520325685,
+        "node_event_count": 212,
+        "average_duration_per_node_us": 11081.283018867925,
+        "average_duration_per_node_ms": 11.081283018867925,
+        "example_node_names": [
+          "result_output"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1185142.0,
+        "duration_ms": 1185.142,
+        "share_of_phase_time_pct": 4.389562759337444,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 87.34831957547169,
+        "average_duration_per_node_ms": 0.0873483195754717,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 70927,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11246.0,
+        "duration_ms": 11.246,
+        "share_of_phase_time_pct": 0.04165325572084096
+      },
+      {
+        "event_index": 93904,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11225.0,
+        "duration_ms": 11.225,
+        "share_of_phase_time_pct": 0.041575475321575656
+      },
+      {
+        "event_index": 205792,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11204.0,
+        "duration_ms": 11.204,
+        "share_of_phase_time_pct": 0.04149769492231035
+      },
+      {
+        "event_index": 174823,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11177.0,
+        "duration_ms": 11.177,
+        "share_of_phase_time_pct": 0.04139769155182638
+      },
+      {
+        "event_index": 170827,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11177.0,
+        "duration_ms": 11.177,
+        "share_of_phase_time_pct": 0.04139769155182638
+      },
+      {
+        "event_index": 29968,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11172.0,
+        "duration_ms": 11.172,
+        "share_of_phase_time_pct": 0.04137917240914416
+      },
+      {
+        "event_index": 138859,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11154.0,
+        "duration_ms": 11.154,
+        "share_of_phase_time_pct": 0.04131250349548818
+      },
+      {
+        "event_index": 162835,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11150.0,
+        "duration_ms": 11.15,
+        "share_of_phase_time_pct": 0.04129768818134241
+      },
+      {
+        "event_index": 14983,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11149.0,
+        "duration_ms": 11.149,
+        "share_of_phase_time_pct": 0.041293984352805964
+      },
+      {
+        "event_index": 204793,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11148.0,
+        "duration_ms": 11.148,
+        "share_of_phase_time_pct": 0.04129028052426952
+      },
+      {
+        "event_index": 40957,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11147.0,
+        "duration_ms": 11.147,
+        "share_of_phase_time_pct": 0.041286576695733074
+      },
+      {
+        "event_index": 132865,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11146.0,
+        "duration_ms": 11.146,
+        "share_of_phase_time_pct": 0.04128287286719664
+      },
+      {
+        "event_index": 110887,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11146.0,
+        "duration_ms": 11.146,
+        "share_of_phase_time_pct": 0.04128287286719664
+      },
+      {
+        "event_index": 145852,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11144.0,
+        "duration_ms": 11.144,
+        "share_of_phase_time_pct": 0.04127546521012375
+      },
+      {
+        "event_index": 35962,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11141.0,
+        "duration_ms": 11.141,
+        "share_of_phase_time_pct": 0.04126435372451442
+      },
+      {
+        "event_index": 45952,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11141.0,
+        "duration_ms": 11.141,
+        "share_of_phase_time_pct": 0.04126435372451442
+      },
+      {
+        "event_index": 131866,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11139.0,
+        "duration_ms": 11.139,
+        "share_of_phase_time_pct": 0.041256946067441534
+      },
+      {
+        "event_index": 52945,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11138.0,
+        "duration_ms": 11.138,
+        "share_of_phase_time_pct": 0.041253242238905086
+      },
+      {
+        "event_index": 16981,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11137.0,
+        "duration_ms": 11.137,
+        "share_of_phase_time_pct": 0.041249538410368644
+      },
+      {
+        "event_index": 65932,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "output.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              49280,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "result_norm",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              1,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 11136.0,
+        "duration_ms": 11.136,
+        "share_of_phase_time_pct": 0.0412458345818322
+      }
+    ],
+    "decode_step_count": 212,
+    "average_phase_time_per_step_us": 127354.19811320755,
+    "average_phase_time_per_step_ms": 127.35419811320754
+  },
+  "combined": {
+    "node_event_count": 214784,
+    "total_us": 40577104.0,
+    "total_ms": 40577.104,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 31408903.0,
+        "duration_ms": 31408.903,
+        "share_of_phase_time_pct": 77.4054821655089,
+        "node_event_count": 48375,
+        "average_duration_per_node_us": 649.2796485788114,
+        "average_duration_per_node_ms": 0.6492796485788114
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 6707438.0,
+        "duration_ms": 6707.438,
+        "share_of_phase_time_pct": 16.53010525344539,
+        "node_event_count": 6880,
+        "average_duration_per_node_us": 974.9183139534883,
+        "average_duration_per_node_ms": 0.9749183139534884
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 627702.0,
+        "duration_ms": 627.702,
+        "share_of_phase_time_pct": 1.5469364201052889,
+        "node_event_count": 6880,
+        "average_duration_per_node_us": 91.23575581395349,
+        "average_duration_per_node_ms": 0.09123575581395349
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 387366.0,
+        "duration_ms": 387.366,
+        "share_of_phase_time_pct": 0.9546418098245749,
+        "node_event_count": 13975,
+        "average_duration_per_node_us": 27.718497316636853,
+        "average_duration_per_node_ms": 0.02771849731663685
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 342566.0,
+        "duration_ms": 342.566,
+        "share_of_phase_time_pct": 0.8442347191657641,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 24.895784883720932,
+        "average_duration_per_node_ms": 0.024895784883720927
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 302631.0,
+        "duration_ms": 302.631,
+        "share_of_phase_time_pct": 0.7458171485081834,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 21.993531976744187,
+        "average_duration_per_node_ms": 0.021993531976744186
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 237597.0,
+        "duration_ms": 237.597,
+        "share_of_phase_time_pct": 0.5855444981978014,
+        "node_event_count": 13975,
+        "average_duration_per_node_us": 17.001574239713776,
+        "average_duration_per_node_ms": 0.017001574239713775
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 232770.0,
+        "duration_ms": 232.77,
+        "share_of_phase_time_pct": 0.5736486270681121,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 16.916424418604652,
+        "average_duration_per_node_ms": 0.01691642441860465
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 116765.0,
+        "duration_ms": 116.765,
+        "share_of_phase_time_pct": 0.2877608022494656,
+        "node_event_count": 27520,
+        "average_duration_per_node_us": 4.242914244186046,
+        "average_duration_per_node_ms": 0.004242914244186047
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 106866.0,
+        "duration_ms": 106.866,
+        "share_of_phase_time_pct": 0.26336527121304665,
+        "node_event_count": 34400,
+        "average_duration_per_node_us": 3.1065697674418606,
+        "average_duration_per_node_ms": 0.0031065697674418605
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 61600.0,
+        "duration_ms": 61.6,
+        "share_of_phase_time_pct": 0.15180974965586505,
+        "node_event_count": 20640,
+        "average_duration_per_node_us": 2.9844961240310077,
+        "average_duration_per_node_ms": 0.002984496124031008
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 37354.0,
+        "duration_ms": 37.354,
+        "share_of_phase_time_pct": 0.09205684072475946,
+        "node_event_count": 215,
+        "average_duration_per_node_us": 173.73953488372092,
+        "average_duration_per_node_ms": 0.17373953488372093
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 7546.0,
+        "duration_ms": 7.546,
+        "share_of_phase_time_pct": 0.01859669433284347,
+        "node_event_count": 644,
+        "average_duration_per_node_us": 11.717391304347826,
+        "average_duration_per_node_ms": 0.011717391304347827
+      }
+    ],
+    "mul_mat_signatures": [
+      {
+        "src0": {
+          "name": "blk.31.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 8478321.0,
+        "duration_ms": 8478.321,
+        "share_of_phase_time_pct": 20.894347216104926,
+        "node_event_count": 13570,
+        "average_duration_per_node_us": 624.7841562269713,
+        "average_duration_per_node_ms": 0.6247841562269713,
+        "example_node_names": [
+          "ffn_gate-31",
+          "ffn_up-31",
+          "ffn_gate-0"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 4027596.0,
+        "duration_ms": 4027.596,
+        "share_of_phase_time_pct": 9.925784747970186,
+        "node_event_count": 6785,
+        "average_duration_per_node_us": 593.602947678703,
+        "average_duration_per_node_ms": 0.593602947678703,
+        "example_node_names": [
+          "ffn_out-31",
+          "ffn_out-0",
+          "ffn_out-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 3744527.0,
+        "duration_ms": 3744.527,
+        "share_of_phase_time_pct": 9.22817705275369,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 60395.596774193546,
+        "average_duration_per_node_ms": 60.39559677419355,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 3122822.0,
+        "duration_ms": 3122.822,
+        "share_of_phase_time_pct": 7.696019903243958,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 230.1608195754717,
+        "average_duration_per_node_ms": 0.23016081957547171,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "output.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            49280,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "result_norm",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 2360459.0,
+        "duration_ms": 2360.459,
+        "share_of_phase_time_pct": 5.817218991281389,
+        "node_event_count": 213,
+        "average_duration_per_node_us": 11081.967136150235,
+        "average_duration_per_node_ms": 11.081967136150235,
+        "example_node_names": [
+          "result_output"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 2085735.0,
+        "duration_ms": 2085.735,
+        "share_of_phase_time_pct": 5.140177081144086,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 33640.8870967742,
+        "average_duration_per_node_ms": 33.64088709677419,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1902479.0,
+        "duration_ms": 1902.479,
+        "share_of_phase_time_pct": 4.688552933693839,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 61370.290322580644,
+        "average_duration_per_node_ms": 61.370290322580644,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1453570.0,
+        "duration_ms": 1453.57,
+        "share_of_phase_time_pct": 3.5822418475207103,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 22712.03125,
+        "average_duration_per_node_ms": 22.71203125,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            1,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            1,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1185142.0,
+        "duration_ms": 1185.142,
+        "share_of_phase_time_pct": 2.9207160767313507,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 87.34831957547169,
+        "average_duration_per_node_ms": 0.0873483195754717,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 1061513.0,
+        "duration_ms": 1061.513,
+        "share_of_phase_time_pct": 2.616039330948803,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 34242.354838709674,
+        "average_duration_per_node_ms": 34.24235483870967,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 809992.0,
+        "duration_ms": 809.992,
+        "share_of_phase_time_pct": 1.9961799146632053,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 12656.125,
+        "average_duration_per_node_ms": 12.656125,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            115,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 492947.0,
+        "duration_ms": 492.947,
+        "share_of_phase_time_pct": 1.2148402705131445,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 7702.296875,
+        "average_duration_per_node_ms": 7.702296875,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            64,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            64,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 273953.0,
+        "duration_ms": 273.953,
+        "share_of_phase_time_pct": 0.6751418238226168,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 4280.515625,
+        "average_duration_per_node_ms": 4.280515625,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 202516.0,
+        "duration_ms": 202.516,
+        "share_of_phase_time_pct": 0.49908933865758387,
+        "node_event_count": 62,
+        "average_duration_per_node_us": 3266.3870967741937,
+        "average_duration_per_node_ms": 3.2663870967741935,
+        "example_node_names": [
+          "ffn_gate-0",
+          "ffn_up-0",
+          "ffn_gate-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 101308.0,
+        "duration_ms": 101.308,
+        "share_of_phase_time_pct": 0.24966789152818794,
+        "node_event_count": 31,
+        "average_duration_per_node_us": 3268.0,
+        "average_duration_per_node_ms": 3.2680000000000002,
+        "example_node_names": [
+          "ffn_out-0",
+          "ffn_out-1",
+          "ffn_out-2"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_q.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Qcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 78492.0,
+        "duration_ms": 78.492,
+        "share_of_phase_time_pct": 0.19343913749980776,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 1226.4375,
+        "average_duration_per_node_ms": 1.2264375,
+        "example_node_names": [
+          "Qcur-0",
+          "attn_out-0",
+          "Qcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.0.attn_k.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            320,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "attn_norm-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            6,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "Kcur-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            320,
+            6,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 27502.0,
+        "duration_ms": 27.502,
+        "share_of_phase_time_pct": 0.06777713855577273,
+        "node_event_count": 64,
+        "average_duration_per_node_us": 429.71875,
+        "average_duration_per_node_ms": 0.42971875,
+        "example_node_names": [
+          "Kcur-0",
+          "Vcur-0",
+          "Kcur-1"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_gate.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            2560,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_norm-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_gate-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 15.0,
+        "duration_ms": 0.015,
+        "share_of_phase_time_pct": 3.696665981879831e-05,
+        "node_event_count": 4,
+        "average_duration_per_node_us": 3.75,
+        "average_duration_per_node_ms": 0.00375,
+        "example_node_names": [
+          "ffn_gate-31",
+          "ffn_up-31"
+        ]
+      },
+      {
+        "src0": {
+          "name": "output.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            960,
+            49280,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "result_norm",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "result_output",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            49280,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 8.0,
+        "duration_ms": 0.008,
+        "share_of_phase_time_pct": 1.9715551903359097e-05,
+        "node_event_count": 2,
+        "average_duration_per_node_us": 4.0,
+        "average_duration_per_node_ms": 0.004,
+        "example_node_names": [
+          "result_output"
+        ]
+      },
+      {
+        "src0": {
+          "name": "blk.31.ffn_down.weight",
+          "type": "q8_0",
+          "is_quantized": true,
+          "shape": [
+            2560,
+            960,
+            1,
+            1
+          ]
+        },
+        "src1": {
+          "name": "ffn_swiglu-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            0,
+            1,
+            1
+          ]
+        },
+        "dst": {
+          "name": "ffn_out-31",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            0,
+            1,
+            1
+          ]
+        },
+        "quantized_input_present": true,
+        "likely_weight_quantized": true,
+        "compute_path_hint": "At least one MUL_MAT input is quantized. In llama.cpp this usually means quantized matmul with implicit dequantization inside the kernel, not a separate ggml DEQUANTIZE node.",
+        "duration_us": 6.0,
+        "duration_ms": 0.006,
+        "share_of_phase_time_pct": 1.4786663927519321e-05,
+        "node_event_count": 2,
+        "average_duration_per_node_us": 3.0,
+        "average_duration_per_node_ms": 0.003,
+        "example_node_names": [
+          "ffn_out-31"
+        ]
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 372,
+        "phase": "prefill",
+        "node_name": "ffn_out-11",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-11",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.11.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-11",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 66124.0,
+        "duration_ms": 66.124,
+        "share_of_phase_time_pct": 0.1629588942572146
+      },
+      {
+        "event_index": 434,
+        "phase": "prefill",
+        "node_name": "ffn_out-13",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-13",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.13.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-13",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61939.0,
+        "duration_ms": 61.939,
+        "share_of_phase_time_pct": 0.1526451961677699
+      },
+      {
+        "event_index": 682,
+        "phase": "prefill",
+        "node_name": "ffn_out-21",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-21",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.21.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-21",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61512.0,
+        "duration_ms": 61.512,
+        "share_of_phase_time_pct": 0.1515928785849281
+      },
+      {
+        "event_index": 744,
+        "phase": "prefill",
+        "node_name": "ffn_out-23",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-23",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.23.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-23",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61414.0,
+        "duration_ms": 61.414,
+        "share_of_phase_time_pct": 0.15135136307411196
+      },
+      {
+        "event_index": 29,
+        "phase": "prefill",
+        "node_name": "ffn_up-0",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_up-0",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            2560,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.0.ffn_up.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              960,
+              2560,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_norm-0",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              960,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61363.0,
+        "duration_ms": 61.363,
+        "share_of_phase_time_pct": 0.151225676430728
+      },
+      {
+        "event_index": 217,
+        "phase": "prefill",
+        "node_name": "ffn_out-6",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-6",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.6.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-6",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61288.0,
+        "duration_ms": 61.288,
+        "share_of_phase_time_pct": 0.15104084313163404
+      },
+      {
+        "event_index": 868,
+        "phase": "prefill",
+        "node_name": "ffn_out-27",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-27",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.27.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-27",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61287.0,
+        "duration_ms": 61.287,
+        "share_of_phase_time_pct": 0.15103837868764614
+      },
+      {
+        "event_index": 248,
+        "phase": "prefill",
+        "node_name": "ffn_out-7",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-7",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.7.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-7",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61284.0,
+        "duration_ms": 61.284,
+        "share_of_phase_time_pct": 0.15103098535568235
+      },
+      {
+        "event_index": 496,
+        "phase": "prefill",
+        "node_name": "ffn_out-15",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-15",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.15.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-15",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61281.0,
+        "duration_ms": 61.281,
+        "share_of_phase_time_pct": 0.1510235920237186
+      },
+      {
+        "event_index": 93,
+        "phase": "prefill",
+        "node_name": "ffn_out-2",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-2",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.2.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-2",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61269.0,
+        "duration_ms": 61.269,
+        "share_of_phase_time_pct": 0.15099401869586357
+      },
+      {
+        "event_index": 837,
+        "phase": "prefill",
+        "node_name": "ffn_out-26",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-26",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.26.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-26",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61260.0,
+        "duration_ms": 61.26,
+        "share_of_phase_time_pct": 0.15097183869997227
+      },
+      {
+        "event_index": 527,
+        "phase": "prefill",
+        "node_name": "ffn_out-16",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-16",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.16.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-16",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61235.0,
+        "duration_ms": 61.235,
+        "share_of_phase_time_pct": 0.15091022760027428
+      },
+      {
+        "event_index": 558,
+        "phase": "prefill",
+        "node_name": "ffn_out-17",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-17",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.17.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-17",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61226.0,
+        "duration_ms": 61.226,
+        "share_of_phase_time_pct": 0.150888047604383
+      },
+      {
+        "event_index": 403,
+        "phase": "prefill",
+        "node_name": "ffn_out-12",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-12",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.12.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-12",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61222.0,
+        "duration_ms": 61.222,
+        "share_of_phase_time_pct": 0.15087818982843132
+      },
+      {
+        "event_index": 930,
+        "phase": "prefill",
+        "node_name": "ffn_out-29",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-29",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.29.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-29",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61209.0,
+        "duration_ms": 61.209,
+        "share_of_phase_time_pct": 0.15084615205658836
+      },
+      {
+        "event_index": 62,
+        "phase": "prefill",
+        "node_name": "ffn_out-1",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-1",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.1.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-1",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61204.0,
+        "duration_ms": 61.204,
+        "share_of_phase_time_pct": 0.15083382983664878
+      },
+      {
+        "event_index": 341,
+        "phase": "prefill",
+        "node_name": "ffn_out-10",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-10",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.10.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-10",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61203.0,
+        "duration_ms": 61.203,
+        "share_of_phase_time_pct": 0.15083136539266084
+      },
+      {
+        "event_index": 186,
+        "phase": "prefill",
+        "node_name": "ffn_out-5",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-5",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.5.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-5",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61202.0,
+        "duration_ms": 61.202,
+        "share_of_phase_time_pct": 0.15082890094867293
+      },
+      {
+        "event_index": 806,
+        "phase": "prefill",
+        "node_name": "ffn_out-25",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-25",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.25.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-25",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61197.0,
+        "duration_ms": 61.197,
+        "share_of_phase_time_pct": 0.15081657872873333
+      },
+      {
+        "event_index": 310,
+        "phase": "prefill",
+        "node_name": "ffn_out-9",
+        "operator_name": "MUL_MAT",
+        "output": {
+          "name": "ffn_out-9",
+          "type": "f32",
+          "is_quantized": false,
+          "shape": [
+            960,
+            115,
+            1,
+            1
+          ]
+        },
+        "inputs": [
+          {
+            "name": "blk.9.ffn_down.weight",
+            "type": "q8_0",
+            "is_quantized": true,
+            "shape": [
+              2560,
+              960,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "ffn_swiglu-9",
+            "type": "f32",
+            "is_quantized": false,
+            "shape": [
+              2560,
+              115,
+              1,
+              1
+            ]
+          }
+        ],
+        "duration_us": 61195.0,
+        "duration_ms": 61.195,
+        "share_of_phase_time_pct": 0.15081164984075748
+      }
+    ]
+  }
+}

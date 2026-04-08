@@ -1,0 +1,1357 @@
+{
+  "profile_kind": "ggml_operator_latency_share",
+  "timing_unit": "us",
+  "generated_token_count": 213,
+  "decode_step_count": 212,
+  "note": "Per-node wall-clock timings captured through ggml eval callback. Profiling forces node-by-node synchronized execution, so totals are for profiled replay and should not be compared directly to end-to-end throughput numbers.",
+  "model": "/home/petalinux/npux/aicas_official_baseline_20260407/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+  "mmproj": "/home/petalinux/npux/aicas_official_baseline_20260407/gguf/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+  "images": [
+    "/home/petalinux/npux/aicas_official_baseline_20260407/data/IIIT5K/test/2543_2.png"
+  ],
+  "prompt": "Please analyze this image in detail.\n1.  First, please perform a full OCR (Optical Character Recognition), extract all visible text\n    in the image, and list it in order from top-to-bottom, left-to-right.\n2.  Second, please describe the main visual elements in the image, including but not limited to\n    objects, people, scenery, and atmosphere.\n3.  Finally, based on the extracted text and visual elements, summarize the theme\n    and possible context of this image.\n<__media__>",
+  "threads": 4,
+  "n_predict": 4096,
+  "temperature": 0.0,
+  "prefill": {
+    "node_event_count": 2996,
+    "total_us": 13569002.0,
+    "total_ms": 13569.002,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 12242515.0,
+        "duration_ms": 12242.515,
+        "share_of_phase_time_pct": 90.22413733891409,
+        "node_event_count": 675,
+        "average_duration_per_node_us": 18137.05925925926,
+        "average_duration_per_node_ms": 18.13705925925926
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 1045199.0,
+        "duration_ms": 1045.199,
+        "share_of_phase_time_pct": 7.702843584222332,
+        "node_event_count": 96,
+        "average_duration_per_node_us": 10887.489583333334,
+        "average_duration_per_node_ms": 10.887489583333334
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 86108.0,
+        "duration_ms": 86.108,
+        "share_of_phase_time_pct": 0.6345934653115978,
+        "node_event_count": 96,
+        "average_duration_per_node_us": 896.9583333333334,
+        "average_duration_per_node_ms": 0.8969583333333334
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 79766.0,
+        "duration_ms": 79.766,
+        "share_of_phase_time_pct": 0.5878545820834871,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 415.4479166666667,
+        "average_duration_per_node_ms": 0.4154479166666667
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 37677.0,
+        "duration_ms": 37.677,
+        "share_of_phase_time_pct": 0.27766964733294314,
+        "node_event_count": 195,
+        "average_duration_per_node_us": 193.2153846153846,
+        "average_duration_per_node_ms": 0.19321538461538462
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 36506.0,
+        "duration_ms": 36.506,
+        "share_of_phase_time_pct": 0.2690396832427322,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 190.13541666666666,
+        "average_duration_per_node_ms": 0.19013541666666667
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 24353.0,
+        "duration_ms": 24.353,
+        "share_of_phase_time_pct": 0.1794752480690916,
+        "node_event_count": 192,
+        "average_duration_per_node_us": 126.83854166666667,
+        "average_duration_per_node_ms": 0.12683854166666667
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 9781.0,
+        "duration_ms": 9.781,
+        "share_of_phase_time_pct": 0.07208341483036114,
+        "node_event_count": 195,
+        "average_duration_per_node_us": 50.15897435897436,
+        "average_duration_per_node_ms": 0.05015897435897436
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 3411.0,
+        "duration_ms": 3.411,
+        "share_of_phase_time_pct": 0.02513817891691666,
+        "node_event_count": 384,
+        "average_duration_per_node_us": 8.8828125,
+        "average_duration_per_node_ms": 0.0088828125
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 1618.0,
+        "duration_ms": 1.618,
+        "share_of_phase_time_pct": 0.011924237316790137,
+        "node_event_count": 480,
+        "average_duration_per_node_us": 3.370833333333333,
+        "average_duration_per_node_ms": 0.0033708333333333338
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 812.0,
+        "duration_ms": 0.812,
+        "share_of_phase_time_pct": 0.005984227874680835,
+        "node_event_count": 288,
+        "average_duration_per_node_us": 2.8194444444444446,
+        "average_duration_per_node_ms": 0.0028194444444444447
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 697.0,
+        "duration_ms": 0.697,
+        "share_of_phase_time_pct": 0.005136707917059781,
+        "node_event_count": 8,
+        "average_duration_per_node_us": 87.125,
+        "average_duration_per_node_ms": 0.087125
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 559.0,
+        "duration_ms": 0.559,
+        "share_of_phase_time_pct": 0.004119683967914516,
+        "node_event_count": 3,
+        "average_duration_per_node_us": 186.33333333333334,
+        "average_duration_per_node_ms": 0.18633333333333335
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 341,
+        "phase": "prefill",
+        "node_name": "ffn_out-10",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 68317.0,
+        "duration_ms": 68.317,
+        "share_of_phase_time_pct": 0.5034784429982396
+      },
+      {
+        "event_index": 959,
+        "phase": "prefill",
+        "node_name": "ffn_up-30",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          2560,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 62165.0,
+        "duration_ms": 62.165,
+        "share_of_phase_time_pct": 0.45813981013489424
+      },
+      {
+        "event_index": 434,
+        "phase": "prefill",
+        "node_name": "ffn_out-13",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61471.0,
+        "duration_ms": 61.471,
+        "share_of_phase_time_pct": 0.45302521143412017
+      },
+      {
+        "event_index": 775,
+        "phase": "prefill",
+        "node_name": "ffn_out-24",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61428.0,
+        "duration_ms": 61.428,
+        "share_of_phase_time_pct": 0.45270831266735756
+      },
+      {
+        "event_index": 837,
+        "phase": "prefill",
+        "node_name": "ffn_out-26",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61301.0,
+        "duration_ms": 61.301,
+        "share_of_phase_time_pct": 0.4517723558445934
+      },
+      {
+        "event_index": 651,
+        "phase": "prefill",
+        "node_name": "ffn_out-20",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61282.0,
+        "duration_ms": 61.282,
+        "share_of_phase_time_pct": 0.45163233080811693
+      },
+      {
+        "event_index": 62,
+        "phase": "prefill",
+        "node_name": "ffn_out-1",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61277.0,
+        "duration_ms": 61.277,
+        "share_of_phase_time_pct": 0.4515954821143073
+      },
+      {
+        "event_index": 527,
+        "phase": "prefill",
+        "node_name": "ffn_out-16",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61263.0,
+        "duration_ms": 61.263,
+        "share_of_phase_time_pct": 0.4514923057716404
+      },
+      {
+        "event_index": 496,
+        "phase": "prefill",
+        "node_name": "ffn_out-15",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61261.0,
+        "duration_ms": 61.261,
+        "share_of_phase_time_pct": 0.4514775662941166
+      },
+      {
+        "event_index": 31,
+        "phase": "prefill",
+        "node_name": "ffn_out-0",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61259.0,
+        "duration_ms": 61.259,
+        "share_of_phase_time_pct": 0.45146282681659267
+      },
+      {
+        "event_index": 403,
+        "phase": "prefill",
+        "node_name": "ffn_out-12",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61258.0,
+        "duration_ms": 61.258,
+        "share_of_phase_time_pct": 0.4514554570778308
+      },
+      {
+        "event_index": 806,
+        "phase": "prefill",
+        "node_name": "ffn_out-25",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61258.0,
+        "duration_ms": 61.258,
+        "share_of_phase_time_pct": 0.4514554570778308
+      },
+      {
+        "event_index": 372,
+        "phase": "prefill",
+        "node_name": "ffn_out-11",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61257.0,
+        "duration_ms": 61.257,
+        "share_of_phase_time_pct": 0.4514480873390688
+      },
+      {
+        "event_index": 93,
+        "phase": "prefill",
+        "node_name": "ffn_out-2",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61245.0,
+        "duration_ms": 61.245,
+        "share_of_phase_time_pct": 0.4513596504739258
+      },
+      {
+        "event_index": 899,
+        "phase": "prefill",
+        "node_name": "ffn_out-28",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61237.0,
+        "duration_ms": 61.237,
+        "share_of_phase_time_pct": 0.4513006925638304
+      },
+      {
+        "event_index": 29,
+        "phase": "prefill",
+        "node_name": "ffn_up-0",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          2560,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61236.0,
+        "duration_ms": 61.236,
+        "share_of_phase_time_pct": 0.4512933228250685
+      },
+      {
+        "event_index": 713,
+        "phase": "prefill",
+        "node_name": "ffn_out-22",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61232.0,
+        "duration_ms": 61.232,
+        "share_of_phase_time_pct": 0.45126384387002083
+      },
+      {
+        "event_index": 248,
+        "phase": "prefill",
+        "node_name": "ffn_out-7",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61232.0,
+        "duration_ms": 61.232,
+        "share_of_phase_time_pct": 0.45126384387002083
+      },
+      {
+        "event_index": 682,
+        "phase": "prefill",
+        "node_name": "ffn_out-21",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61225.0,
+        "duration_ms": 61.225,
+        "share_of_phase_time_pct": 0.4512122556986874
+      },
+      {
+        "event_index": 186,
+        "phase": "prefill",
+        "node_name": "ffn_out-5",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61225.0,
+        "duration_ms": 61.225,
+        "share_of_phase_time_pct": 0.4512122556986874
+      }
+    ]
+  },
+  "decode": {
+    "node_event_count": 211788,
+    "total_us": 26914723.0,
+    "total_ms": 26914.723,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 19157663.0,
+        "duration_ms": 19157.663,
+        "share_of_phase_time_pct": 71.17912006748128,
+        "node_event_count": 47700,
+        "average_duration_per_node_us": 401.62815513626833,
+        "average_duration_per_node_ms": 0.40162815513626837
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 5641733.0,
+        "duration_ms": 5641.733,
+        "share_of_phase_time_pct": 20.961512403452936,
+        "node_event_count": 6784,
+        "average_duration_per_node_us": 831.6233785377359,
+        "average_duration_per_node_ms": 0.8316233785377358
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 536796.0,
+        "duration_ms": 536.796,
+        "share_of_phase_time_pct": 1.9944325639167826,
+        "node_event_count": 6784,
+        "average_duration_per_node_us": 79.12676886792453,
+        "average_duration_per_node_ms": 0.07912676886792454
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 345067.0,
+        "duration_ms": 345.067,
+        "share_of_phase_time_pct": 1.2820752418666914,
+        "node_event_count": 13780,
+        "average_duration_per_node_us": 25.041146589259796,
+        "average_duration_per_node_ms": 0.025041146589259797
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 310226.0,
+        "duration_ms": 310.226,
+        "share_of_phase_time_pct": 1.1526256465652647,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 22.86453419811321,
+        "average_duration_per_node_ms": 0.02286453419811321
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 255985.0,
+        "duration_ms": 255.985,
+        "share_of_phase_time_pct": 0.951096542959034,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 18.866818985849058,
+        "average_duration_per_node_ms": 0.01886681898584906
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 224967.0,
+        "duration_ms": 224.967,
+        "share_of_phase_time_pct": 0.8358510693199406,
+        "node_event_count": 13780,
+        "average_duration_per_node_us": 16.325616835994193,
+        "average_duration_per_node_ms": 0.016325616835994195
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 147862.0,
+        "duration_ms": 147.862,
+        "share_of_phase_time_pct": 0.5493721781940688,
+        "node_event_count": 13568,
+        "average_duration_per_node_us": 10.89784787735849,
+        "average_duration_per_node_ms": 0.01089784787735849
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 101250.0,
+        "duration_ms": 101.25,
+        "share_of_phase_time_pct": 0.3761881554567736,
+        "node_event_count": 27136,
+        "average_duration_per_node_us": 3.7312057783018866,
+        "average_duration_per_node_ms": 0.003731205778301887
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 95824.0,
+        "duration_ms": 95.824,
+        "share_of_phase_time_pct": 0.35602818576286294,
+        "node_event_count": 33920,
+        "average_duration_per_node_us": 2.825,
+        "average_duration_per_node_ms": 0.002825
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 54337.0,
+        "duration_ms": 54.337,
+        "share_of_phase_time_pct": 0.2018857857091823,
+        "node_event_count": 20352,
+        "average_duration_per_node_us": 2.6698604559748427,
+        "average_duration_per_node_ms": 0.002669860455974843
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 36877.0,
+        "duration_ms": 36.877,
+        "share_of_phase_time_pct": 0.13701422823485868,
+        "node_event_count": 212,
+        "average_duration_per_node_us": 173.94811320754718,
+        "average_duration_per_node_ms": 0.1739481132075472
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 6136.0,
+        "duration_ms": 6.136,
+        "share_of_phase_time_pct": 0.02279793108032358,
+        "node_event_count": 636,
+        "average_duration_per_node_us": 9.647798742138365,
+        "average_duration_per_node_ms": 0.009647798742138365
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 175822,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 15515.0,
+        "duration_ms": 15.515,
+        "share_of_phase_time_pct": 0.057645029450981156
+      },
+      {
+        "event_index": 101896,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11284.0,
+        "duration_ms": 11.284,
+        "share_of_phase_time_pct": 0.04192500885110354
+      },
+      {
+        "event_index": 212785,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11229.0,
+        "duration_ms": 11.229,
+        "share_of_phase_time_pct": 0.04172065972962085
+      },
+      {
+        "event_index": 74923,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11180.0,
+        "duration_ms": 11.18,
+        "share_of_phase_time_pct": 0.04153860323957263
+      },
+      {
+        "event_index": 98899,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11172.0,
+        "duration_ms": 11.172,
+        "share_of_phase_time_pct": 0.04150887973099333
+      },
+      {
+        "event_index": 119878,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11167.0,
+        "duration_ms": 11.167,
+        "share_of_phase_time_pct": 0.04149030253813127
+      },
+      {
+        "event_index": 17980,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11166.0,
+        "duration_ms": 11.166,
+        "share_of_phase_time_pct": 0.04148658709955885
+      },
+      {
+        "event_index": 91906,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11166.0,
+        "duration_ms": 11.166,
+        "share_of_phase_time_pct": 0.04148658709955885
+      },
+      {
+        "event_index": 203794,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11162.0,
+        "duration_ms": 11.162,
+        "share_of_phase_time_pct": 0.0414717253452692
+      },
+      {
+        "event_index": 45952,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11158.0,
+        "duration_ms": 11.158,
+        "share_of_phase_time_pct": 0.041456863590979554
+      },
+      {
+        "event_index": 82915,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11157.0,
+        "duration_ms": 11.157,
+        "share_of_phase_time_pct": 0.041453148152407145
+      },
+      {
+        "event_index": 46951,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11156.0,
+        "duration_ms": 11.156,
+        "share_of_phase_time_pct": 0.04144943271383473
+      },
+      {
+        "event_index": 145852,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11150.0,
+        "duration_ms": 11.15,
+        "share_of_phase_time_pct": 0.041427140082400254
+      },
+      {
+        "event_index": 165832,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11147.0,
+        "duration_ms": 11.147,
+        "share_of_phase_time_pct": 0.04141599376668302
+      },
+      {
+        "event_index": 109888,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11147.0,
+        "duration_ms": 11.147,
+        "share_of_phase_time_pct": 0.04141599376668302
+      },
+      {
+        "event_index": 194803,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11146.0,
+        "duration_ms": 11.146,
+        "share_of_phase_time_pct": 0.041412278328110605
+      },
+      {
+        "event_index": 105892,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11146.0,
+        "duration_ms": 11.146,
+        "share_of_phase_time_pct": 0.041412278328110605
+      },
+      {
+        "event_index": 191806,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11144.0,
+        "duration_ms": 11.144,
+        "share_of_phase_time_pct": 0.04140484745096578
+      },
+      {
+        "event_index": 14983,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11144.0,
+        "duration_ms": 11.144,
+        "share_of_phase_time_pct": 0.04140484745096578
+      },
+      {
+        "event_index": 200797,
+        "phase": "decode",
+        "node_name": "result_output",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          49280,
+          1,
+          1,
+          1
+        ],
+        "duration_us": 11143.0,
+        "duration_ms": 11.143,
+        "share_of_phase_time_pct": 0.041401132012393364
+      }
+    ],
+    "decode_step_count": 212,
+    "average_phase_time_per_step_us": 126956.24056603774,
+    "average_phase_time_per_step_ms": 126.95624056603775
+  },
+  "combined": {
+    "node_event_count": 214784,
+    "total_us": 40483725.0,
+    "total_ms": 40483.725,
+    "operators": [
+      {
+        "operator_name": "MUL_MAT",
+        "duration_us": 31400178.0,
+        "duration_ms": 31400.178,
+        "share_of_phase_time_pct": 77.56247232684245,
+        "node_event_count": 48375,
+        "average_duration_per_node_us": 649.0992868217054,
+        "average_duration_per_node_ms": 0.6490992868217055
+      },
+      {
+        "operator_name": "FLASH_ATTN_EXT",
+        "duration_us": 6686932.0,
+        "duration_ms": 6686.932,
+        "share_of_phase_time_pct": 16.51758083032132,
+        "node_event_count": 6880,
+        "average_duration_per_node_us": 971.9377906976745,
+        "average_duration_per_node_ms": 0.9719377906976744
+      },
+      {
+        "operator_name": "SWIGLU",
+        "duration_us": 622904.0,
+        "duration_ms": 622.904,
+        "share_of_phase_time_pct": 1.5386528784097808,
+        "node_event_count": 6880,
+        "average_duration_per_node_us": 90.53837209302326,
+        "average_duration_per_node_ms": 0.09053837209302326
+      },
+      {
+        "operator_name": "RMS_NORM",
+        "duration_us": 382744.0,
+        "duration_ms": 382.744,
+        "share_of_phase_time_pct": 0.9454268351047241,
+        "node_event_count": 13975,
+        "average_duration_per_node_us": 27.387763864042935,
+        "average_duration_per_node_ms": 0.027387763864042937
+      },
+      {
+        "operator_name": "ADD",
+        "duration_us": 334579.0,
+        "duration_ms": 334.579,
+        "share_of_phase_time_pct": 0.8264530993627686,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 24.31533430232558,
+        "average_duration_per_node_ms": 0.024315334302325582
+      },
+      {
+        "operator_name": "ROPE",
+        "duration_us": 292491.0,
+        "duration_ms": 292.491,
+        "share_of_phase_time_pct": 0.7224903340786946,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 21.256613372093025,
+        "average_duration_per_node_ms": 0.021256613372093024
+      },
+      {
+        "operator_name": "MUL",
+        "duration_us": 234748.0,
+        "duration_ms": 234.748,
+        "share_of_phase_time_pct": 0.5798577082518963,
+        "node_event_count": 13975,
+        "average_duration_per_node_us": 16.797710196779963,
+        "average_duration_per_node_ms": 0.016797710196779964
+      },
+      {
+        "operator_name": "SET_ROWS",
+        "duration_us": 227628.0,
+        "duration_ms": 227.628,
+        "share_of_phase_time_pct": 0.5622703938434519,
+        "node_event_count": 13760,
+        "average_duration_per_node_us": 16.542732558139534,
+        "average_duration_per_node_ms": 0.016542732558139536
+      },
+      {
+        "operator_name": "RESHAPE",
+        "duration_us": 104661.0,
+        "duration_ms": 104.661,
+        "share_of_phase_time_pct": 0.25852611141884796,
+        "node_event_count": 27520,
+        "average_duration_per_node_us": 3.8030886627906977,
+        "average_duration_per_node_ms": 0.003803088662790698
+      },
+      {
+        "operator_name": "VIEW",
+        "duration_us": 97442.0,
+        "duration_ms": 97.442,
+        "share_of_phase_time_pct": 0.24069425429601646,
+        "node_event_count": 34400,
+        "average_duration_per_node_us": 2.8326162790697675,
+        "average_duration_per_node_ms": 0.0028326162790697673
+      },
+      {
+        "operator_name": "PERMUTE",
+        "duration_us": 55149.0,
+        "duration_ms": 55.149,
+        "share_of_phase_time_pct": 0.13622511268417123,
+        "node_event_count": 20640,
+        "average_duration_per_node_us": 2.671947674418605,
+        "average_duration_per_node_ms": 0.0026719476744186048
+      },
+      {
+        "operator_name": "CPY",
+        "duration_us": 37436.0,
+        "duration_ms": 37.436,
+        "share_of_phase_time_pct": 0.09247172783630953,
+        "node_event_count": 215,
+        "average_duration_per_node_us": 174.12093023255815,
+        "average_duration_per_node_ms": 0.17412093023255815
+      },
+      {
+        "operator_name": "GET_ROWS",
+        "duration_us": 6833.0,
+        "duration_ms": 6.833,
+        "share_of_phase_time_pct": 0.01687838754956467,
+        "node_event_count": 644,
+        "average_duration_per_node_us": 10.610248447204969,
+        "average_duration_per_node_ms": 0.010610248447204968
+      }
+    ],
+    "top_nodes": [
+      {
+        "event_index": 341,
+        "phase": "prefill",
+        "node_name": "ffn_out-10",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 68317.0,
+        "duration_ms": 68.317,
+        "share_of_phase_time_pct": 0.16875176382608073
+      },
+      {
+        "event_index": 959,
+        "phase": "prefill",
+        "node_name": "ffn_up-30",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          2560,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 62165.0,
+        "duration_ms": 62.165,
+        "share_of_phase_time_pct": 0.15355553373608777
+      },
+      {
+        "event_index": 434,
+        "phase": "prefill",
+        "node_name": "ffn_out-13",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61471.0,
+        "duration_ms": 61.471,
+        "share_of_phase_time_pct": 0.15184126460695008
+      },
+      {
+        "event_index": 775,
+        "phase": "prefill",
+        "node_name": "ffn_out-24",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61428.0,
+        "duration_ms": 61.428,
+        "share_of_phase_time_pct": 0.15173504908453952
+      },
+      {
+        "event_index": 837,
+        "phase": "prefill",
+        "node_name": "ffn_out-26",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61301.0,
+        "duration_ms": 61.301,
+        "share_of_phase_time_pct": 0.1514213427741642
+      },
+      {
+        "event_index": 651,
+        "phase": "prefill",
+        "node_name": "ffn_out-20",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61282.0,
+        "duration_ms": 61.282,
+        "share_of_phase_time_pct": 0.1513744103340293
+      },
+      {
+        "event_index": 62,
+        "phase": "prefill",
+        "node_name": "ffn_out-1",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61277.0,
+        "duration_ms": 61.277,
+        "share_of_phase_time_pct": 0.1513620596918885
+      },
+      {
+        "event_index": 527,
+        "phase": "prefill",
+        "node_name": "ffn_out-16",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61263.0,
+        "duration_ms": 61.263,
+        "share_of_phase_time_pct": 0.1513274778938944
+      },
+      {
+        "event_index": 496,
+        "phase": "prefill",
+        "node_name": "ffn_out-15",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61261.0,
+        "duration_ms": 61.261,
+        "share_of_phase_time_pct": 0.1513225376370381
+      },
+      {
+        "event_index": 31,
+        "phase": "prefill",
+        "node_name": "ffn_out-0",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61259.0,
+        "duration_ms": 61.259,
+        "share_of_phase_time_pct": 0.1513175973801818
+      },
+      {
+        "event_index": 403,
+        "phase": "prefill",
+        "node_name": "ffn_out-12",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61258.0,
+        "duration_ms": 61.258,
+        "share_of_phase_time_pct": 0.15131512725175364
+      },
+      {
+        "event_index": 806,
+        "phase": "prefill",
+        "node_name": "ffn_out-25",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61258.0,
+        "duration_ms": 61.258,
+        "share_of_phase_time_pct": 0.15131512725175364
+      },
+      {
+        "event_index": 372,
+        "phase": "prefill",
+        "node_name": "ffn_out-11",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61257.0,
+        "duration_ms": 61.257,
+        "share_of_phase_time_pct": 0.15131265712332548
+      },
+      {
+        "event_index": 93,
+        "phase": "prefill",
+        "node_name": "ffn_out-2",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61245.0,
+        "duration_ms": 61.245,
+        "share_of_phase_time_pct": 0.15128301558218765
+      },
+      {
+        "event_index": 899,
+        "phase": "prefill",
+        "node_name": "ffn_out-28",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61237.0,
+        "duration_ms": 61.237,
+        "share_of_phase_time_pct": 0.15126325455476242
+      },
+      {
+        "event_index": 29,
+        "phase": "prefill",
+        "node_name": "ffn_up-0",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          2560,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61236.0,
+        "duration_ms": 61.236,
+        "share_of_phase_time_pct": 0.15126078442633428
+      },
+      {
+        "event_index": 713,
+        "phase": "prefill",
+        "node_name": "ffn_out-22",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61232.0,
+        "duration_ms": 61.232,
+        "share_of_phase_time_pct": 0.1512509039126217
+      },
+      {
+        "event_index": 248,
+        "phase": "prefill",
+        "node_name": "ffn_out-7",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61232.0,
+        "duration_ms": 61.232,
+        "share_of_phase_time_pct": 0.1512509039126217
+      },
+      {
+        "event_index": 682,
+        "phase": "prefill",
+        "node_name": "ffn_out-21",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61225.0,
+        "duration_ms": 61.225,
+        "share_of_phase_time_pct": 0.15123361301362462
+      },
+      {
+        "event_index": 186,
+        "phase": "prefill",
+        "node_name": "ffn_out-5",
+        "operator_name": "MUL_MAT",
+        "tensor_type": "f32",
+        "shape": [
+          960,
+          115,
+          1,
+          1
+        ],
+        "duration_us": 61225.0,
+        "duration_ms": 61.225,
+        "share_of_phase_time_pct": 0.15123361301362462
+      }
+    ]
+  }
+}

@@ -11,14 +11,18 @@
 #include "ggml-backend.h"
 #include "gguf.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <algorithm>
 #include <map>
 #include <regex>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <sstream>
@@ -27,6 +31,250 @@
 #include <array>
 #include <numeric>
 #include <functional>
+
+using json = nlohmann::ordered_json;
+
+struct clip_profile_tensor_info {
+    bool present = false;
+    std::string name;
+    std::string type;
+    bool is_quantized = false;
+    std::array<int64_t, GGML_MAX_DIMS> ne = {};
+};
+
+struct clip_profile_node_timing {
+    std::string node_name;
+    std::string op_name;
+    std::string tensor_type;
+    bool tensor_is_quantized = false;
+    std::array<int64_t, GGML_MAX_DIMS> ne = {};
+    std::array<clip_profile_tensor_info, GGML_MAX_SRC> srcs = {};
+    double duration_us = 0.0;
+    int64_t event_index = 0;
+};
+
+struct clip_profile_op_aggregate {
+    double duration_us = 0.0;
+    int64_t node_count = 0;
+};
+
+struct clip_profile_signature_aggregate {
+    clip_profile_tensor_info src0;
+    clip_profile_tensor_info src1;
+    clip_profile_tensor_info dst;
+    double duration_us = 0.0;
+    int64_t node_count = 0;
+    std::vector<std::string> example_node_names;
+};
+
+static clip_profile_tensor_info clip_capture_tensor_info(const ggml_tensor * t) {
+    clip_profile_tensor_info info;
+    if (t == nullptr) {
+        return info;
+    }
+
+    info.present = true;
+    info.name = t->name;
+    info.type = ggml_type_name(t->type);
+    info.is_quantized = ggml_is_quantized(t->type);
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        info.ne[i] = t->ne[i];
+    }
+
+    return info;
+}
+
+static double clip_pct(double numerator, double denominator) {
+    if (denominator <= 0.0) {
+        return 0.0;
+    }
+    return numerator / denominator * 100.0;
+}
+
+static json clip_shape_json(const std::array<int64_t, GGML_MAX_DIMS> & ne) {
+    return {ne[0], ne[1], ne[2], ne[3]};
+}
+
+static json clip_tensor_json(const clip_profile_tensor_info & info) {
+    if (!info.present) {
+        return nullptr;
+    }
+
+    return {
+        {"name", info.name},
+        {"type", info.type},
+        {"is_quantized", info.is_quantized},
+        {"shape", clip_shape_json(info.ne)},
+    };
+}
+
+static std::string clip_shape_key(const std::array<int64_t, GGML_MAX_DIMS> & ne) {
+    return std::to_string(ne[0]) + "x" + std::to_string(ne[1]) + "x" + std::to_string(ne[2]) + "x" + std::to_string(ne[3]);
+}
+
+static std::string clip_mul_mat_signature_key(const clip_profile_node_timing & node) {
+    return node.srcs[0].type + "|" + clip_shape_key(node.srcs[0].ne) + "|" +
+           node.srcs[1].type + "|" + clip_shape_key(node.srcs[1].ne) + "|" +
+           node.tensor_type + "|" + clip_shape_key(node.ne);
+}
+
+struct clip_profiler {
+    bool enabled = false;
+    std::string output_path;
+    const ggml_tensor * pending_tensor = nullptr;
+    int64_t pending_start_us = 0;
+    int64_t next_event_index = 0;
+    std::vector<clip_profile_node_timing> nodes;
+
+    void init_from_env() {
+        const char * path = std::getenv("MTMD_PROFILE_MMPROJ_JSON");
+        output_path = path ? path : "";
+        enabled = !output_path.empty();
+    }
+
+    void reset() {
+        pending_tensor = nullptr;
+        pending_start_us = 0;
+        next_event_index = 0;
+        nodes.clear();
+    }
+
+    static bool eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
+        auto * profiler = static_cast<clip_profiler *>(user_data);
+        if (!profiler || !profiler->enabled) {
+            return false;
+        }
+
+        if (ask) {
+            profiler->pending_tensor = t;
+            profiler->pending_start_us = ggml_time_us();
+            return true;
+        }
+
+        clip_profile_node_timing timing;
+        timing.node_name = t->name;
+        timing.op_name = ggml_op_desc(t);
+        timing.tensor_type = ggml_type_name(t->type);
+        timing.tensor_is_quantized = ggml_is_quantized(t->type);
+        timing.duration_us = static_cast<double>(ggml_time_us() - profiler->pending_start_us);
+        timing.event_index = profiler->next_event_index++;
+        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+            timing.ne[i] = t->ne[i];
+        }
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            timing.srcs[i] = clip_capture_tensor_info(t->src[i]);
+        }
+
+        profiler->nodes.push_back(std::move(timing));
+        profiler->pending_tensor = nullptr;
+        profiler->pending_start_us = 0;
+
+        return true;
+    }
+
+    json summarize() const {
+        std::unordered_map<std::string, clip_profile_op_aggregate> ops;
+        std::unordered_map<std::string, clip_profile_signature_aggregate> matmuls;
+        double total_us = 0.0;
+
+        for (const auto & node : nodes) {
+            total_us += node.duration_us;
+            auto & agg = ops[node.op_name];
+            agg.duration_us += node.duration_us;
+            agg.node_count += 1;
+
+            if (node.op_name == "MUL_MAT" && node.srcs[0].present && node.srcs[1].present) {
+                auto & sig = matmuls[clip_mul_mat_signature_key(node)];
+                if (sig.node_count == 0) {
+                    sig.src0 = node.srcs[0];
+                    sig.src1 = node.srcs[1];
+                    sig.dst.present = true;
+                    sig.dst.name = node.node_name;
+                    sig.dst.type = node.tensor_type;
+                    sig.dst.is_quantized = node.tensor_is_quantized;
+                    sig.dst.ne = node.ne;
+                }
+                sig.duration_us += node.duration_us;
+                sig.node_count += 1;
+                if (sig.example_node_names.size() < 3) {
+                    if (std::find(sig.example_node_names.begin(), sig.example_node_names.end(), node.node_name) == sig.example_node_names.end()) {
+                        sig.example_node_names.push_back(node.node_name);
+                    }
+                }
+            }
+        }
+
+        std::vector<std::pair<std::string, clip_profile_op_aggregate>> sorted_ops(ops.begin(), ops.end());
+        std::sort(sorted_ops.begin(), sorted_ops.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.second.duration_us != rhs.second.duration_us) {
+                return lhs.second.duration_us > rhs.second.duration_us;
+            }
+            return lhs.first < rhs.first;
+        });
+
+        std::vector<std::pair<std::string, clip_profile_signature_aggregate>> sorted_matmuls(matmuls.begin(), matmuls.end());
+        std::sort(sorted_matmuls.begin(), sorted_matmuls.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.second.duration_us != rhs.second.duration_us) {
+                return lhs.second.duration_us > rhs.second.duration_us;
+            }
+            return lhs.first < rhs.first;
+        });
+
+        json operators = json::array();
+        for (const auto & [name, agg] : sorted_ops) {
+            operators.push_back({
+                {"operator_name", name},
+                {"duration_us", agg.duration_us},
+                {"duration_ms", agg.duration_us / 1000.0},
+                {"share_of_total_time_pct", clip_pct(agg.duration_us, total_us)},
+                {"node_event_count", agg.node_count},
+            });
+        }
+
+        json mul_mat_signatures = json::array();
+        double mul_mat_total_us = 0.0;
+        for (const auto & [_, sig] : sorted_matmuls) {
+            mul_mat_total_us += sig.duration_us;
+            mul_mat_signatures.push_back({
+                {"src0", clip_tensor_json(sig.src0)},
+                {"src1", clip_tensor_json(sig.src1)},
+                {"dst", clip_tensor_json(sig.dst)},
+                {"duration_us", sig.duration_us},
+                {"duration_ms", sig.duration_us / 1000.0},
+                {"share_of_total_time_pct", clip_pct(sig.duration_us, total_us)},
+                {"node_event_count", sig.node_count},
+                {"example_node_names", sig.example_node_names},
+            });
+        }
+
+        return {
+            {"profile_kind", "mmproj_operator_latency_share"},
+            {"timing_unit", "us"},
+            {"note", "Per-node wall-clock timings captured through ggml eval callback. Profiling forces node-by-node synchronized execution, so totals are from profiled replay and operator shares should be interpreted primarily as proportions."},
+            {"node_event_count", nodes.size()},
+            {"total_us", total_us},
+            {"total_ms", total_us / 1000.0},
+            {"mul_mat_total_us", mul_mat_total_us},
+            {"mul_mat_total_ms", mul_mat_total_us / 1000.0},
+            {"mul_mat_share_of_total_time_pct", clip_pct(mul_mat_total_us, total_us)},
+            {"operators", operators},
+            {"mul_mat_signatures", mul_mat_signatures},
+        };
+    }
+
+    void write_json() const {
+        if (!enabled || output_path.empty()) {
+            return;
+        }
+
+        std::ofstream out(output_path);
+        if (!out.is_open()) {
+            LOG_ERR("%s: failed to open %s for writing\n", __func__, output_path.c_str());
+            return;
+        }
+        out << summarize().dump(2) << '\n';
+    }
+};
 
 struct clip_logger_state g_logger_state = {GGML_LOG_LEVEL_CONT, clip_log_callback_default, NULL};
 
@@ -390,10 +638,16 @@ struct clip_ctx {
 
     // for debugging
     bool debug_graph = false;
+    bool debug_dump_dot_done = false;
+    std::string debug_dump_dot_path;
+    clip_profiler profiler;
     std::vector<ggml_tensor *> debug_print_tensors;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
+        const char * dump_dot = std::getenv("MTMD_DUMP_DOT");
+        debug_dump_dot_path = dump_dot ? dump_dot : "";
+        profiler.init_from_env();
         backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
@@ -4007,8 +4261,18 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
 
     // build the inference graph
     ctx->debug_print_tensors.clear();
+    ctx->profiler.reset();
     ggml_backend_sched_reset(ctx->sched.get());
     ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);
+    if (!ctx->debug_dump_dot_done && !ctx->debug_dump_dot_path.empty()) {
+        ggml_graph_dump_dot(gf, nullptr, ctx->debug_dump_dot_path.c_str());
+        LOG_INF("%s: dumped mmproj graph to %s\n", __func__, ctx->debug_dump_dot_path.c_str());
+        ctx->debug_dump_dot_done = true;
+    }
+    ggml_backend_sched_set_eval_callback(
+        ctx->sched.get(),
+        ctx->profiler.enabled ? clip_profiler::eval_callback : nullptr,
+        ctx->profiler.enabled ? &ctx->profiler : nullptr);
     ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
 
     // set inputs
@@ -4339,6 +4603,8 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
         return false;
     }
+
+    ctx->profiler.write_json();
 
     // print debug nodes
     if (ctx->debug_graph) {

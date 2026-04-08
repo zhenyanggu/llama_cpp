@@ -12,6 +12,24 @@
 #include <limits>
 #include <stdexcept>
 
+static void llama_maybe_dump_debug_dot(const ggml_cgraph * gf, bool batched) {
+    static bool dumped_prefill = false;
+    static bool dumped_decode = false;
+
+    const char * path = batched
+        ? std::getenv("LLAMA_DUMP_PREFILL_DOT")
+        : std::getenv("LLAMA_DUMP_DECODE_DOT");
+
+    bool & dumped = batched ? dumped_prefill : dumped_decode;
+    if (gf == nullptr || path == nullptr || path[0] == '\0' || dumped) {
+        return;
+    }
+
+    ggml_graph_dump_dot(gf, nullptr, path);
+    LLAMA_LOG_INFO("%s: dumped %s graph to %s\n", __func__, batched ? "prefill" : "decode", path);
+    dumped = true;
+}
+
 //
 // llama_context
 //
@@ -764,6 +782,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
+
+        llama_maybe_dump_debug_dot(gf, ubatch.n_tokens > 1);
 
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
