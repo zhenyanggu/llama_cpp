@@ -1,0 +1,593 @@
+{
+  "schema": "aicas.mmproj.calibration.v1",
+  "layer_manifest": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/artifacts/layer_manifest.json",
+  "calib_manifest": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/calib/calib_manifest.json",
+  "default_act_scale": 0.02,
+  "default_act_zero_point": 128,
+  "layers": [
+    {
+      "id": 0,
+      "tensor_name": "mm.model.fc.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 1,
+      "tensor_name": "v.blk.0.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 2,
+      "tensor_name": "v.blk.0.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 3,
+      "tensor_name": "v.blk.0.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 4,
+      "tensor_name": "v.blk.0.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 5,
+      "tensor_name": "v.blk.0.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 6,
+      "tensor_name": "v.blk.0.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 7,
+      "tensor_name": "v.blk.1.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 8,
+      "tensor_name": "v.blk.1.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 9,
+      "tensor_name": "v.blk.1.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 10,
+      "tensor_name": "v.blk.1.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 11,
+      "tensor_name": "v.blk.1.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 12,
+      "tensor_name": "v.blk.1.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 13,
+      "tensor_name": "v.blk.2.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 14,
+      "tensor_name": "v.blk.2.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 15,
+      "tensor_name": "v.blk.2.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 16,
+      "tensor_name": "v.blk.2.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 17,
+      "tensor_name": "v.blk.2.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 18,
+      "tensor_name": "v.blk.2.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 19,
+      "tensor_name": "v.blk.3.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 20,
+      "tensor_name": "v.blk.3.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 21,
+      "tensor_name": "v.blk.3.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 22,
+      "tensor_name": "v.blk.3.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 23,
+      "tensor_name": "v.blk.3.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 24,
+      "tensor_name": "v.blk.3.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 25,
+      "tensor_name": "v.blk.4.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 26,
+      "tensor_name": "v.blk.4.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 27,
+      "tensor_name": "v.blk.4.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 28,
+      "tensor_name": "v.blk.4.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 29,
+      "tensor_name": "v.blk.4.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 30,
+      "tensor_name": "v.blk.4.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 31,
+      "tensor_name": "v.blk.5.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 32,
+      "tensor_name": "v.blk.5.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 33,
+      "tensor_name": "v.blk.5.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 34,
+      "tensor_name": "v.blk.5.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 35,
+      "tensor_name": "v.blk.5.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 36,
+      "tensor_name": "v.blk.5.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 37,
+      "tensor_name": "v.blk.6.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 38,
+      "tensor_name": "v.blk.6.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 39,
+      "tensor_name": "v.blk.6.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 40,
+      "tensor_name": "v.blk.6.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 41,
+      "tensor_name": "v.blk.6.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 42,
+      "tensor_name": "v.blk.6.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 43,
+      "tensor_name": "v.blk.7.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 44,
+      "tensor_name": "v.blk.7.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 45,
+      "tensor_name": "v.blk.7.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 46,
+      "tensor_name": "v.blk.7.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 47,
+      "tensor_name": "v.blk.7.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 48,
+      "tensor_name": "v.blk.7.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 49,
+      "tensor_name": "v.blk.8.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 50,
+      "tensor_name": "v.blk.8.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 51,
+      "tensor_name": "v.blk.8.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 52,
+      "tensor_name": "v.blk.8.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 53,
+      "tensor_name": "v.blk.8.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 54,
+      "tensor_name": "v.blk.8.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 55,
+      "tensor_name": "v.blk.9.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 56,
+      "tensor_name": "v.blk.9.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 57,
+      "tensor_name": "v.blk.9.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 58,
+      "tensor_name": "v.blk.9.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 59,
+      "tensor_name": "v.blk.9.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 60,
+      "tensor_name": "v.blk.9.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 61,
+      "tensor_name": "v.blk.10.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 62,
+      "tensor_name": "v.blk.10.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 63,
+      "tensor_name": "v.blk.10.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 64,
+      "tensor_name": "v.blk.10.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 65,
+      "tensor_name": "v.blk.10.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 66,
+      "tensor_name": "v.blk.10.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 67,
+      "tensor_name": "v.blk.11.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 68,
+      "tensor_name": "v.blk.11.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 69,
+      "tensor_name": "v.blk.11.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 70,
+      "tensor_name": "v.blk.11.attn_out.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 71,
+      "tensor_name": "v.blk.11.ffn_up.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    },
+    {
+      "id": 72,
+      "tensor_name": "v.blk.11.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.02,
+      "act_zero_point": 128
+    }
+  ]
+}

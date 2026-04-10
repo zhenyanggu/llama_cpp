@@ -31,6 +31,7 @@
 #include <array>
 #include <numeric>
 #include <functional>
+#include <mutex>
 
 using json = nlohmann::ordered_json;
 
@@ -410,6 +411,61 @@ enum patch_merge_type {
     PATCH_MERGE_SPATIAL_UNPAD,
 };
 
+struct clip_aicas_w8a8_tensor {
+    bool enabled = true;
+    std::string policy = "F16_FALLBACK";
+    float act_scale = 0.0f;
+    int32_t act_zero_point = 0;
+    std::vector<float> weight_scale;
+    std::vector<int32_t> sum_w;
+};
+
+struct clip_ctx;
+
+struct clip_aicas_activation_stats {
+    uint64_t count = 0;
+    float min = std::numeric_limits<float>::infinity();
+    float max = -std::numeric_limits<float>::infinity();
+    uint64_t seen_for_reservoir = 0;
+    uint64_t reservoir_state = 0x9e3779b97f4a7c15ULL;
+    size_t sample_limit = 0;
+    std::vector<float> samples;
+
+    void update(const float * data, size_t n) {
+        if (data == nullptr || n == 0) {
+            return;
+        }
+
+        count += n;
+        for (size_t i = 0; i < n; ++i) {
+            const float v = data[i];
+            min = std::min(min, v);
+            max = std::max(max, v);
+
+            if (sample_limit == 0) {
+                continue;
+            }
+
+            ++seen_for_reservoir;
+            if (samples.size() < sample_limit) {
+                samples.push_back(v);
+                continue;
+            }
+
+            reservoir_state = reservoir_state * 6364136223846793005ULL + 1;
+            const uint64_t slot = reservoir_state % seen_for_reservoir;
+            if (slot < sample_limit) {
+                samples[(size_t) slot] = v;
+            }
+        }
+    }
+};
+
+struct clip_aicas_activation_observer {
+    clip_ctx * owner = nullptr;
+    std::string tensor_name;
+};
+
 struct clip_hparams {
     int32_t image_size;
     int32_t patch_size;
@@ -607,6 +663,10 @@ struct clip_model {
     ggml_tensor * mm_norm_pre_w = nullptr;
     ggml_tensor * mm_norm_mid_w = nullptr;
 
+    bool aicas_w8a8_enabled = false;
+    std::string aicas_w8a8_schema;
+    std::unordered_map<std::string, clip_aicas_w8a8_tensor> aicas_w8a8_tensors;
+
     bool audio_has_avgpool() const {
         return proj_type == PROJECTOR_TYPE_QWEN2A
             || proj_type == PROJECTOR_TYPE_VOXTRAL;
@@ -617,6 +677,74 @@ struct clip_model {
             || proj_type == PROJECTOR_TYPE_VOXTRAL;
     }
 };
+
+static void clip_compute_w8a8_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+
+    const auto * cfg = static_cast<const clip_aicas_w8a8_tensor *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(c->type == GGML_TYPE_I8);
+
+    const int64_t k = c->ne[0];
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+
+    GGML_ASSERT(b->ne[0] == k);
+    GGML_ASSERT(dst->ne[0] == out_channels);
+    GGML_ASSERT(dst->ne[1] == n_cols);
+    GGML_ASSERT(cfg->weight_scale.size() == (size_t) out_channels);
+    GGML_ASSERT(cfg->sum_w.size() == (size_t) out_channels);
+    GGML_ASSERT(cfg->act_scale > 0.0f);
+
+    const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
+    const int64_t col_begin = ith * cols_per_thread;
+    const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
+    if (col_begin >= col_end) {
+        return;
+    }
+
+    const float sa = cfg->act_scale;
+    const int32_t za = cfg->act_zero_point;
+    const int32_t compensation_base = 128 - za;
+    std::vector<int8_t> act_i8(k);
+
+    for (int64_t col = col_begin; col < col_end; ++col) {
+        const float * act_col = (const float *) ((const char *) b->data + col * b->nb[1]);
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+
+        for (int64_t i = 0; i < k; ++i) {
+            int32_t q = (int32_t) lrintf(act_col[i] / sa) + za;
+            q = std::max(0, std::min(255, q));
+            act_i8[i] = (int8_t) (q - 128);
+        }
+
+        for (int64_t j = 0; j < out_channels; ++j) {
+            const int8_t * w_col = (const int8_t *) ((const char *) c->data + j * c->nb[1]);
+            int32_t acc = 0;
+            for (int64_t i = 0; i < k; ++i) {
+                acc += (int32_t) act_i8[i] * (int32_t) w_col[i];
+            }
+            acc += compensation_base * cfg->sum_w[j];
+            out_col[j] = (float) acc * sa * cfg->weight_scale[j];
+        }
+    }
+}
+
+static void clip_collect_activation_f32_passthrough(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata);
 
 struct clip_ctx {
     clip_model model;
@@ -642,12 +770,29 @@ struct clip_ctx {
     std::string debug_dump_dot_path;
     clip_profiler profiler;
     std::vector<ggml_tensor *> debug_print_tensors;
+    bool aicas_w8a8_debug = false;
+    std::string aicas_act_stats_path;
+    size_t aicas_act_stats_samples_per_tensor = 0;
+    mutable std::mutex aicas_act_stats_mutex;
+    mutable std::unordered_map<std::string, clip_aicas_activation_stats> aicas_act_stats;
+    mutable std::unordered_map<std::string, clip_aicas_activation_observer> aicas_act_observers;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
         const char * dump_dot = std::getenv("MTMD_DUMP_DOT");
         debug_dump_dot_path = dump_dot ? dump_dot : "";
         profiler.init_from_env();
+        aicas_w8a8_debug = std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
+        if (const char * stats_path = std::getenv("AICAS_MMPROJ_ACT_STATS_FILE")) {
+            aicas_act_stats_path = stats_path;
+            aicas_act_stats_samples_per_tensor = 4096;
+            if (const char * samples_env = std::getenv("AICAS_MMPROJ_ACT_SAMPLES")) {
+                const long parsed = strtol(samples_env, nullptr, 10);
+                if (parsed > 0) {
+                    aicas_act_stats_samples_per_tensor = (size_t) parsed;
+                }
+            }
+        }
         backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
@@ -684,17 +829,144 @@ struct clip_ctx {
     }
 
     ~clip_ctx() {
+        flush_aicas_activation_stats();
         ggml_backend_free(backend);
         if (backend != backend_cpu) {
             ggml_backend_free(backend_cpu);
         }
     }
 
+    void force_cpu_backend_for_w8a8() {
+        if (backend == backend_cpu) {
+            return;
+        }
+
+        LOG_WRN("%s: AICAS W8A8 metadata detected, forcing mmproj to CPU backend\n", __func__);
+        ggml_backend_free(backend);
+        backend = backend_cpu;
+
+        backend_ptrs.clear();
+        backend_buft.clear();
+        backend_ptrs.push_back(backend_cpu);
+        backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
+
+        sched.reset(
+            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+        );
+    }
+
     // this function is added so that we don't change too much of the existing code
     projector_type proj_type() const {
         return model.proj_type;
     }
+
+    clip_aicas_activation_observer * get_aicas_activation_observer(const std::string & tensor_name) const {
+        if (aicas_act_stats_path.empty()) {
+            return nullptr;
+        }
+
+        std::lock_guard<std::mutex> lock(aicas_act_stats_mutex);
+
+        auto stats_it = aicas_act_stats.find(tensor_name);
+        if (stats_it == aicas_act_stats.end()) {
+            clip_aicas_activation_stats stats;
+            stats.sample_limit = aicas_act_stats_samples_per_tensor;
+            stats_it = aicas_act_stats.emplace(tensor_name, std::move(stats)).first;
+        }
+
+        auto obs_it = aicas_act_observers.find(tensor_name);
+        if (obs_it == aicas_act_observers.end()) {
+            clip_aicas_activation_observer observer;
+            observer.owner = const_cast<clip_ctx *>(this);
+            observer.tensor_name = tensor_name;
+            obs_it = aicas_act_observers.emplace(tensor_name, std::move(observer)).first;
+        }
+
+        GGML_UNUSED(stats_it);
+        return &obs_it->second;
+    }
+
+    void record_aicas_activation(const std::string & tensor_name, const float * data, size_t n) {
+        if (aicas_act_stats_path.empty()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(aicas_act_stats_mutex);
+        auto & stats = aicas_act_stats[tensor_name];
+        if (stats.sample_limit == 0) {
+            stats.sample_limit = aicas_act_stats_samples_per_tensor;
+        }
+        stats.update(data, n);
+    }
+
+    void flush_aicas_activation_stats() const {
+        if (aicas_act_stats_path.empty()) {
+            return;
+        }
+
+        json out = {
+            {"schema", "aicas.mmproj.act_stats.v1"},
+            {"samples_per_tensor", aicas_act_stats_samples_per_tensor},
+            {"tensors", json::array()},
+        };
+
+        std::vector<std::string> names;
+        {
+            std::lock_guard<std::mutex> lock(aicas_act_stats_mutex);
+            names.reserve(aicas_act_stats.size());
+            for (const auto & kv : aicas_act_stats) {
+                names.push_back(kv.first);
+            }
+            std::sort(names.begin(), names.end());
+
+            for (const auto & name : names) {
+                const auto & stats = aicas_act_stats.at(name);
+                if (stats.count == 0) {
+                    continue;
+                }
+
+                out["tensors"].push_back({
+                    {"tensor_name", name},
+                    {"count", stats.count},
+                    {"min", stats.min},
+                    {"max", stats.max},
+                    {"samples", stats.samples},
+                });
+            }
+        }
+
+        std::ofstream fout(aicas_act_stats_path, std::ios::binary);
+        if (!fout.is_open()) {
+            LOG_ERR("%s: failed to open activation stats file: %s\n", __func__, aicas_act_stats_path.c_str());
+            return;
+        }
+        fout << out.dump(2);
+    }
 };
+
+static void clip_collect_activation_f32_passthrough(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(nth);
+
+    auto * observer = static_cast<clip_aicas_activation_observer *>(userdata);
+    GGML_ASSERT(observer != nullptr);
+    GGML_ASSERT(observer->owner != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const size_t nbytes = ggml_nbytes(a);
+    GGML_ASSERT(nbytes == ggml_nbytes(dst));
+    memcpy(dst->data, a->data, nbytes);
+    observer->owner->record_aicas_activation(observer->tensor_name, (const float *) a->data, ggml_nelements(a));
+}
 
 struct clip_graph {
     clip_ctx * ctx;
@@ -787,7 +1059,7 @@ struct clip_graph {
             // https://github.com/huggingface/transformers/blob/0a950e0bbe1ed58d5401a6b547af19f15f0c195e/src/transformers/models/idefics3/modeling_idefics3.py#L578
             const int scale_factor = model.hparams.proj_scale_factor;
             cur = build_patch_merge_permute(cur, scale_factor);
-            cur = ggml_mul_mat(ctx0, model.projection, cur);
+            cur = build_mmproj_linear(model.projection, cur, "projector", -1);
 
         } else if (ctx->proj_type() == PROJECTOR_TYPE_LFM2) {
             // pixel unshuffle block
@@ -1460,17 +1732,17 @@ struct clip_graph {
 
             // self-attention
             {
-                ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.q_w, cur);
+                ggml_tensor * Qcur = build_mmproj_linear(layer.q_w, cur, "attn_q", il);
                 if (layer.q_b) {
                     Qcur = ggml_add(ctx0, Qcur, layer.q_b);
                 }
 
-                ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.k_w, cur);
+                ggml_tensor * Kcur = build_mmproj_linear(layer.k_w, cur, "attn_k", il);
                 if (layer.k_b) {
                     Kcur = ggml_add(ctx0, Kcur, layer.k_b);
                 }
 
-                ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.v_w, cur);
+                ggml_tensor * Vcur = build_mmproj_linear(layer.v_w, cur, "attn_v", il);
                 if (layer.v_b) {
                     Vcur = ggml_add(ctx0, Vcur, layer.v_b);
                 }
@@ -1941,17 +2213,17 @@ private:
 
             // self-attention
             {
-                ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.q_w, cur);
+                ggml_tensor * Qcur = build_mmproj_linear(layer.q_w, cur, "attn_q", il);
                 if (layer.q_b) {
                     Qcur = ggml_add(ctx0, Qcur, layer.q_b);
                 }
 
-                ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.k_w, cur);
+                ggml_tensor * Kcur = build_mmproj_linear(layer.k_w, cur, "attn_k", il);
                 if (layer.k_b) {
                     Kcur = ggml_add(ctx0, Kcur, layer.k_b);
                 }
 
-                ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.v_w, cur);
+                ggml_tensor * Vcur = build_mmproj_linear(layer.v_w, cur, "attn_v", il);
                 if (layer.v_b) {
                     Vcur = ggml_add(ctx0, Vcur, layer.v_b);
                 }
@@ -2061,6 +2333,79 @@ private:
         return inp_raw;
     }
 
+    ggml_tensor * maybe_observe_mmproj_activation(ggml_tensor * act, const char * tensor_name) const {
+        auto * observer = ctx->get_aicas_activation_observer(tensor_name);
+        if (observer == nullptr) {
+            return act;
+        }
+
+        return ggml_map_custom1(
+            ctx0,
+            act,
+            clip_collect_activation_f32_passthrough,
+            1,
+            observer);
+    }
+
+    ggml_tensor * build_mmproj_linear(ggml_tensor * weight, ggml_tensor * act, const char * label, int il) const {
+        GGML_ASSERT(weight != nullptr);
+        GGML_ASSERT(act != nullptr);
+        act = maybe_observe_mmproj_activation(act, weight->name);
+
+        auto it = model.aicas_w8a8_tensors.find(weight->name);
+        if (!model.aicas_w8a8_enabled || it == model.aicas_w8a8_tensors.end()) {
+            return ggml_mul_mat(ctx0, weight, act);
+        }
+
+        const auto & cfg = it->second;
+        if (!cfg.enabled || cfg.policy != "W8A8") {
+            return ggml_mul_mat(ctx0, weight, act);
+        }
+
+        const bool ok_shape =
+            weight->type == GGML_TYPE_I8 &&
+            act->type == GGML_TYPE_F32 &&
+            cfg.act_scale > 0.0f &&
+            weight->ne[2] == 1 && weight->ne[3] == 1 &&
+            act->ne[2] == 1 && act->ne[3] == 1 &&
+            act->ne[0] == weight->ne[0] &&
+            cfg.weight_scale.size() == (size_t) weight->ne[1] &&
+            cfg.sum_w.size() == (size_t) weight->ne[1];
+
+        if (!ok_shape) {
+            if (ctx->aicas_w8a8_debug) {
+                LOG_WRN(
+                    "%s: fallback to ggml_mul_mat for %s (layer=%d, weight=%s, wtype=%s, acttype=%s, wshape=[%" PRId64 ",%" PRId64 "], ashape=[%" PRId64 ",%" PRId64 "], scale_len=%zu, sumw_len=%zu)\n",
+                    __func__,
+                    label,
+                    il,
+                    weight->name,
+                    ggml_type_name(weight->type),
+                    ggml_type_name(act->type),
+                    weight->ne[0], weight->ne[1],
+                    act->ne[0], act->ne[1],
+                    cfg.weight_scale.size(),
+                    cfg.sum_w.size());
+            }
+            return ggml_mul_mat(ctx0, weight, act);
+        }
+
+        ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, weight->ne[1], act->ne[1]);
+        ggml_tensor * out = ggml_map_custom3(
+            ctx0,
+            out_template,
+            act,
+            weight,
+            clip_compute_w8a8_mul_mat,
+            GGML_N_TASKS_MAX,
+            (void *) &cfg);
+
+        if (ctx->aicas_w8a8_debug) {
+            LOG_DBG("%s: using W8A8 for %s (layer=%d)\n", __func__, weight->name, il);
+        }
+        return out;
+    }
+
     ggml_tensor * build_norm(
             ggml_tensor * cur,
             ggml_tensor * mw,
@@ -2102,7 +2447,7 @@ private:
             ffn_op_type type_op,
             int il) const {
 
-        ggml_tensor * tmp = up ? ggml_mul_mat(ctx0, up, cur) : cur;
+        ggml_tensor * tmp = up ? build_mmproj_linear(up, cur, "ffn_up", il) : cur;
         cb(tmp, "ffn_up", il);
 
         if (up_b) {
@@ -2111,7 +2456,7 @@ private:
         }
 
         if (gate) {
-            cur = ggml_mul_mat(ctx0, gate, cur);
+            cur = build_mmproj_linear(gate, cur, "ffn_gate", il);
             cb(cur, "ffn_gate", il);
 
             if (gate_b) {
@@ -2159,7 +2504,7 @@ private:
         }
 
         if (down) {
-            cur = ggml_mul_mat(ctx0, down, cur);
+            cur = build_mmproj_linear(down, cur, "ffn_down", il);
         }
 
         if (down_b) {
@@ -2220,7 +2565,7 @@ private:
         cb(cur, "kqv_out", il);
 
         if (wo) {
-            cur = ggml_mul_mat(ctx0, wo, cur);
+            cur = build_mmproj_linear(wo, cur, "attn_out_proj", il);
         }
 
         if (wo_b) {
@@ -2698,6 +3043,8 @@ struct clip_model_loader {
                     break;
             }
 
+            load_aicas_w8a8(model);
+
             LOG_INF("%s: projector:          %s\n", __func__, proj_type.c_str());
             LOG_INF("%s: n_embd:             %d\n", __func__, hparams.n_embd);
             LOG_INF("%s: n_head:             %d\n", __func__, hparams.n_head);
@@ -3151,6 +3498,84 @@ struct clip_model_loader {
         }
     }
 
+    void get_arr_f32(const std::string & key, std::vector<float> & output, bool required = true) {
+        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        if (i < 0) {
+            if (required) throw std::runtime_error("Key not found: " + key);
+            return;
+        }
+        const int n = gguf_get_arr_n(ctx_gguf.get(), i);
+        output.resize(n);
+        const float * values = (const float *) gguf_get_arr_data(ctx_gguf.get(), i);
+        for (int j = 0; j < n; ++j) {
+            output[j] = values[j];
+        }
+    }
+
+    void get_arr_i32(const std::string & key, std::vector<int32_t> & output, bool required = true) {
+        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        if (i < 0) {
+            if (required) throw std::runtime_error("Key not found: " + key);
+            return;
+        }
+        const int n = gguf_get_arr_n(ctx_gguf.get(), i);
+        output.resize(n);
+        const int32_t * values = (const int32_t *) gguf_get_arr_data(ctx_gguf.get(), i);
+        for (int j = 0; j < n; ++j) {
+            output[j] = values[j];
+        }
+    }
+
+    void load_aicas_w8a8(clip_model & model) {
+        std::string schema;
+        get_string("aicas.w8a8.schema", schema, false);
+        if (schema.empty()) {
+            return;
+        }
+
+        int tensor_count = 0;
+        get_i32("aicas.w8a8.tensor_count", tensor_count);
+        if (tensor_count < 0) {
+            throw std::runtime_error("Invalid aicas.w8a8.tensor_count");
+        }
+
+        model.aicas_w8a8_enabled = true;
+        model.aicas_w8a8_schema = schema;
+        model.aicas_w8a8_tensors.clear();
+        model.aicas_w8a8_tensors.reserve((size_t) tensor_count);
+
+        for (int i = 0; i < tensor_count; ++i) {
+            const std::string prefix = "aicas.w8a8.tensor." + std::to_string(i) + ".";
+
+            std::string tensor_name;
+            get_string(prefix + "name", tensor_name);
+            if (tensor_name.empty()) {
+                throw std::runtime_error("Empty tensor name in AICAS W8A8 metadata");
+            }
+
+            clip_aicas_w8a8_tensor cfg;
+            get_bool(prefix + "enabled", cfg.enabled, false);
+            get_string(prefix + "policy", cfg.policy, false);
+            if (cfg.policy.empty()) {
+                cfg.policy = "F16_FALLBACK";
+            }
+
+            if (cfg.enabled && cfg.policy == "W8A8") {
+                get_f32(prefix + "act_scale", cfg.act_scale);
+                int act_zero_point = 0;
+                get_i32(prefix + "act_zero_point", act_zero_point);
+                cfg.act_zero_point = act_zero_point;
+                get_arr_f32(prefix + "weight_scale", cfg.weight_scale);
+                get_arr_i32(prefix + "sum_w", cfg.sum_w);
+            }
+
+            model.aicas_w8a8_tensors[tensor_name] = std::move(cfg);
+        }
+
+        LOG_INF("%s: AICAS W8A8 enabled, schema=%s, tensors=%d\n",
+                __func__, model.aicas_w8a8_schema.c_str(), tensor_count);
+    }
+
     void set_llava_uhd_res_candidates(clip_model & model, const int max_patches_per_side) {
         auto & hparams = model.hparams;
         for (int x = 1; x <= max_patches_per_side; x++) {
@@ -3178,6 +3603,9 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
         if (loader.has_vision) {
             ctx_vision = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_vision->model, CLIP_MODALITY_VISION);
+            if (ctx_vision->model.aicas_w8a8_enabled) {
+                ctx_vision->force_cpu_backend_for_w8a8();
+            }
             loader.load_tensors(*ctx_vision);
             loader.alloc_compute_meta(*ctx_vision);
         }
@@ -3185,6 +3613,9 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
         if (loader.has_audio) {
             ctx_audio = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_audio->model, CLIP_MODALITY_AUDIO);
+            if (ctx_audio->model.aicas_w8a8_enabled) {
+                ctx_audio->force_cpu_backend_for_w8a8();
+            }
             loader.load_tensors(*ctx_audio);
             loader.alloc_compute_meta(*ctx_audio);
         }

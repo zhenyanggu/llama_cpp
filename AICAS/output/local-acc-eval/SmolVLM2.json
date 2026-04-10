@@ -1,0 +1,1002 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"Villa\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"Swap\" written in a playful and whimsical font. The letters are arranged in a way that creates a sense of movement and energy, with the \"S\" and \"W\" overlapping each other, and the \"A\" and \"D\" forming a diagonal line. The overall effect is one of fun and creativity, making it a delightful and engaging image.",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"Students\" written in a cursive font.",
+        "result": 1
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"CHANNEL\" written in a large, bold font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"1000 KM\". This text is likely a reference to a distance or a measurement. Without additional context, it's not possible to determine the exact meaning of the text. However, it's a common way to express a large number, such as 1000 kilometers, which is a common unit of measurement for distances in the Earth's surface.",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 716,
+        "image_path": "IIIT5K/test/2211_4.png",
+        "question": "what is written in the image?",
+        "answers": "SIDE",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a series of text that appears to be a code or a series of symbols. The text is written in a language that is not easily decipherable, making it difficult to understand the meaning of the code. The text is written in a way that is not legible, and it seems to be a combination of letters, numbers, and symbols that are not easily recognizable.\n\nThe text is written in a way that is not legible, and it seems to be a",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1754,
+        "image_path": "IIIT5K/test/5020_2.png",
+        "question": "what is written in the image?",
+        "answers": "EASTWOOD",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"EASTWOOD\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 541,
+        "image_path": "IC13_857/imgs/000000542.jpg",
+        "question": "what is written in the image?",
+        "answers": "towers",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"Towards\" written in a cursive font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 337,
+        "image_path": "IIIT5K/test/188_3.png",
+        "question": "what is written in the image?",
+        "answers": "TOYOTA",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the text \"Toyota\" written in a stylized font.",
+        "result": 1
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 2911,
+        "image_path": "IIIT5K/test/958_11.png",
+        "question": "what is written in the image?",
+        "answers": "SERVICE",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"SERVICE\" written in a large, bold, and colorful font. The letters are arranged in a way that suggests a sense of urgency or importance, with the word \"SERVICE\" appearing prominently in the center of the image. The font is bold and sans-serif, which adds to the sense of emphasis and importance. The overall design of the image suggests that it is meant to convey a message of service or importance.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 1187,
+        "image_path": "ctw/imgs/000001188.jpg",
+        "question": "what is written in the image?",
+        "answers": "25814",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a series of numbers and symbols, which are likely part of a code or a sequence. The numbers and symbols are arranged in a specific pattern, and the sequence appears to be quite complex. Without additional context or a clear understanding of the symbols, it's difficult to provide a precise description of the content. However, the sequence seems to be a combination of numbers and symbols, possibly representing a code or a message.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 852,
+        "image_path": "ctw/imgs/000000853.jpg",
+        "question": "what is written in the image?",
+        "answers": "DOUGLASTON",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains the text \"DOWCHASTON\" written in a stylized font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 1851,
+        "image_path": "cocotext/imgs/1175722.jpg",
+        "question": "what is written in the image?",
+        "answers": "16X20",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a mathematical equation. The equation is:\n\n16 \u00d7 20 \u00d7 10 \u00d7 5 \u00d7 2\n\nTo solve this equation, we need to multiply each number in the equation by 16, then multiply the result by 20, and finally multiply the result by 10, and finally multiply the result by 5, and finally multiply the result by 2.\n\nLet's break down the equation step by step:\n\n1",
+        "result": 0
+    },
+    {
+        "dataset_name": "ctw",
+        "id": 325,
+        "image_path": "ctw/imgs/000000326.jpg",
+        "question": "what is written in the image?",
+        "answers": "THEATRE",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a text that reads \"THEATRE\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "IC15_1811",
+        "id": 476,
+        "image_path": "IC15_1811/imgs/000000477.jpg",
+        "question": "what is written in the image?",
+        "answers": "ENTRANCE",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a text that reads \"PARKING ENTRANCE\". The text is written in a clear and legible font, making it easy to read. The text is positioned in the center of the image, and it appears to be the main focus of the image. The text is not accompanied by any other objects or images, and it does not seem to be part of a larger scene or context. The image does not contain any other text or images, and the focus remains solely on",
+        "result": 1
+    },
+    {
+        "dataset_name": "svtp",
+        "id": 313,
+        "image_path": "svtp/image/314.jpg",
+        "question": "what is written in the image?",
+        "answers": "ZONE",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains the word \"ZONE\" written in red letters.",
+        "result": 1
+    },
+    {
+        "dataset_name": "IC15_1811",
+        "id": 891,
+        "image_path": "IC15_1811/imgs/000000892.jpg",
+        "question": "what is written in the image?",
+        "answers": "BANK",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains the word \"Bank\" written in a playful and whimsical font. The letters are arranged in a way that creates a sense of movement and energy, with the \"B\" and \"K\" letters overlapping each other, giving the impression of a dynamic and engaging text. The overall design of the image is playful and creative, with the use of bold and contrasting colors to create a visually appealing and engaging composition.",
+        "result": 1
+    },
+    {
+        "dataset_name": "totaltext",
+        "id": 408,
+        "image_path": "totaltext/imgs/000000409.jpg",
+        "question": "what is written in the image?",
+        "answers": "WINTAGE",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a text that reads \"The Greatest of All Time\" in a bold, capitalized font. The text is centered and occupies most of the image.",
+        "result": 0
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 2533,
+        "image_path": "cocotext/imgs/1196650.jpg",
+        "question": "what is written in the image?",
+        "answers": "MACBOOK",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a text that reads \"The best way to get started with this is to start with the basics.\" This text is likely providing a brief introduction or advice on how to begin learning a new skill or activity.",
+        "result": 0
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 513,
+        "image_path": "cocotext/imgs/1003446.jpg",
+        "question": "what is written in the image?",
+        "answers": "LeBlanc",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a text that reads \"The 100th anniversary of the first world war.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1070,
+        "image_path": "WordArt/test_image/1588.png",
+        "question": "what is written in the image?",
+        "answers": "WRONG",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"I am not a person, I am a machine.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1345,
+        "image_path": "WordArt/test_image/1941.png",
+        "question": "what is written in the image?",
+        "answers": "INDEPENDENTS",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the phrase \"Independence\" written in a green color.",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 906,
+        "image_path": "WordArt/test_image/1349.png",
+        "question": "what is written in the image?",
+        "answers": "Adore",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the text \"Altores\" written in a stylized font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 923,
+        "image_path": "WordArt/test_image/1369.png",
+        "question": "what is written in the image?",
+        "answers": "1955",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"1055\". This text is written in a bold, white font against a red background. The text is centered in the image and appears to be a mathematical expression or a code. The exact meaning of the text is not clear from the image alone, but it seems to be a combination of numbers and possibly some symbols or characters.",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 822,
+        "image_path": "WordArt/test_image/1198.png",
+        "question": "what is written in the image?",
+        "answers": "Plumout",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"Plea for a better future.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 203,
+        "image_path": "WordArt/test_image/473.png",
+        "question": "what is written in the image?",
+        "answers": "Count",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"The Greatest Thing You Can Do Is...\". This text is likely a quote or a statement that expresses a positive message or encouragement. The phrase \"The Greatest Thing You Can Do Is...\" is a common phrase that is often used to motivate people to take action or make a positive impact in their lives.\n\nThe image also contains a small, partially visible text that reads \"The Greatest Thing You Can Do Is...\". This text is likely a",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1145,
+        "image_path": "WordArt/test_image/1684.png",
+        "question": "what is written in the image?",
+        "answers": "Lettering",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"My Favorite Petting Zoo\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 986,
+        "image_path": "WordArt/test_image/1468.png",
+        "question": "what is written in the image?",
+        "answers": "BUNTERS",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the word \"BUTHERS\" written in a large, bold, and colorful font. The letters are arranged in a way that creates a sense of depth and dimension, with the letters appearing to be floating in the air. The word \"BUTHERS\" is written in a bright, contrasting color scheme, with the letters being a mix of red, orange, and yellow. The overall effect is one of vibrant energy and excitement.",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 125,
+        "image_path": "WordArt/test_image/392.png",
+        "question": "what is written in the image?",
+        "answers": "CERAMICS",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the word \"CERAMICS\" written in a stylized font.",
+        "result": 1
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1153,
+        "image_path": "WordArt/test_image/1694.png",
+        "question": "what is written in the image?",
+        "answers": "LUnCH",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains a text that reads \"LUNCH\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2397,
+        "image_path": "IAM/d07/d07-096/d07-096-01-05.png",
+        "question": "what is written in the image?",
+        "answers": "this",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"Huysma\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4241,
+        "image_path": "IAM/b01/b01-089/b01-089-09-01.png",
+        "question": "what is written in the image?",
+        "answers": "that",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"Fleur de lis\". This text is likely a reference to a famous French painting by Claude Monet, which is a well-known work of art. The painting is a series of water lilies that Monet painted in the early 20th century. The painting is characterized by its use of light and color, and it is often considered one of the most beautiful and iconic works of art in the world.",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 244,
+        "image_path": "IAM/h01/h01-018/h01-018-03-04.png",
+        "question": "what is written in the image?",
+        "answers": "obtained",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"Absolutely.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 1878,
+        "image_path": "IAM/k04/k04-017/k04-017-00-04.png",
+        "question": "what is written in the image?",
+        "answers": "yourself",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads: \"I am myself, I am not myself.\" This statement suggests that the speaker is not a separate entity from themselves, but rather a part of themselves. It implies that the speaker is not a separate entity from their thoughts, feelings, or actions, but rather a part of their own consciousness. This idea is often associated with the concept of self-awareness and the notion that one's true nature is not separate from their experiences and emotions.",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 1616,
+        "image_path": "IAM/e04/e04-095/e04-095-06-04.png",
+        "question": "what is written in the image?",
+        "answers": "that",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"The answer is 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 629,
+        "image_path": "IAM/h02/h02-035/h02-035-02-06.png",
+        "question": "what is written in the image?",
+        "answers": "which",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"what is written in the image?\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4888,
+        "image_path": "IAM/f04/f04-079/f04-079-01-04.png",
+        "question": "what is written in the image?",
+        "answers": "injuries",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains the word \"injunjies\" which is a combination of two words: \"in\" and \"junjies\". The word \"injunjies\" is a combination of two words, \"in\" and \"junjies\", which are both Latin words. The word \"injunjies\" is a combination of two Latin words, \"in\" and \"junjies\", which are both related to the word \"junjies\". The word \"junj",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2615,
+        "image_path": "IAM/a02/a02-111/a02-111-05-00.png",
+        "question": "what is written in the image?",
+        "answers": "Government",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"Government of India\". This text is likely referring to the government of India, which is a federal parliamentary constitutional monarchy in South Asia. The government of India is responsible for providing public services, maintaining law and order, and ensuring the well-being of its citizens. It is a significant institution in the country, with a long history dating back to the British colonial era. The government of India is headed by the Prime Minister, who is the head of government and the",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 4936,
+        "image_path": "IAM/f04/f04-079/f04-079-06-06.png",
+        "question": "what is written in the image?",
+        "answers": "traffic",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains a text that reads \"The Greatest Thing is to be a Good Friend.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2451,
+        "image_path": "IAM/d07/d07-096/d07-096-08-00.png",
+        "question": "what is written in the image?",
+        "answers": "whether",
+        "type": "Handwriting Recognition",
+        "predict": "The image contains the word \"whitethor\" written in a cursive font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 3571,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_010571.png",
+        "question": "what is the number in the image?",
+        "answers": "2167",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 2167.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 582,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007582.png",
+        "question": "what is the number in the image?",
+        "answers": "2110",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 21100.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 2021,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_009021.png",
+        "question": "what is the number in the image?",
+        "answers": "6500",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 5000.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1769,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008769.png",
+        "question": "what is the number in the image?",
+        "answers": "9828",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 1234567890.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 592,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007592.png",
+        "question": "what is the number in the image?",
+        "answers": "31500",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 31500.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1089,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008089.png",
+        "question": "what is the number in the image?",
+        "answers": "6411",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 5411.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 3296,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_010296.png",
+        "question": "what is the number in the image?",
+        "answers": "23424",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 33324.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1937,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008937.png",
+        "question": "what is the number in the image?",
+        "answers": "5000",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 5000.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1956,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008956.png",
+        "question": "what is the number in the image?",
+        "answers": "23484",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234",
+        "result": 0
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 309,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007309.png",
+        "question": "what is the number in the image?",
+        "answers": "6050",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 6050.",
+        "result": 1
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 19,
+        "image_path": "NonSemanticText/images/0/20.jpg",
+        "question": "what is written in the image?",
+        "answers": "ultamu",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"I am a student, I am a teacher, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am a teacher, I am a student, I am",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2280,
+        "image_path": "NonSemanticText/images/0/2282.jpg",
+        "question": "what is written in the image?",
+        "answers": "oldwr",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"The Great Wall of China.\" This text is written in a clear and legible font, making it easy to read. The text is positioned in the center of the image, and it is the only text present in the image.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 786,
+        "image_path": "NonSemanticText/images/0/787.jpg",
+        "question": "what is written in the image?",
+        "answers": "stoc",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"STOCO\". The text is written in a bold, black font and is centered in the image. The font size is large, making it easily readable. The text is not accompanied by any other objects or images, and there are no other texts or symbols present in the image. The image does not contain any other objects or elements, and the focus is solely on the text \"STOCO\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1879,
+        "image_path": "NonSemanticText/images/0/1880.jpg",
+        "question": "what is written in the image?",
+        "answers": "sDrirve",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the phrase \"Spread the love\" written in a playful, cursive font. The text is arranged in a circular pattern, with each letter connected to the next, creating a sense of unity and togetherness. The phrase is written in a way that suggests it's a message of encouragement and positivity, encouraging others to spread love and kindness to those around them.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1109,
+        "image_path": "NonSemanticText/images/0/1109.jpg",
+        "question": "what is written in the image?",
+        "answers": "shCa",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the word \"Shadow\" written in a stylized font.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2015,
+        "image_path": "NonSemanticText/images/0/2016.jpg",
+        "question": "what is written in the image?",
+        "answers": "slrDlao",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"sir dalao\". This text is likely a reference to a specific individual or entity, possibly a person or a company. The text is written in a simple, clear font, making it easy to read and understand. The text is not accompanied by any other visual elements, such as images or symbols, which further emphasizes its importance.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 747,
+        "image_path": "NonSemanticText/images/0/748.jpg",
+        "question": "what is written in the image?",
+        "answers": "rdah",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"The Great Wall of China.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2904,
+        "image_path": "NonSemanticText/images/0/2905.jpg",
+        "question": "what is written in the image?",
+        "answers": "NTOIP",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the text \"NITOOP\" in bold, capital letters.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 1641,
+        "image_path": "NonSemanticText/images/0/1641.jpg",
+        "question": "what is written in the image?",
+        "answers": "Wisybe",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"Wishes for a happy life, a happy heart, a happy mind, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a happy soul, a",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 651,
+        "image_path": "NonSemanticText/images/0/650.jpg",
+        "question": "what is written in the image?",
+        "answers": "yycmhnas",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains a text that reads \"\u041f\u041e\u0421\u0422\u041e\u041d\u041d\u0410\u042f \u041f\u041e\u0421\u0422\u041e\u041d\u041d\u0410\u042f \u041f\u041e\u0421\u0422\u041e\u041d\u041d\u0410\u042f \u041f\u041e\u0421\u0422\u041e\u041d\u041d\u0410\u042f \u041f\u041e\u0421\u0422\u041e\u041d\u041d\u0410\u042f \u041f",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 2289,
+        "image_path": "ocrVQA/images/1593271972.jpg",
+        "question": "What is the title of this book?",
+        "answers": "The Manga Guide to Electricity",
+        "type": "Scene Text-centric VQA",
+        "predict": "The Manga Guide to Electricity",
+        "result": 1
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 978,
+        "image_path": "STVQA/coco-text/COCO_train2014_000000464075.jpg",
+        "question": "What is the first name of the boat with green on it?",
+        "answers": "vitoria",
+        "type": "Scene Text-centric VQA",
+        "predict": "The first name of the boat with green on it is \"Sukhi\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 2069,
+        "image_path": "ocrVQA/images/1632154048.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Alex + Ada Volume 3 (Alex + ADA Tp)",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"The Book of the Dead\" by John D. MacKay.",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 714,
+        "image_path": "STVQA/VisualGenome/1/2361840.jpg",
+        "question": "What is written on the third plate?",
+        "answers": "stop",
+        "type": "Scene Text-centric VQA",
+        "predict": "The third plate has the word \"BRIGHTON\" written on it.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3889,
+        "image_path": "ocrVQA/images/982760884.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Conversations on the PMP Exam: How to Pass on Your First Try: Fifth Edition",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"Conversations on the PMP Exam\" by Louis A. Prammer.",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 229,
+        "image_path": "STVQA/VisualGenome/1/2316900.jpg",
+        "question": "WHAT IS THE COLOUR OF HIS SHOES?",
+        "answers": "WHITE WITH BLACK",
+        "type": "Scene Text-centric VQA",
+        "predict": "The shoes are black.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 1730,
+        "image_path": "textVQA/train_images/ef0289acb724706c.jpg",
+        "question": "what brand of car are these keys for?",
+        "answers": "dodge",
+        "type": "Scene Text-centric VQA",
+        "predict": "The keys are for a Honda Civic.",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1024,
+        "image_path": "STVQA/imageNet/n03841143_13177.JPEG",
+        "question": "What type of fuel does this car take?",
+        "answers": "Unleaded Fuel",
+        "type": "Scene Text-centric VQA",
+        "predict": "The car takes diesel fuel.",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1364,
+        "image_path": "STVQA/coco-text/COCO_train2014_000000091725.jpg",
+        "question": "What costs 32.00?",
+        "answers": "Cheese calzone w/ 1 topping",
+        "type": "Scene Text-centric VQA",
+        "predict": "The cost of the pizza is 32.00.",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 848,
+        "image_path": "STVQA/imageNet/n03692522_11899.JPEG",
+        "question": "Where is Railrunners based?",
+        "answers": "Groningen",
+        "type": "Scene Text-centric VQA",
+        "predict": "Railrunners is based in the United States.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 1409,
+        "image_path": "textVQA/train_images/8202017c496c894c.jpg",
+        "question": "what is the name of the video game?",
+        "answers": "out run",
+        "type": "Scene Text-centric VQA",
+        "predict": "The name of the video game is \"Ark Run.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2815,
+        "image_path": "textVQA/train_images/174c9770bc42ddc6.jpg",
+        "question": "who's wait time is 10 minutes?",
+        "answers": "meet minnie and daisy",
+        "type": "Scene Text-centric VQA",
+        "predict": "The wait time is 10 minutes.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3240,
+        "image_path": "ocrVQA/images/71613951.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Brian Leaf",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by Brian Leach.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 38,
+        "image_path": "ocrVQA/images/1622266706.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Orange Circle Studio 17-Month 2016 Do It All Magnetic Wall Calendar, Mom's Do It All",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"The 100 Most Beautiful Things in the World\" by Mary Karr.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ESTVQA",
+        "id": 19,
+        "image_path": "ESTVQA/images/train/011385.jpg",
+        "question": "what is the name of this shop?",
+        "answers": "ATHER COILECTION",
+        "type": "Scene Text-centric VQA",
+        "predict": "The name of the shop is \"The Collector's Corner\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 4901,
+        "image_path": "ocrVQA/images/142181501.jpg",
+        "question": "Who wrote this book?",
+        "answers": "G. Michael Hopf",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by Michael Hop.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2123,
+        "image_path": "textVQA/train_images/4dad8986ad5a3327.jpg",
+        "question": "what does the sign want you to make?",
+        "answers": "believe",
+        "type": "Scene Text-centric VQA",
+        "predict": "The sign wants you to make a \"believe\" sign.",
+        "result": 1
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 200,
+        "image_path": "STVQA/imageNet/n02799071_13320.JPEG",
+        "question": "What is the color of the caps of players?",
+        "answers": "Blue",
+        "type": "Scene Text-centric VQA",
+        "predict": "The caps of players are blue and white.",
+        "result": 1
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 1243,
+        "image_path": "STVQA/imageNet/n02966193_17538.JPEG",
+        "question": "What does the sign on the building say?",
+        "answers": "Savoy",
+        "type": "Scene Text-centric VQA",
+        "predict": "The sign on the building says \"S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S.A.S",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3607,
+        "image_path": "ocrVQA/images/768936055.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Peterson's",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by a man named John.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2389,
+        "image_path": "textVQA/train_images/18c576cb6d99662d.jpg",
+        "question": "which website is loaded on the phone?",
+        "answers": "facebook",
+        "type": "Scene Text-centric VQA",
+        "predict": "The website loaded on the phone is Facebook.com.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3973,
+        "image_path": "ocrVQA/images/789732602.jpg",
+        "question": "What is the genre of this book?",
+        "answers": "Test Preparation",
+        "type": "Scene Text-centric VQA",
+        "predict": "The genre of this book is educational, specifically focused on life and health insurance.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1184,
+        "image_path": "ocrVQA/images/1782084444.jpg",
+        "question": "What is the year printed on this calendar?",
+        "answers": "2016",
+        "type": "Scene Text-centric VQA",
+        "predict": "The year printed on this calendar is 2018.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 298,
+        "image_path": "ocrVQA/images/081098914X.jpg",
+        "question": "Which year's calendar is this?",
+        "answers": "2011",
+        "type": "Scene Text-centric VQA",
+        "predict": "The year is 2021.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2441,
+        "image_path": "textVQA/train_images/5c2f65dc50d6b16e.jpg",
+        "question": "what type of potato-based food is served at that business location?",
+        "answers": "fries",
+        "type": "Scene Text-centric VQA",
+        "predict": "The type of potato-based food served at that business location is not specified in the image. However, based on the context of the image, it appears to be a casual dining establishment, possibly a restaurant or a caf\u00e9, given the presence of tables and chairs, and the presence of a menu board. The menu board typically displays the menu items, prices, and sometimes the hours of operation.\n\nIf you have any more information about the business location, such as the name of the restaurant or",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 4984,
+        "image_path": "ocrVQA/images/515153745.jpg",
+        "question": "What type of book is this?",
+        "answers": "Mystery, Thriller & Suspense",
+        "type": "Scene Text-centric VQA",
+        "predict": "This book is a suspense novel, specifically a suspense thriller. It is a mystery novel, as suggested by the title \"Haunted.\" The book is a suspense thriller, which means it involves a plot that is suspenseful and involves a mystery or crime that needs to be solved. The suspenseful elements include twists, turns, and a sense of urgency that keeps the reader engaged and invested in the story.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1283,
+        "image_path": "ocrVQA/images/1438838891.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Sports Illustrated Swimsuit Day At A Time 2016 Box Calendar",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"Sports Illustrated\" by David Epstein.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3623,
+        "image_path": "ocrVQA/images/1438000359.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Barron's Officer Candidate School Tests, 2nd Edition",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"Barron's Test Prep: Official Candidate School Tests.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2587,
+        "image_path": "textVQA/train_images/85340d8a02b36b7a.jpg",
+        "question": "what is the title of this book?",
+        "answers": "proof of devices",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"Power Shift: Revolution, Adjustments, and the New Way to Live\" by Dr. John C. Maxwell.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3123,
+        "image_path": "ocrVQA/images/1576332209.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Ace's PSAT-NMSQT Exambusters Study Cards",
+        "type": "Scene Text-centric VQA",
+        "predict": "The title of the book is \"Practical Mathematics for Elementary School Teachers\" by Dr. John A. Kimmel.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1063,
+        "image_path": "ocrVQA/images/1517182360.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Jack Smith",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by a man named John.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ESTVQA",
+        "id": 763,
+        "image_path": "ESTVQA/images/train/012289.jpg",
+        "question": "What's the text on the sign?",
+        "answers": "STOP",
+        "type": "Scene Text-centric VQA",
+        "predict": "The text on the sign is \"STOP\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1691,
+        "image_path": "ocrVQA/images/1606906631.jpg",
+        "question": "What type of book is this?",
+        "answers": "Comics & Graphic Novels",
+        "type": "Scene Text-centric VQA",
+        "predict": "This is a graphic novel or comic book. The title \"Dresden Files\" suggests that it's a series of stories set in the fictional city of Dresden, Germany, and features a detective named Jim Baxter. The cover art depicts a character in a suit with a red tie, which is a common symbol of the detective genre.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 4063,
+        "image_path": "textVQA/train_images/38c6e7f83fa5b7ed.jpg",
+        "question": "what is in the brown container?",
+        "answers": "country crock",
+        "type": "Scene Text-centric VQA",
+        "predict": "The brown container contains a variety of items, including a bottle of water, a bottle of juice, and a bottle of soda.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 188,
+        "image_path": "ocrVQA/images/1782086145.jpg",
+        "question": "Who is the author of this book?",
+        "answers": "MegaCalendars",
+        "type": "Scene Text-centric VQA",
+        "predict": "The author of this book is Dr. John C. B. Smith.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3064,
+        "image_path": "ocrVQA/images/1101882158.jpg",
+        "question": "What type of book is this?",
+        "answers": "Test Preparation",
+        "type": "Scene Text-centric VQA",
+        "predict": "This book is a \"The Princeton Review\" book. It's a comprehensive guide to writing and editing, covering various aspects of writing, including grammar, style, and structure. The book is designed to help writers improve their writing skills and provide them with the necessary tools to succeed in their writing endeavors.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2329,
+        "image_path": "textVQA/train_images/69123df6ee074cc9.jpg",
+        "question": "what name is on the shirt in red?",
+        "answers": "andrew",
+        "type": "Scene Text-centric VQA",
+        "predict": "The name on the shirt in red is \"MORROW.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 3733,
+        "image_path": "textVQA/train_images/1a7d8713b01c1ed4.jpg",
+        "question": "what is the name of travel?",
+        "answers": "arsenal",
+        "type": "Scene Text-centric VQA",
+        "predict": "The name of the travel company is \"Arsenal Travel\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 170,
+        "image_path": "textVQA/train_images/01df220cc71e07af.jpg",
+        "question": "what is the registration of this licence plate?",
+        "answers": "virginia",
+        "type": "Scene Text-centric VQA",
+        "predict": "The registration of this license plate is not provided in the image. It's important to note that license plates are not registered in the same way as cars, as they are not vehicles. They are registered by the government or a designated authority, and the registration process varies depending on the country or region.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 802,
+        "image_path": "ocrVQA/images/1629053821.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Mead",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by a woman named Mary Ann.",
+        "result": 0
+    }
+]

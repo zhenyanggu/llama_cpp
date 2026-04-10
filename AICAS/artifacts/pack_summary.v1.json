@@ -1,0 +1,666 @@
+{
+  "schema": "smolvlm2_idefics3_static_w8a8_v1",
+  "source_gguf": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf",
+  "layer_manifest": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/artifacts/layer_manifest.json",
+  "quant_params_input": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/artifacts/layer_policy.v1.json",
+  "mode": "quantize",
+  "layers": [
+    {
+      "tensor_name": "mm.model.fc.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.054924663842893115,
+      "act_zero_point": 163,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.0.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.13271917455336626,
+      "act_zero_point": 126,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.0.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.00793443614361333,
+      "act_zero_point": 21,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.0.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.034459491804534316,
+      "act_zero_point": 134,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.0.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.007811431791268143,
+      "act_zero_point": 121,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.0.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.03370979720470952,
+      "act_zero_point": 126,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.0.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.039196964338714,
+      "act_zero_point": 111,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.1.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.061971004336488014,
+      "act_zero_point": 123,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.1.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.006293524012846105,
+      "act_zero_point": 27,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.1.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.044939086016486676,
+      "act_zero_point": 130,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.1.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.010963568500444,
+      "act_zero_point": 124,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.1.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.053954756493661916,
+      "act_zero_point": 110,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.1.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.03834644111932493,
+      "act_zero_point": 151,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.10.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.24736164317411535,
+      "act_zero_point": 130,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.10.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.02920725415734684,
+      "act_zero_point": 6,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.10.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.0646532601001216,
+      "act_zero_point": 157,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.10.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.012765818483689252,
+      "act_zero_point": 119,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.10.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06167760549807081,
+      "act_zero_point": 158,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.10.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06698347727457682,
+      "act_zero_point": 173,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.11.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.274170295864928,
+      "act_zero_point": 121,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.11.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.1552824874718984,
+      "act_zero_point": 1,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.11.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07867432388604856,
+      "act_zero_point": 148,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.11.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.018154499577540978,
+      "act_zero_point": 118,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.11.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.05323062410541609,
+      "act_zero_point": 150,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.11.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.09743417852065142,
+      "act_zero_point": 123,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.2.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.05002722646675858,
+      "act_zero_point": 142,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.2.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.0057065332637113685,
+      "act_zero_point": 30,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.2.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06742368024938247,
+      "act_zero_point": 142,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.2.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.011830693600224514,
+      "act_zero_point": 125,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.2.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.08334014742982154,
+      "act_zero_point": 127,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.2.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07171201518937653,
+      "act_zero_point": 146,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.3.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.04252021733452292,
+      "act_zero_point": 163,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.3.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.006371247067170985,
+      "act_zero_point": 27,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.3.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.0804991179821538,
+      "act_zero_point": 137,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.3.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.010719791113161573,
+      "act_zero_point": 115,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.3.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07090244480207855,
+      "act_zero_point": 145,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.3.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.0743683796302945,
+      "act_zero_point": 117,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.4.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06728409224865484,
+      "act_zero_point": 154,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.4.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.006462660957785213,
+      "act_zero_point": 26,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.4.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07299692490521599,
+      "act_zero_point": 111,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.4.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.01097410286174101,
+      "act_zero_point": 125,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.4.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.0712722105138442,
+      "act_zero_point": 157,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.4.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06861103282255285,
+      "act_zero_point": 134,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.5.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.046668385524375765,
+      "act_zero_point": 163,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.5.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.005638480186462402,
+      "act_zero_point": 30,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.5.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07086918213788201,
+      "act_zero_point": 153,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.5.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.011392841619603774,
+      "act_zero_point": 135,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.5.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07768580866794961,
+      "act_zero_point": 164,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.5.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07036859474930109,
+      "act_zero_point": 122,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.6.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.057289690129897174,
+      "act_zero_point": 180,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.6.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.005812997911490646,
+      "act_zero_point": 29,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.6.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.09164242837943283,
+      "act_zero_point": 158,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.6.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.01124558355294022,
+      "act_zero_point": 131,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.6.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06300564560235715,
+      "act_zero_point": 148,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.6.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07884261935364967,
+      "act_zero_point": 156,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.7.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.05620289409861845,
+      "act_zero_point": 174,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.7.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.008274203655766506,
+      "act_zero_point": 21,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.7.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.0717939526427026,
+      "act_zero_point": 139,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.7.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.01122719540315516,
+      "act_zero_point": 132,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.7.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07773590835870481,
+      "act_zero_point": 121,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.7.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06938344357060451,
+      "act_zero_point": 145,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.8.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.059545073789708754,
+      "act_zero_point": 164,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.8.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.008223728572621065,
+      "act_zero_point": 21,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.8.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.050978559606215536,
+      "act_zero_point": 139,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.8.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.01425034672606225,
+      "act_zero_point": 118,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.8.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06750282399794634,
+      "act_zero_point": 146,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.8.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.08423636567358878,
+      "act_zero_point": 138,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.9.ffn_down.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.11122812383315142,
+      "act_zero_point": 150,
+      "weight_scale_len": 3072,
+      "sum_w_len": 3072
+    },
+    {
+      "tensor_name": "v.blk.9.ffn_up.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.014628274768006568,
+      "act_zero_point": 12,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.9.attn_k.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07178153804704254,
+      "act_zero_point": 144,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.9.attn_out.weight",
+      "enabled": false,
+      "policy": "F16_FALLBACK",
+      "act_scale": 0.01773364216673608,
+      "act_zero_point": 132,
+      "weight_scale_len": 0,
+      "sum_w_len": 0
+    },
+    {
+      "tensor_name": "v.blk.9.attn_q.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.06403424132104013,
+      "act_zero_point": 165,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    },
+    {
+      "tensor_name": "v.blk.9.attn_v.weight",
+      "enabled": true,
+      "policy": "W8A8",
+      "act_scale": 0.07139728396546607,
+      "act_zero_point": 169,
+      "weight_scale_len": 768,
+      "sum_w_len": 768
+    }
+  ]
+}
