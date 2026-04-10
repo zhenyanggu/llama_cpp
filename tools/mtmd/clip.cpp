@@ -10,6 +10,9 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "gguf.h"
+#ifdef GGML_USE_NPU
+#include "ggml/src/ggml-npu/ggml-npu.h"
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -834,6 +837,52 @@ struct clip_ctx {
         if (backend != backend_cpu) {
             ggml_backend_free(backend_cpu);
         }
+    }
+
+    bool backend_is_npu() const {
+#ifdef GGML_USE_NPU
+        return ggml_backend_is_npu(backend);
+#else
+        return false;
+#endif
+    }
+
+    void register_aicas_w8a8_for_npu() const {
+#ifdef GGML_USE_NPU
+        if (!backend_is_npu() || !model.aicas_w8a8_enabled) {
+            return;
+        }
+
+        int registered = 0;
+        int failed = 0;
+        for (const auto & kv : model.aicas_w8a8_tensors) {
+            const std::string & tensor_name = kv.first;
+            const auto & cfg = kv.second;
+            if (!cfg.enabled || cfg.policy != "W8A8") {
+                continue;
+            }
+            if (cfg.weight_scale.empty() || cfg.sum_w.empty()) {
+                ++failed;
+                continue;
+            }
+
+            const bool ok = ggml_backend_npu_w8a8_register(
+                tensor_name.c_str(),
+                cfg.act_scale,
+                cfg.act_zero_point,
+                cfg.weight_scale.data(),
+                cfg.weight_scale.size(),
+                cfg.sum_w.data(),
+                cfg.sum_w.size());
+            if (ok) {
+                ++registered;
+            } else {
+                ++failed;
+            }
+        }
+
+        LOG_INF("%s: registered %d AICAS W8A8 tensors for NPU (%d failed)\n", __func__, registered, failed);
+#endif
     }
 
     void force_cpu_backend_for_w8a8() {
@@ -2362,6 +2411,15 @@ private:
             return ggml_mul_mat(ctx0, weight, act);
         }
 
+        if (ctx->backend_is_npu()) {
+            if (!ggml_is_contiguous(act)) {
+                act = ggml_cont(ctx0, act);
+            }
+            ggml_tensor * out = ggml_mul_mat(ctx0, weight, act);
+            ggml_set_name(out, weight->name);
+            return out;
+        }
+
         const bool ok_shape =
             weight->type == GGML_TYPE_I8 &&
             act->type == GGML_TYPE_F32 &&
@@ -3604,7 +3662,10 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             ctx_vision = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_vision->model, CLIP_MODALITY_VISION);
             if (ctx_vision->model.aicas_w8a8_enabled) {
-                ctx_vision->force_cpu_backend_for_w8a8();
+                ctx_vision->register_aicas_w8a8_for_npu();
+                if (!ctx_vision->backend_is_npu()) {
+                    ctx_vision->force_cpu_backend_for_w8a8();
+                }
             }
             loader.load_tensors(*ctx_vision);
             loader.alloc_compute_meta(*ctx_vision);
@@ -3614,7 +3675,10 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             ctx_audio = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_audio->model, CLIP_MODALITY_AUDIO);
             if (ctx_audio->model.aicas_w8a8_enabled) {
-                ctx_audio->force_cpu_backend_for_w8a8();
+                ctx_audio->register_aicas_w8a8_for_npu();
+                if (!ctx_audio->backend_is_npu()) {
+                    ctx_audio->force_cpu_backend_for_w8a8();
+                }
             }
             loader.load_tensors(*ctx_audio);
             loader.alloc_compute_meta(*ctx_audio);

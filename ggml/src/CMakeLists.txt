@@ -317,6 +317,7 @@ function(ggml_add_cpu_backend_variant tag_name)
 endfunction()
 
 ggml_add_backend(CPU)
+ggml_add_backend(NPU)
 
 if (GGML_CPU_ALL_VARIANTS)
     if (NOT GGML_BACKEND_DL)
