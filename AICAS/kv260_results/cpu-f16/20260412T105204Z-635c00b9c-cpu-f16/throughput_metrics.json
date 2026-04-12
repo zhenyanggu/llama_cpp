@@ -1,0 +1,10 @@
+{
+    "prompt_tokens": 188,
+    "completion_tokens": 267,
+    "total_tokens": 455,
+    "prompt_ms": 60120.24,
+    "decode_ms": 46195.381,
+    "total_ms": 106315.621,
+    "prefill_speed_tps": 3.1270666916832006,
+    "decode_speed_tps": 5.7797986339803105
+}

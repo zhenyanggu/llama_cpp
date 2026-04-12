@@ -7,7 +7,7 @@ Usage:
   run_local_acc_eval.sh [options]
 
 Run AICAS/acc_eval.py on the local machine in one command:
-1) prepare Python env (venv + deps)
+1) prepare Python env (optional venv only)
 2) start local llama-server
 3) run accuracy eval
 
@@ -24,7 +24,7 @@ Options:
   --python <python>        Python interpreter for venv creation.
   --venv-dir <path>        Venv dir (default: AICAS/.venv-acc-eval).
   --skip-venv              Use current Python directly.
-  --no-install             Do not install missing Python deps.
+  --no-install             Accepted for backward compatibility and ignored.
   -h, --help               Show this help.
 EOF
 }
@@ -220,24 +220,9 @@ setup_python() {
     EVAL_PYTHON="$VENV_DIR/bin/python"
   fi
 
-  if [ "$NO_INSTALL" -ne 1 ]; then
-    if ! "$EVAL_PYTHON" - <<'PY' >/dev/null 2>&1
-import openai
-import tqdm
-PY
-    then
-      "$EVAL_PYTHON" -m pip install --upgrade pip
-      "$EVAL_PYTHON" -m pip install openai tqdm
-    fi
-  fi
-
-  if ! "$EVAL_PYTHON" - <<'PY' >/dev/null 2>&1
-import openai
-import tqdm
-PY
+  if ! "$EVAL_PYTHON" -V >/dev/null 2>&1
   then
-    echo "Missing required Python packages: openai, tqdm" >&2
-    echo "Re-run without --no-install, or install manually in the selected Python environment." >&2
+    echo "Selected Python interpreter is not runnable: $EVAL_PYTHON" >&2
     exit 1
   fi
 }

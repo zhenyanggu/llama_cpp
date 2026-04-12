@@ -27,15 +27,16 @@ For KV260 throughput evaluation, `mmproj` is a meaningful bottleneck. Existing p
 
 The target hardware is a custom NPU connected through a runtime already present in this repository under:
 
-- [npuruntime/npu_runtime.h](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/npu_runtime.h)
-- [npuruntime/npu_runtime.cpp](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/npu_runtime.cpp)
+- [npuruntime/kv260/runtime/npu_runtime.h](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/kv260/runtime/npu_runtime.h)
+- [npuruntime/kv260/runtime/npu_runtime.cpp](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/kv260/runtime/npu_runtime.cpp)
 
 That runtime already provides:
 
-- a mapped NPU DDR region
-- allocation from that DDR via `npu_mem_alloc()`
+- a runtime-managed CMA buffer exposed through `mmap`
+- sub-allocation from that CMA heap via `npu_mem_alloc()`
 - internal virtual-to-physical translation inside the runtime
 - lower-level DMA / compute primitives
+- access to the KV260 device node `/dev/npu_kv260`
 
 Therefore, the integration does not need `ggml` or `llama.cpp` to provide physical addresses for ordinary host allocations.
 
@@ -69,7 +70,7 @@ The implementation must satisfy all of the following:
 1. The NPU compute core is assumed to perform matrix multiplication, not floating-point quantization or dequantization.
 2. Weight quantization and activation quantization are performed on the CPU side.
 3. Final output dequantization is also performed on the CPU side.
-4. The NPU-visible buffers must live in the NPU DDR allocated by `npu_mem_alloc()`.
+4. The NPU-visible buffers must live in the KV260 runtime's CMA heap allocated by `npu_mem_alloc()`.
 5. The implementation must be able to fall back safely to the original CPU path if any NPU precondition is not met.
 6. The integration must preserve current graph semantics unless an explicitly chosen fused path replaces them.
 
@@ -157,7 +158,7 @@ At runtime:
 
 1. the `f32` activation is clipped as required by calibration
 2. it is quantized to `u8`
-3. the `u8` bytes are copied into NPU DDR
+3. the `u8` bytes are copied into the runtime-managed CMA buffer
 4. the NPU full GEMM interprets the activation as `u8 - 128`
 
 This means the effective signed zero-point is:
@@ -277,7 +278,7 @@ That means:
 
 This phase proves:
 
-- the NPU DDR allocation path
+- the runtime CMA allocation path
 - weight preparation
 - activation staging
 - full GEMM runtime interface
@@ -302,8 +303,8 @@ The target integration point is the multimodal projector path in:
 
 The hardware runtime lives in:
 
-- [npuruntime/npu_runtime.h](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/npu_runtime.h)
-- [npuruntime/npu_runtime.cpp](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/npu_runtime.cpp)
+- [npuruntime/kv260/runtime/npu_runtime.h](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/kv260/runtime/npu_runtime.h)
+- [npuruntime/kv260/runtime/npu_runtime.cpp](/home/gugugu/work/llama.cpp-kv260-20260407/npuruntime/kv260/runtime/npu_runtime.cpp)
 
 The likely `ggml` integration path is the CPU extra-buffer / tensor-traits mechanism under:
 
@@ -319,19 +320,19 @@ This is preferred over building a new standalone backend for the initial version
 
 The implementation should assume the following memory model:
 
-- NPU DDR is the only DMA-visible memory region used by this feature
-- it is allocated via `npu_mem_alloc()`
+- the KV260 runtime's CMA buffer is the only DMA-visible memory region used by this feature
+- it is obtained by the runtime from the KV260 driver and sub-allocated via `npu_mem_alloc()`
 - it is visible to CPU through `mmap`
 - the runtime itself performs virtual-to-physical translation internally
 
 Therefore:
 
 - ordinary `ggml` host pointers do not need physical-address support
-- any data needed by DMA must be copied or prepared into NPU DDR
+- any data needed by DMA must be copied or prepared into the CMA-backed runtime heap
 
 ### NPU-visible Buffers Needed
 
-At minimum, the following data objects must live in NPU DDR:
+At minimum, the following data objects must live in the CMA-backed runtime heap:
 
 - prepared `int8` weights
 - quantized `u8` activations
@@ -362,7 +363,7 @@ Recommended API shape:
 typedef void * kv260_npu_gemm_handle_t;
 
 typedef struct {
-    const int8_t * weight_nk;   // N x K, row-major, NPU DDR pointer
+    const int8_t * weight_nk;   // N x K, row-major, runtime CMA pointer
     uint32_t       n;
     uint32_t       k;
     uint32_t       ldw;         // usually K
@@ -375,10 +376,10 @@ int npu_full_gemm_prepare(
 
 typedef struct {
     kv260_npu_gemm_handle_t handle;
-    const uint8_t * act_mk;     // M x K, row-major, NPU DDR pointer
+    const uint8_t * act_mk;     // M x K, row-major, runtime CMA pointer
     uint32_t        m;
     uint32_t        lda;        // usually K
-    int32_t       * out_mn;     // M x N, row-major, NPU DDR pointer
+    int32_t       * out_mn;     // M x N, row-major, runtime CMA pointer
     uint32_t        ldc;        // usually N
 } kv260_npu_gemm_run_desc;
 
@@ -455,7 +456,7 @@ The main risks are:
    - especially around `u8 -> i8` reinterpretation and zero-point handling
 4. Double bias bugs
    - only relevant if bias fusion is attempted later
-5. Memory pressure in NPU DDR
+5. Memory pressure in the runtime CMA heap
    - prepared weights plus activation and output scratch must fit
 
 ## 17. Recommended First Deliverable
@@ -494,7 +495,7 @@ At the current stage, the most reasonable engineering decision is:
 - keep quantization and dequantization on the CPU
 - use per-output-channel weight quantization
 - use static asymmetric activation quantization
-- use NPU DDR as the only DMA-visible memory pool
+- use the KV260 runtime CMA heap as the only DMA-visible memory pool
 - start with GEMM acceleration first
 - defer bias fusion until the simpler path is working and validated
 

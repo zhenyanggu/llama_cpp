@@ -1,0 +1,1 @@
+savedcmd_/mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.ko := aarch64-amd-linux-ld -r -EL  -maarch64elf -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T scripts/module.lds -o /mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.ko /mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.o /mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.mod.o

@@ -1,0 +1,62 @@
+cd /home/gugugu/work/llama.cpp-kv260-20260407
+
+# board readiness
+ssh ubuntu@192.168.0.10
+sudo xmutil unloadapp || true
+sudo xmutil loadapp mynpu
+sudo insmod /home/ubuntu/npu_kv260.ko
+sudo chgrp ubuntu /dev/npu_kv260
+sudo chmod 660 /dev/npu_kv260
+
+# rebuild NPU binary only
+cmake --build build-kv260-npu --target llama-server -j8
+
+# deploy server
+scp build-kv260-npu/bin/llama-server \
+  ubuntu@192.168.0.10:/home/ubuntu/llama-server-npu-test
+
+# start board-side server
+env \
+  LD_LIBRARY_PATH=/home/ubuntu/aicas/shared/lib \
+  MTMD_BACKEND_DEVICE=NPU \
+  GGML_NPU_SPM_BYTES=524288 \
+  GGML_NPU_ACC_BYTES=524288 \
+  GGML_NPU_GUARD_BYTES=4096 \
+  GGML_NPU_STAGE2_K_BYTES=4096 \
+  NPU_CMA_SIZE=256M \
+  AICAS_MMPROJ_W8A8_DEBUG=1 \
+  LLAMA_LOG_VERBOSITY=1 \
+  /home/ubuntu/llama-server-npu-test \
+    -v \
+    --no-warmup \
+    --host 127.0.0.1 \
+    --port 8090 \
+    --alias smolvlm2-gguf-npu \
+    -m /home/ubuntu/aicas/shared/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf \
+    --mmproj /home/ubuntu/aicas/shared/gguf/mmproj-SmolVLM2-500M-Video-Instruct-w8a8-mixed-v1.gguf \
+    -t 4 \
+    >/home/ubuntu/manual-npu-debug-8090.log 2>&1
+
+# throughput
+ssh ubuntu@192.168.0.10 \
+  "python3 /home/ubuntu/aicas/shared/eval/throughput_eval.py \
+    -i /home/ubuntu/aicas/shared/data/IIIT5K/test/2543_2.png \
+    -o /home/ubuntu/manual-throughput-npu-8090.json \
+    --base-url http://127.0.0.1:8090/v1 \
+    --model smolvlm2-gguf-npu"
+
+# 5-sample acc
+scp AICAS2026/V1_412/kv260_sampled5.json \
+  ubuntu@192.168.0.10:/home/ubuntu/kv260_sampled5.json
+
+ssh ubuntu@192.168.0.10 \
+  "cd /home/ubuntu/aicas/shared/eval && \
+   python3 ./acc_eval.py \
+     --image_folder /home/ubuntu/aicas/shared/data \
+     --OCRBench_file /home/ubuntu/kv260_sampled5.json \
+     --output_folder /home/ubuntu/acc-npu-8090 \
+     --save_name SmolVLM2_npu_w8a8_5sample \
+     --base-url http://127.0.0.1:8090/v1 \
+     --model smolvlm2-gguf-npu \
+     --request-timeout 600 \
+     --progress-every 1"

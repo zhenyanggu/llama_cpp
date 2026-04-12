@@ -1,0 +1,1 @@
+savedcmd_/mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.mod := printf '%s\n'   npu_kv260.o | awk '!x[$$0]++ { print("/mnt/c/vivado/VersaEdge/sw/kv260/driver/"$$0) }' > /mnt/c/vivado/VersaEdge/sw/kv260/driver/npu_kv260.mod

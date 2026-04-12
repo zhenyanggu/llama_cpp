@@ -803,7 +803,15 @@ struct clip_ctx {
         if (ctx_params.use_gpu) {
             auto backend_name = std::getenv("MTMD_BACKEND_DEVICE");
             if (backend_name != nullptr) {
+#ifdef GGML_USE_NPU
+                if (std::strcmp(backend_name, "NPU") == 0 || std::strcmp(backend_name, "NPU0") == 0) {
+                    backend = ggml_backend_npu_init();
+                } else {
+                    backend = ggml_backend_init_by_name(backend_name, nullptr);
+                }
+#else
                 backend = ggml_backend_init_by_name(backend_name, nullptr);
+#endif
                 if (!backend) {
                     LOG_WRN("%s: Warning: Failed to initialize \"%s\" backend, falling back to default GPU backend\n", __func__, backend_name);
                 }
@@ -4759,6 +4767,9 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     ctx->profiler.reset();
     ggml_backend_sched_reset(ctx->sched.get());
     ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);
+    if (ctx->aicas_w8a8_debug) {
+        LOG_INF("%s: built mmproj graph\n", __func__);
+    }
     if (!ctx->debug_dump_dot_done && !ctx->debug_dump_dot_path.empty()) {
         ggml_graph_dump_dot(gf, nullptr, ctx->debug_dump_dot_path.c_str());
         LOG_INF("%s: dumped mmproj graph to %s\n", __func__, ctx->debug_dump_dot_path.c_str());
@@ -4768,7 +4779,16 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         ctx->sched.get(),
         ctx->profiler.enabled ? clip_profiler::eval_callback : nullptr,
         ctx->profiler.enabled ? &ctx->profiler : nullptr);
-    ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
+    if (ctx->aicas_w8a8_debug) {
+        LOG_INF("%s: allocating mmproj graph\n", __func__);
+    }
+    if (!ggml_backend_sched_alloc_graph(ctx->sched.get(), gf)) {
+        LOG_ERR("%s: ggml_backend_sched_alloc_graph failed\n", __func__);
+        return false;
+    }
+    if (ctx->aicas_w8a8_debug) {
+        LOG_INF("%s: allocated mmproj graph\n", __func__);
+    }
 
     // set inputs
     const auto & model   = ctx->model;
@@ -5093,10 +5113,16 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         }
     }
 
+    if (ctx->aicas_w8a8_debug) {
+        LOG_INF("%s: computing mmproj graph\n", __func__);
+    }
     auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
         return false;
+    }
+    if (ctx->aicas_w8a8_debug) {
+        LOG_INF("%s: computed mmproj graph\n", __func__);
     }
 
     ctx->profiler.write_json();

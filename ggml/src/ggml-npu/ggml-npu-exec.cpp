@@ -3,6 +3,7 @@
 #include "ggml-npu-plan.h"
 #include "ggml-npu-quant.h"
 
+#include "ggml-impl.h"
 #include "npu_runtime.h"
 
 #include <algorithm>
@@ -11,6 +12,10 @@
 #include <vector>
 
 namespace ggml_npu {
+
+static bool npu_debug_log_enabled() {
+    return std::getenv("GGML_NPU_DEBUG_LOG") != nullptr || std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
+}
 
 static float npu_read_bias_value_f32_exec(
         const struct ggml_tensor * bias,
@@ -58,6 +63,15 @@ static bool npu_allocate_runtime_buffer(size_t bytes, void ** ptr, std::string *
 }
 
 enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * error) {
+    if (npu_debug_log_enabled()) {
+        const char * root_name = plan.root && plan.root->name[0] != '\0' ? plan.root->name : "(unnamed)";
+        GGML_LOG_INFO("%s: enter root=%s exec_tiles=%zu bias=%s summary=%s\n",
+                __func__,
+                root_name,
+                plan.exec_tiles.size(),
+                plan.bias ? "yes" : "no",
+                plan.summary.c_str());
+    }
     if (!npu_ensure_runtime(error)) {
         return GGML_STATUS_FAILED;
     }
@@ -319,6 +333,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * erro
     npu_mem_free(weight_buf);
     npu_mem_free(acc_buf);
     npu_mem_free(bias_buf);
+    if (npu_debug_log_enabled()) {
+        const char * root_name = plan.root && plan.root->name[0] != '\0' ? plan.root->name : "(unnamed)";
+        GGML_LOG_INFO("%s: leave root=%s\n", __func__, root_name);
+    }
     return GGML_STATUS_SUCCESS;
 }
 

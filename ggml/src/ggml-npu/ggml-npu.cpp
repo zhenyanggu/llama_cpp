@@ -14,6 +14,10 @@
 
 namespace ggml_npu {
 
+static bool npu_debug_log_enabled() {
+    return std::getenv("GGML_NPU_DEBUG_LOG") != nullptr || std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
+}
+
 struct npu_backend_context {
     npu_tiling_config config;
 };
@@ -26,7 +30,7 @@ struct npu_buffer_context {
 static void npu_buffer_free(ggml_backend_buffer_t buffer) {
     npu_buffer_context * ctx = static_cast<npu_buffer_context *>(buffer->context);
     if (ctx != nullptr && ctx->own) {
-        std::free(ctx->ptr);
+        ggml_aligned_free(ctx->ptr, buffer->size);
     }
     delete ctx;
 }
@@ -100,7 +104,7 @@ static ggml_backend_buffer_t npu_alloc_buffer(ggml_backend_buffer_type_t buft, s
         return nullptr;
     }
 
-    ctx->ptr = std::malloc(size);
+    ctx->ptr = ggml_aligned_malloc(size);
     ctx->own = true;
 
     if (ctx->ptr == nullptr) {
@@ -199,6 +203,21 @@ static ggml_backend_graph_plan_t npu_backend_graph_plan_create(
         graph_plan->nodes.push_back(npu_create_mul_mat_plan(node, ctx->config));
     }
 
+    if (npu_debug_log_enabled()) {
+        GGML_LOG_INFO("%s: created graph plan with %zu NPU nodes out of %d graph nodes\n",
+                __func__, graph_plan->nodes.size(), cgraph->n_nodes);
+        for (size_t i = 0; i < graph_plan->nodes.size(); ++i) {
+            const npu_node_plan & node_plan = graph_plan->nodes[i];
+            const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
+            GGML_LOG_INFO("%s: node[%zu] root=%s op=%s summary=%s\n",
+                    __func__,
+                    i,
+                    root_name,
+                    node_plan.root ? ggml_op_name(node_plan.root->op) : "(null)",
+                    node_plan.summary.c_str());
+        }
+    }
+
     return graph_plan;
 }
 
@@ -218,14 +237,47 @@ static enum ggml_status npu_backend_graph_plan_compute(
     }
 
     for (const npu_node_plan & node_plan : graph_plan->nodes) {
+        if (npu_debug_log_enabled()) {
+            const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
+            GGML_LOG_INFO("%s: start root=%s op=%s summary=%s\n",
+                    __func__,
+                    root_name,
+                    node_plan.root ? ggml_op_name(node_plan.root->op) : "(null)",
+                    node_plan.summary.c_str());
+        }
         std::string error;
         const enum ggml_status status = npu_compute_node(node_plan, &error);
         if (status != GGML_STATUS_SUCCESS) {
+            if (npu_debug_log_enabled()) {
+                const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
+                GGML_LOG_ERROR("%s: failed root=%s status=%d error=%s\n",
+                        __func__,
+                        root_name,
+                        status,
+                        error.c_str());
+            }
             return status;
+        }
+        if (npu_debug_log_enabled()) {
+            const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
+            GGML_LOG_INFO("%s: done root=%s\n", __func__, root_name);
         }
     }
 
     return GGML_STATUS_SUCCESS;
+}
+
+static enum ggml_status npu_backend_graph_compute(
+        ggml_backend_t backend,
+        struct ggml_cgraph * cgraph) {
+    ggml_backend_graph_plan_t plan = npu_backend_graph_plan_create(backend, cgraph);
+    if (plan == nullptr) {
+        return GGML_STATUS_FAILED;
+    }
+
+    const enum ggml_status status = npu_backend_graph_plan_compute(backend, plan);
+    npu_backend_graph_plan_free(backend, plan);
+    return status;
 }
 
 static const ggml_backend_i npu_backend_iface = {
@@ -239,7 +291,7 @@ static const ggml_backend_i npu_backend_iface = {
     /* .graph_plan_free    = */ npu_backend_graph_plan_free,
     /* .graph_plan_update  = */ nullptr,
     /* .graph_plan_compute = */ npu_backend_graph_plan_compute,
-    /* .graph_compute      = */ nullptr,
+    /* .graph_compute      = */ npu_backend_graph_compute,
     /* .event_record       = */ nullptr,
     /* .event_wait         = */ nullptr,
     /* .graph_optimize     = */ nullptr,

@@ -454,6 +454,14 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
             }
             return false;
         }
+    } else {
+        const npu_activation_quant_config act_cfg = npu_lookup_static_quant_config(op, src1);
+        if (!act_cfg.valid) {
+            if (reason) {
+                *reason = "缺少静态非对称量化参数";
+            }
+            return false;
+        }
     }
 
     return true;

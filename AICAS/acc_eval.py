@@ -1,25 +1,31 @@
 import json
-from argparse import ArgumentParser
 import os
-from tqdm import tqdm
-import base64
-from openai import OpenAI
+from argparse import ArgumentParser
+
+from llama_server_client import (
+    DEFAULT_BASE_URL,
+    chat_completion,
+    extract_text_content,
+    image_to_data_url,
+)
+
 
 def save_json(json_list, save_path):
-    """Saves a list of dictionaries to a JSON file."""
-    with open(save_path, "w") as file:
+    with open(save_path, "w", encoding="utf-8") as file:
         json.dump(json_list, file, indent=4)
 
 
 def _get_args():
-    """Parses command-line arguments."""
     parser = ArgumentParser()
     parser.add_argument("--image_folder", type=str, default="./OCRBench_Images")
     parser.add_argument("--output_folder", type=str, default="./results")
     parser.add_argument("--OCRBench_file", type=str, default="./sample_100.json")
     parser.add_argument("--save_name", type=str, default="SmolVLM2")
-    args = parser.parse_args()
-    return args
+    parser.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL)
+    parser.add_argument("--model", type=str, default="smolvlm2-gguf")
+    parser.add_argument("--request-timeout", type=float, default=300.0)
+    parser.add_argument("--progress-every", type=int, default=10)
+    return parser.parse_args()
 
 OCRBench_score = {
     "Regular Text Recognition": 0,
@@ -100,36 +106,58 @@ num_all = {
     "HME100k": 0,
 }
 
-def image_to_base64(image_path):
-    """Helper function: encode image file to Base64 string"""
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
+def _should_log_progress(index, total, every):
+    if total <= 0:
+        return False
+    if index == 1 or index == total:
+        return True
+    if every <= 0:
+        return False
+    return index % every == 0
+
+
+def _score_prediction(dataset_name, answers, predict):
+    if dataset_name == "HME100k":
+        predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
+        if isinstance(answers, list):
+            for answer in answers:
+                if answer.strip().replace("\n", " ").replace(" ", "") in predict_norm:
+                    return 1
+            return 0
+        return int(answers.strip().replace("\n", " ").replace(" ", "") in predict_norm)
+
+    predict_norm = predict.lower().strip().replace("\n", " ")
+    if isinstance(answers, list):
+        for answer in answers:
+            if answer.lower().strip().replace("\n", " ") in predict_norm:
+                return 1
+        return 0
+    return int(answers.lower().strip().replace("\n", " ") in predict_norm)
 
 if __name__ == "__main__":
     args = _get_args()
 
     data_path = args.OCRBench_file
     print(f"Loading data from: {data_path}")
-    with open(data_path, "r") as f:
+    with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    client = OpenAI(
-        base_url="http://127.0.0.1:8080/v1",
-        api_key="NA"
-    )
+    total_samples = len(data)
+    print(f"Evaluating {total_samples} samples against {args.base_url} with model {args.model}")
 
-    for i in tqdm(range(len(data))):
-        img_path = os.path.join(args.image_folder, data[i]["image_path"])
-        qs = data[i]["question"]
+    for index, item in enumerate(data, start=1):
+        img_path = os.path.join(args.image_folder, item["image_path"])
+        question = item["question"]
+
+        if _should_log_progress(index, total_samples, args.progress_every):
+            print(f"[{index}/{total_samples}] {item['image_path']}")
 
         if not os.path.exists(img_path):
             print(f"Warning: Image not found, skipping: {img_path}")
-            data[i]["predict"] = f"ERROR: Image not found at {img_path}"
+            item["predict"] = f"ERROR: Image not found at {img_path}"
             continue
 
         try:
-            img_b64 = image_to_base64(img_path)
-
             messages_payload = [
                 {
                     "role": "user",
@@ -137,72 +165,42 @@ if __name__ == "__main__":
                         {
                             "type": "image_url",
                             "image_url": {
-                                # OpenAI API requires data URI format
-                                "url": f"data:image/jpeg;base64,{img_b64}"
+                                "url": image_to_data_url(img_path)
                             }
                         },
                         {
                             "type": "text",
-                            "text": qs
+                            "text": question
                         }
                     ]
                 }
             ]
 
-            response = client.chat.completions.create(
-                model="smolvlm2-gguf",
+            response = chat_completion(
+                base_url=args.base_url,
+                model=args.model,
                 messages=messages_payload,
                 max_tokens=100,
-                temperature=0.0
+                temperature=0.0,
+                timeout=args.request_timeout,
             )
-
-            response_content = response.choices[0].message.content.strip()
-            data[i]["predict"] = response_content
+            item["predict"] = extract_text_content(response)
 
         except Exception as e:
             print(f"Error processing {img_path}: {e}")
-            data[i]["predict"] = f"API_ERROR: {e}" # Record the error in the data
+            item["predict"] = f"API_ERROR: {e}"
 
-    for i in range(len(data)):
-        data_type = data[i]["type"]
-        dataset_name = data[i]["dataset_name"]
-        answers = data[i]["answers"]
+    for item in data:
+        dataset_name = item["dataset_name"]
+        answers = item["answers"]
 
-        if data[i].get("predict", 0) == 0:
+        if "predict" not in item:
             continue
 
-        predict = data[i]["predict"]
-        data[i]["result"] = 0 # Default to incorrect
+        predict = item["predict"]
+        item["result"] = _score_prediction(dataset_name, answers, predict)
 
-        if dataset_name == "HME100k":
-            if type(answers) == list:
-                for j in range(len(answers)):
-                    answer = answers[j].strip().replace("\n", " ").replace(" ", "")
-                    predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
-                    if answer in predict_norm:
-                        data[i]["result"] = 1
-                        break # Mark as correct and stop checking other answers
-            else:
-                answers = answers.strip().replace("\n", " ").replace(" ", "")
-                predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
-                if answers in predict_norm:
-                    data[i]["result"] = 1
-        else:
-            # Standard comparison (lowercase, stripped)
-            if type(answers) == list:
-                for j in range(len(answers)):
-                    answer = answers[j].lower().strip().replace("\n", " ")
-                    predict_norm = predict.lower().strip().replace("\n", " ")
-                    if answer in predict_norm:
-                        data[i]["result"] = 1
-                        break # Mark as correct and stop checking other answers
-            else:
-                answers = answers.lower().strip().replace("\n", " ")
-                predict_norm = predict.lower().strip().replace("\n", " ")
-                if answers in predict_norm:
-                    data[i]["result"] = 1
-
-    # Save the final JSON with 'predict' and 'result' fields
+    os.makedirs(args.output_folder, exist_ok=True)
     save_json(data, os.path.join(args.output_folder, f"{args.save_name}.json"))
 
     for key in OCRBench_score:
@@ -221,16 +219,16 @@ if __name__ == "__main__":
     for item in data:
         item_type = item.get("type")
         if item_type and item_type in OCRBench_num_all:
-            OCRBench_num_all[item_type] += 1 # Count total items for this type
+            OCRBench_num_all[item_type] += 1
             total_ocrbench_items += 1
-            if item.get("result") == 1: # Only add score if result is 1 (correct)
+            if item.get("result") == 1:
                 OCRBench_score[item_type] += 1
 
         dataset_name = item.get("dataset_name")
         if dataset_name and dataset_name in num_all:
-            num_all[dataset_name] += 1 # Count total items for this dataset
+            num_all[dataset_name] += 1
             total_dataset_items += 1
-            if item.get("result") == 1: # Only add score if result is 1 (correct)
+            if item.get("result") == 1:
                 AllDataset_score[dataset_name] += 1
 
     if total_ocrbench_items > 0:
@@ -261,11 +259,10 @@ if __name__ == "__main__":
             print(f"Text Recognition(Total {recognition_total}):{recognition_score}")
             print("------------------Details of Recognition Score-------------------")
 
-            # Helper function to print only if total > 0
             def print_score(type_name):
                 score = OCRBench_score[type_name]
                 total = OCRBench_num_all[type_name]
-                if total > 0: # Only print if this type was present
+                if total > 0:
                     print(f"{type_name}(Total {total}): {score}")
 
             print_score("Regular Text Recognition")
@@ -276,11 +273,10 @@ if __name__ == "__main__":
             print_score("Non-Semantic Text Recognition")
             print("----------------------------------------------------------------")
 
-        # Helper function for VQA scores
         def print_vqa_score(type_name):
             score = OCRBench_score[type_name]
             total = OCRBench_num_all[type_name]
-            if total > 0: # Only print if this type was present
+            if total > 0:
                 print(f"{type_name}(Total {total}): {score}")
                 print("----------------------------------------------------------------")
 
@@ -295,7 +291,7 @@ if __name__ == "__main__":
     elif total_dataset_items > 0:
         print("###########################AllDataset##############################")
         for key in AllDataset_score.keys():
-            if num_all[key] > 0: # Only print if this dataset was present in the data
+            if num_all[key] > 0:
                 print(f"{key}: {AllDataset_score[key]/float(num_all[key])}")
 
     else:

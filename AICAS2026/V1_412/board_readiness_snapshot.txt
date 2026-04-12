@@ -1,0 +1,14 @@
+[xmutil listapps]
+                   Accelerator  Accel_type                    Base    Pid   Base_type  #slots(RPU+PL+AIE)    slot->handle
+              k24-starter-kits    XRT_FLAT        k24-starter-kits  id_ok    XRT_FLAT             (0+0+0)              -1
+                         mynpu    XRT_FLAT                   mynpu  id_ok    XRT_FLAT             (0+0+0)           0->0,
+              k26-starter-kits    XRT_FLAT        k26-starter-kits  id_ok    XRT_FLAT             (0+0+0)              -1
+
+[/dev/npu_kv260]
+crw-rw---- 1 root ubuntu 507, 0 Feb 22 05:09 /dev/npu_kv260
+
+[/proc/modules]
+npu_kv260 20480 0 - Live 0xffffa4edd6fdd000 (OE)
+
+[/sys/bus/platform/devices]
+a0000000.T_NPU_FPGA

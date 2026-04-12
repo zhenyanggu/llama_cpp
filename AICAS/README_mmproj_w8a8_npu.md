@@ -22,6 +22,7 @@
   - `AICAS/tools/mmproj_pack_gguf.py`
 - 运行时实现：`tools/mtmd/clip.cpp`
 - NPU 后端实现：`ggml/src/ggml-npu/*`
+- KV260 交叉编译与部署：`AICAS/scripts/deploy_and_run_kv260_npu_eval.sh`
 
 ## 3. 快速开始（直接用现有量化产物）
 
@@ -41,6 +42,41 @@ bash AICAS/scripts/run_local_acc_eval.sh \
   --output-folder /tmp/local-acc-eval-w8a8-mixed-v1-npu \
   --save-name mixed_v1_npu
 ```
+
+### 3.1 KV260 交叉编译
+
+如果当前板端正在跑别的任务，或者你只想先拿到独立的 NPU 交叉编译产物，可直接运行：
+
+```bash
+bash AICAS/scripts/deploy_and_run_kv260_npu_eval.sh --build-only
+```
+
+默认产物与参数：
+
+- 构建目录：`build-kv260-npu`
+- 默认模型：`AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf`
+- 默认 mmproj：`AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-w8a8-mixed-v1.gguf`
+- 关键 CMake 开关：`-DGGML_NPU=ON`
+
+### 3.2 KV260 部署脚本行为
+
+`AICAS/scripts/deploy_and_run_kv260_npu_eval.sh` 在任何远端写入之前，会先做只读 readiness probe：
+
+- `xmutil listapps` 中是否存在 `mynpu`
+- `/dev/npu_kv260` 是否存在
+- `npu_kv260` 内核模块是否已加载
+- `/sys/bus/platform/devices` 中是否出现 NPU 平台设备（匹配 `npu` 或 `a0000000`）
+
+只要任一条件不满足，脚本就会在 `scp`、远端 `mkdir`、远端 `llama-server` 启动之前直接退出。
+
+NPU 运行默认值：
+
+- `MTMD_BACKEND_DEVICE=NPU`
+- `GGML_NPU_SPM_BYTES=524288`
+- `GGML_NPU_ACC_BYTES=524288`
+- `GGML_NPU_GUARD_BYTES=4096`
+- `GGML_NPU_STAGE2_K_BYTES=4096`
+- `NPU_CMA_SIZE=256M`
 
 ## 4. 从头生成量化产物（完整流程）
 
@@ -137,6 +173,8 @@ python3 AICAS/tools/mmproj_pack_gguf.py \
 - 若后端是 NPU（`MTMD_BACKEND_DEVICE=NPU`）：
   - W8A8 层参数会注册到 `ggml-npu`；
   - 被量化层走 `ggml_mul_mat` 并由 NPU 执行。
+- 当前执行路径仍保持“激活先在 CPU 侧打包为有符号 int8，补偿项在 CPU 侧恢复”的实现；
+  `ggml-npu` 目前不会把这一路切换成 `asymmetric_activations=true` 的硬件输入解释。
 - 若不是 NPU 后端：
   - 保持原行为：检测到 AICAS W8A8 元数据后 mmproj 强制走 CPU 路径。
 
@@ -172,11 +210,15 @@ export AICAS_MMPROJ_ACT_SAMPLES=4096
 - 确认命令没有禁用 mmproj offload（例如 `--no-mmproj-offload`）
 - 查看日志里是否有 `CLIP using NPU backend`
 
-2. `llama-mtmd-profiler` 链接报 NPU runtime 符号缺失  
+2. KV260 NPU 部署脚本在 readiness probe 阶段退出
+- 这是预期保护：脚本不会去修改板端状态
+- 先确认 `xmutil listapps` 能看到 `mynpu`
+- 再确认 `/dev/npu_kv260`、`npu_kv260` 模块、对应平台设备都已经准备好
+
+3. `llama-mtmd-profiler` 链接报 NPU runtime 符号缺失  
 - 这是环境链接问题（`npu_runtime` 动态库/路径），与量化脚本本身无关
 - 可先使用 host 版本 profiler 做标定，再用 NPU 版本 `llama-server` 做推理/评测
 
-3. 某些层没有走 W8A8  
+4. 某些层没有走 W8A8  
 - 检查打包摘要：`AICAS/artifacts/pack_summary*.json`
 - `policy=F16_FALLBACK` 的层会保留原始路径
-
