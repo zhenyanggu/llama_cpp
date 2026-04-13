@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace ggml_npu {
@@ -62,6 +63,30 @@ static bool npu_allocate_runtime_buffer(size_t bytes, void ** ptr, std::string *
     return false;
 }
 
+struct npu_activation_tile_key {
+    int64_t n0 = 0;
+    int64_t n = 0;
+    int64_t k0 = 0;
+    int64_t k = 0;
+
+    bool operator==(const npu_activation_tile_key & other) const {
+        return n0 == other.n0 &&
+               n == other.n &&
+               k0 == other.k0 &&
+               k == other.k;
+    }
+};
+
+struct npu_activation_tile_key_hash {
+    size_t operator()(const npu_activation_tile_key & key) const {
+        size_t h = std::hash<int64_t>{}(key.n0);
+        h ^= std::hash<int64_t>{}(key.n)  + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int64_t>{}(key.k0) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int64_t>{}(key.k)  + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
 enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * error) {
     if (npu_debug_log_enabled()) {
         const char * root_name = plan.root && plan.root->name[0] != '\0' ? plan.root->name : "(unnamed)";
@@ -113,10 +138,13 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * erro
     }
 
     std::vector<int8_t> packed_activation;
+    std::unordered_map<npu_activation_tile_key, std::vector<int8_t>, npu_activation_tile_key_hash> activation_tile_cache;
     const float activation_scale = plan.activation_quant.scale;
     const bool use_aicas_w8a8 = plan.aicas_w8a8.valid;
     std::vector<int32_t> acc_values;
     std::vector<int32_t> bias_values;
+
+    activation_tile_cache.reserve(plan.exec_tiles.size());
 
     int64_t active_m0 = -1;
     int64_t active_n0 = -1;
@@ -133,21 +161,36 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * erro
             bias_values.assign(static_cast<size_t>(active_m), 0);
         }
 
-        if (!npu_pack_activation_tile_static_asym_i8(
-                    plan.src1,
-                    exec_tile.n0,
-                    exec_tile.n,
-                    exec_tile.k0,
-                    exec_tile.k,
-                    activation_scale,
-                    plan.activation_quant.zero_point,
-                    &packed_activation,
-                    error)) {
-            npu_mem_free(activation_buf);
-            npu_mem_free(weight_buf);
-            npu_mem_free(acc_buf);
-            npu_mem_free(bias_buf);
-            return GGML_STATUS_FAILED;
+        const npu_activation_tile_key activation_key {
+            exec_tile.n0,
+            exec_tile.n,
+            exec_tile.k0,
+            exec_tile.k,
+        };
+
+        const std::vector<int8_t> * packed_activation_view = nullptr;
+        const auto cache_it = activation_tile_cache.find(activation_key);
+        if (cache_it != activation_tile_cache.end()) {
+            packed_activation_view = &cache_it->second;
+        } else {
+            if (!npu_pack_activation_tile_static_asym_i8(
+                        plan.src1,
+                        exec_tile.n0,
+                        exec_tile.n,
+                        exec_tile.k0,
+                        exec_tile.k,
+                        activation_scale,
+                        plan.activation_quant.zero_point,
+                        &packed_activation,
+                        error)) {
+                npu_mem_free(activation_buf);
+                npu_mem_free(weight_buf);
+                npu_mem_free(acc_buf);
+                npu_mem_free(bias_buf);
+                return GGML_STATUS_FAILED;
+            }
+            const auto inserted = activation_tile_cache.emplace(activation_key, packed_activation);
+            packed_activation_view = &inserted.first->second;
         }
 
         if (exec_tile.weight_pack_index < 0 ||
@@ -164,7 +207,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * erro
 
         const npu_prepacked_weight & packed_weight = plan.weight_packs[static_cast<size_t>(exec_tile.weight_pack_index)];
 
-        std::memcpy(activation_buf, packed_activation.data(), packed_activation.size());
+        std::memcpy(activation_buf, packed_activation_view->data(), packed_activation_view->size());
         std::memcpy(weight_buf, packed_weight.packed.data(), packed_weight.packed.size());
 
         npu_dma_mvin(
