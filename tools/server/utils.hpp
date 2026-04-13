@@ -8,6 +8,9 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "chat.h"
+#ifdef GGML_USE_NPU
+#include "ggml/src/ggml-npu/ggml-npu.h"
+#endif
 
 // increase max payload length to allow use of larger context size
 #define CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH 1048576
@@ -26,6 +29,8 @@
 #include <vector>
 #include <memory>
 #include <cinttypes>
+#include <fstream>
+#include <cstdlib>
 
 #define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
 
@@ -47,6 +52,203 @@ using json = nlohmann::ordered_json;
 #define QUE_DBG(fmt, ...) LOG_DBG("que  %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 
 using raw_buffer = std::vector<uint8_t>;
+
+static std::string server_mtmd_profile_output_path() {
+    const char * path = std::getenv("LLAMA_MTMD_PREFILL_SUMMARY_JSON");
+    return path ? path : "";
+}
+
+static bool server_mtmd_profile_enabled() {
+    const std::string path = server_mtmd_profile_output_path();
+    return !path.empty();
+}
+
+struct server_mtmd_prefill_profile {
+    bool enabled = false;
+    bool has_media = false;
+    int64_t media_chunk_count = 0;
+    int64_t image_chunk_count = 0;
+    int64_t audio_chunk_count = 0;
+    int64_t media_tokens = 0;
+    int64_t media_positions = 0;
+    int64_t mmproj_encode_us = 0;
+    int64_t media_decode_us = 0;
+    int64_t media_process_us = 0;
+#ifdef GGML_USE_NPU
+    ggml_npu_profile_summary npu = {};
+#endif
+
+    void reset(bool enable) {
+        enabled = enable;
+        has_media = false;
+        media_chunk_count = 0;
+        image_chunk_count = 0;
+        audio_chunk_count = 0;
+        media_tokens = 0;
+        media_positions = 0;
+        mmproj_encode_us = 0;
+        media_decode_us = 0;
+        media_process_us = 0;
+#ifdef GGML_USE_NPU
+        npu = {};
+#endif
+    }
+
+    void add_chunk(
+            const mtmd_input_chunk * chunk,
+            int64_t encode_us,
+            int64_t decode_us,
+            int64_t total_us
+#ifdef GGML_USE_NPU
+            , const ggml_npu_profile_summary & npu_summary
+#endif
+            ) {
+        if (!enabled || chunk == nullptr) {
+            return;
+        }
+
+        has_media = true;
+        media_chunk_count += 1;
+        media_tokens += static_cast<int64_t>(mtmd_input_chunk_get_n_tokens(chunk));
+        media_positions += static_cast<int64_t>(mtmd_input_chunk_get_n_pos(chunk));
+        mmproj_encode_us += encode_us;
+        media_decode_us += decode_us;
+        media_process_us += total_us;
+
+        const auto type = mtmd_input_chunk_get_type(chunk);
+        if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+            image_chunk_count += 1;
+        } else if (type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            audio_chunk_count += 1;
+        }
+
+#ifdef GGML_USE_NPU
+        npu.used_npu |= npu_summary.used_npu;
+        npu.node_count += npu_summary.node_count;
+        npu.exec_tile_count += npu_summary.exec_tile_count;
+        npu.weight_pack_count += npu_summary.weight_pack_count;
+        npu.bias_pack_count += npu_summary.bias_pack_count;
+        npu.activation_pack_calls += npu_summary.activation_pack_calls;
+        npu.host_copy_activation_calls += npu_summary.host_copy_activation_calls;
+        npu.host_copy_weight_calls += npu_summary.host_copy_weight_calls;
+        npu.bias_prepare_calls += npu_summary.bias_prepare_calls;
+        npu.dma_in_activation_calls += npu_summary.dma_in_activation_calls;
+        npu.dma_in_weight_calls += npu_summary.dma_in_weight_calls;
+        npu.dma_in_bias_calls += npu_summary.dma_in_bias_calls;
+        npu.gemm_calls += npu_summary.gemm_calls;
+        npu.dma_out_calls += npu_summary.dma_out_calls;
+        npu.postprocess_calls += npu_summary.postprocess_calls;
+        npu.packed_activation_bytes_total += npu_summary.packed_activation_bytes_total;
+        npu.copied_weight_bytes_total += npu_summary.copied_weight_bytes_total;
+        npu.bias_bytes_total += npu_summary.bias_bytes_total;
+        npu.acc_readback_bytes_total += npu_summary.acc_readback_bytes_total;
+        npu.output_write_bytes_total += npu_summary.output_write_bytes_total;
+        npu.total_node_us += npu_summary.total_node_us;
+        npu.activation_pack_us_total += npu_summary.activation_pack_us_total;
+        npu.host_copy_activation_us_total += npu_summary.host_copy_activation_us_total;
+        npu.host_copy_weight_us_total += npu_summary.host_copy_weight_us_total;
+        npu.bias_prepare_us_total += npu_summary.bias_prepare_us_total;
+        npu.dma_in_activation_us_total += npu_summary.dma_in_activation_us_total;
+        npu.dma_in_weight_us_total += npu_summary.dma_in_weight_us_total;
+        npu.dma_in_bias_us_total += npu_summary.dma_in_bias_us_total;
+        npu.gemm_us_total += npu_summary.gemm_us_total;
+        npu.dma_out_us_total += npu_summary.dma_out_us_total;
+        npu.postprocess_us_total += npu_summary.postprocess_us_total;
+        npu.runtime_total_us += npu_summary.runtime_total_us;
+        npu.runtime_dma_in_us += npu_summary.runtime_dma_in_us;
+        npu.runtime_compute_us += npu_summary.runtime_compute_us;
+        npu.runtime_dma_out_us += npu_summary.runtime_dma_out_us;
+        npu.runtime_layout_us += npu_summary.runtime_layout_us;
+        npu.runtime_wait_irq_us += npu_summary.runtime_wait_irq_us;
+        npu.runtime_mvin_calls += npu_summary.runtime_mvin_calls;
+        npu.runtime_compute_calls += npu_summary.runtime_compute_calls;
+        npu.runtime_mvout_calls += npu_summary.runtime_mvout_calls;
+        npu.runtime_layout_calls += npu_summary.runtime_layout_calls;
+#endif
+    }
+
+    json to_json(
+            double prefill_total_us,
+            int32_t prompt_tokens_processed,
+            int slot_id,
+            int task_id) const {
+        json npu_json = {
+            {"used_npu", false},
+            {"node_count", 0},
+            {"exec_tile_count", 0},
+            {"total_node_us", 0},
+            {"activation_pack_us", 0},
+            {"host_copy_activation_us", 0},
+            {"host_copy_weight_us", 0},
+            {"bias_prepare_us", 0},
+            {"postprocess_us", 0},
+            {"runtime_total_us", 0},
+            {"runtime_dma_in_us", 0},
+            {"runtime_compute_us", 0},
+            {"runtime_dma_out_us", 0},
+            {"runtime_layout_us", 0},
+            {"runtime_wait_irq_us", 0},
+        };
+        double npu_host_us = 0.0;
+        double npu_total_node_us = 0.0;
+
+#ifdef GGML_USE_NPU
+        npu_host_us =
+            static_cast<double>(npu.activation_pack_us_total +
+                                npu.host_copy_activation_us_total +
+                                npu.host_copy_weight_us_total +
+                                npu.bias_prepare_us_total +
+                                npu.postprocess_us_total);
+        npu_total_node_us = static_cast<double>(npu.total_node_us);
+        npu_json = {
+            {"used_npu", npu.used_npu != 0},
+            {"node_count", npu.node_count},
+            {"exec_tile_count", npu.exec_tile_count},
+            {"total_node_us", npu.total_node_us},
+            {"activation_pack_us", npu.activation_pack_us_total},
+            {"host_copy_activation_us", npu.host_copy_activation_us_total},
+            {"host_copy_weight_us", npu.host_copy_weight_us_total},
+            {"bias_prepare_us", npu.bias_prepare_us_total},
+            {"postprocess_us", npu.postprocess_us_total},
+            {"runtime_total_us", npu.runtime_total_us},
+            {"runtime_dma_in_us", npu.runtime_dma_in_us},
+            {"runtime_compute_us", npu.runtime_compute_us},
+            {"runtime_dma_out_us", npu.runtime_dma_out_us},
+            {"runtime_layout_us", npu.runtime_layout_us},
+            {"runtime_wait_irq_us", npu.runtime_wait_irq_us},
+        };
+#endif
+
+        const double residual_cpu_us = std::max(0.0, static_cast<double>(mmproj_encode_us) - npu_total_node_us);
+
+        return {
+            {"profile_kind", "llama_server_mtmd_prefill_summary"},
+            {"timing_unit", "us"},
+            {"slot_id", slot_id},
+            {"task_id", task_id},
+            {"prompt_tokens_processed", prompt_tokens_processed},
+            {"prefill_total_us", static_cast<int64_t>(prefill_total_us)},
+            {"mmproj", {
+                {"has_media", has_media},
+                {"media_chunk_count", media_chunk_count},
+                {"image_chunk_count", image_chunk_count},
+                {"audio_chunk_count", audio_chunk_count},
+                {"media_tokens", media_tokens},
+                {"media_positions", media_positions},
+                {"encode_us", mmproj_encode_us},
+                {"decode_us", media_decode_us},
+                {"total_chunk_us", media_process_us},
+            }},
+            {"npu", npu_json},
+            {"derived", {
+                {"npu_host_us", static_cast<int64_t>(npu_host_us)},
+                {"npu_total_node_us", static_cast<int64_t>(npu_total_node_us)},
+                {"mmproj_residual_cpu_us", static_cast<int64_t>(residual_cpu_us)},
+                {"prefill_minus_mmproj_us", static_cast<int64_t>(std::max(0.0, prefill_total_us - static_cast<double>(mmproj_encode_us)))},
+            }},
+        };
+    }
+};
 
 template <typename T>
 static T json_value(const json & body, const std::string & key, const T & default_value) {
@@ -1347,27 +1549,82 @@ public:
                 mtmd_context * mctx,
                 llama_pos n_past,
                 int32_t seq_id,
-                llama_pos & n_pos_out) const {
+                llama_pos & n_pos_out,
+                server_mtmd_prefill_profile * profile = nullptr) const {
         const auto & chunk = find_chunk(n_past);
         const char * name = mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_IMAGE
                             ? "image" : "audio";
         SRV_INF("processing %s...\n", name);
         int32_t n_batch = llama_n_batch(ctx);
-        int64_t t0 = ggml_time_ms();
+        const int64_t process_start_ms = ggml_time_ms();
+        const bool collect_profile = profile != nullptr && profile->enabled;
+        const int64_t process_start_us = collect_profile ? ggml_time_us() : 0;
+
+        int32_t result = 0;
         llama_pos new_n_past = n_past;
-        int32_t result = mtmd_helper_eval_chunk_single(mctx, ctx,
-            chunk.get(),
-            n_past,
-            seq_id,
-            n_batch,
-            true, // logits last
-            &new_n_past);
-        SRV_INF("%s processed in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
+
+        if (mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            result = mtmd_helper_eval_chunk_single(mctx, ctx,
+                chunk.get(),
+                n_past,
+                seq_id,
+                n_batch,
+                true,
+                &new_n_past);
+        } else {
+#ifdef GGML_USE_NPU
+            const bool collect_npu_summary = profile != nullptr && profile->enabled;
+            ggml_npu_profile_summary npu_summary = {};
+            if (collect_npu_summary) {
+                ggml_backend_npu_profile_summary_start();
+            }
+#endif
+
+            const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
+            result = mtmd_encode_chunk(mctx, chunk.get());
+            const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
+
+#ifdef GGML_USE_NPU
+            if (profile != nullptr && profile->enabled) {
+                ggml_backend_npu_profile_summary_stop(&npu_summary);
+            }
+#endif
+
+            if (result == 0) {
+                float * embd = mtmd_get_output_embd(mctx);
+                const int64_t decode_start_us = collect_profile ? ggml_time_us() : 0;
+                result = mtmd_helper_decode_image_chunk(
+                    mctx,
+                    ctx,
+                    chunk.get(),
+                    embd,
+                    n_past,
+                    seq_id,
+                    n_batch,
+                    &new_n_past);
+                const int64_t decode_us = collect_profile ? (ggml_time_us() - decode_start_us) : 0;
+
+                if (result == 0 && collect_profile) {
+                    profile->add_chunk(
+                        chunk.get(),
+                        encode_us,
+                        decode_us,
+                        ggml_time_us() - process_start_us
+#ifdef GGML_USE_NPU
+                        , npu_summary
+#endif
+                        );
+                }
+            }
+        }
+
+        SRV_INF("%s processed in %" PRId64 " ms\n", name, ggml_time_ms() - process_start_ms);
         if (result != 0) {
             LOG_ERR("mtmd_helper_eval failed with status %d", result);
             n_pos_out = n_past;
             return result;
         }
+
         n_pos_out = new_n_past;
         return 0;
     }

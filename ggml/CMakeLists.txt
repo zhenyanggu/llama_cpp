@@ -252,6 +252,7 @@ option(GGML_OPENCL_USE_ADRENO_KERNELS       "ggml: use optimized kernels for Adr
 set   (GGML_OPENCL_TARGET_VERSION "300" CACHE STRING
                                             "gmml: OpenCL API version to target")
 option(GGML_NPU                             "ggml: use AICAS NPU matmul offload prototype"    OFF)
+option(GGML_NPU_RUNTIME_PROFILE             "ggml: enable extra AICAS NPU runtime profile logging" OFF)
 
 # toolchain for vulkan-shaders-gen
 set   (GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "" CACHE FILEPATH "ggml: toolchain file for vulkan-shaders-gen")

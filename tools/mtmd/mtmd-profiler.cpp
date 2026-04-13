@@ -43,9 +43,12 @@ struct profiler_cli_args {
     std::string profile_output = "llama_mtmd_profile.json";
     std::string profile_nodes_output;
     std::string profile_mmproj_output;
+    std::string npu_runtime_profile_output;
+    std::string npu_node_trace_output;
     std::string dump_prefill_dot;
     std::string dump_decode_dot;
     std::string dump_mmproj_dot;
+    bool mmproj_only = false;
     std::vector<char *> forwarded_argv;
 };
 
@@ -178,7 +181,7 @@ struct mtmd_profile_context {
     int n_threads = 1;
     llama_pos n_past = 0;
 
-    explicit mtmd_profile_context(common_params & params) : llama_init(common_init_from_params(params)) {
+    explicit mtmd_profile_context(common_params & params, bool require_chat_template = true) : llama_init(common_init_from_params(params)) {
         model = llama_init.model.get();
         lctx = llama_init.context.get();
         vocab = llama_model_get_vocab(model);
@@ -192,12 +195,14 @@ struct mtmd_profile_context {
             std::exit(1);
         }
 
-        if (!llama_model_chat_template(model, nullptr) && params.chat_template.empty()) {
+        if (require_chat_template && !llama_model_chat_template(model, nullptr) && params.chat_template.empty()) {
             LOG_ERR("Model does not have chat template. Set --chat-template explicitly if needed.\n");
             std::exit(1);
         }
 
-        tmpls = common_chat_templates_init(model, params.chat_template);
+        if (require_chat_template) {
+            tmpls = common_chat_templates_init(model, params.chat_template);
+        }
         init_vision_context(params);
     }
 
@@ -235,9 +240,13 @@ static void show_additional_info(int /*argc*/, char ** argv) {
         "Profile ggml operator latency for a single multimodal turn.\n\n"
         "Usage: %s [standard mtmd options] --profile-output <json>\n\n"
         "Custom options:\n"
+        "  --mmproj-only               only run image encode / mmproj, skip text prefill+decode\n"
         "  --profile-output <path>        path to the aggregated operator profile JSON\n"
         "  --profile-nodes-output <path>  optional path to dump per-node timing samples\n\n"
         "  --profile-mmproj-output <path> path to dump mmproj/clip operator profile JSON\n"
+        "  --npu-runtime-profile-output <path>\n"
+        "                               path to dump NPU runtime stage profile JSON\n"
+        "  --npu-node-trace-output <path> path to dump ggml-npu node/tile trace JSON\n"
         "  --dump-prefill-dot <path>      dump the first batched libllama ggml graph to a .dot file\n"
         "  --dump-decode-dot <path>       dump the first single-token libllama ggml graph to a .dot file\n"
         "  --dump-mmproj-dot <path>       dump the mmproj/clip image-encode ggml graph to a .dot file\n\n"
@@ -256,6 +265,11 @@ static bool parse_profiler_cli_args(int argc, char ** argv, profiler_cli_args & 
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+
+        if (arg == "--mmproj-only") {
+            args.mmproj_only = true;
+            continue;
+        }
 
         if (arg == "--profile-output") {
             if (i + 1 >= argc) {
@@ -281,6 +295,24 @@ static bool parse_profiler_cli_args(int argc, char ** argv, profiler_cli_args & 
                 return false;
             }
             args.profile_mmproj_output = argv[++i];
+            continue;
+        }
+
+        if (arg == "--npu-runtime-profile-output") {
+            if (i + 1 >= argc) {
+                LOG_ERR("missing value for %s\n", arg.c_str());
+                return false;
+            }
+            args.npu_runtime_profile_output = argv[++i];
+            continue;
+        }
+
+        if (arg == "--npu-node-trace-output") {
+            if (i + 1 >= argc) {
+                LOG_ERR("missing value for %s\n", arg.c_str());
+                return false;
+            }
+            args.npu_node_trace_output = argv[++i];
             continue;
         }
 
@@ -327,6 +359,18 @@ static void set_debug_env_if_needed(const char * key, const std::string & value)
 #else
     setenv(key, value.c_str(), 1);
 #endif
+}
+
+static std::string derive_manifest_path(const std::string & output_path) {
+    if (output_path.empty()) {
+        return "";
+    }
+
+    if (output_path.size() >= 5 && output_path.substr(output_path.size() - 5) == ".json") {
+        return output_path.substr(0, output_path.size() - 5) + "_manifest.json";
+    }
+
+    return output_path + ".manifest.json";
 }
 
 static double pct(double numerator, double denominator) {
@@ -567,6 +611,112 @@ static json build_profile_report(
     };
 }
 
+static const char * chunk_type_name(enum mtmd_input_chunk_type type) {
+    switch (type) {
+        case MTMD_INPUT_CHUNK_TYPE_TEXT:  return "text";
+        case MTMD_INPUT_CHUNK_TYPE_IMAGE: return "image";
+        case MTMD_INPUT_CHUNK_TYPE_AUDIO: return "audio";
+    }
+
+    return "unknown";
+}
+
+static std::string make_mmproj_only_prompt(size_t n_media) {
+    std::string prompt;
+    for (size_t i = 0; i < n_media; ++i) {
+        if (!prompt.empty()) {
+            prompt += '\n';
+        }
+        prompt += mtmd_default_marker();
+    }
+    return prompt;
+}
+
+static bool run_mmproj_only(
+        mtmd_profile_context & ctx,
+        const common_params & params,
+        json * out_summary) {
+    std::string prompt = make_mmproj_only_prompt(ctx.bitmaps.entries.size());
+    mtmd_input_text text = {
+        prompt.c_str(),
+        false,
+        true,
+    };
+
+    mtmd::input_chunks chunks(mtmd_input_chunks_init());
+    auto bitmaps_c_ptr = ctx.bitmaps.c_ptr();
+    const int32_t tokenize_res = mtmd_tokenize(
+        ctx.ctx_vision.get(),
+        chunks.ptr.get(),
+        &text,
+        bitmaps_c_ptr.data(),
+        bitmaps_c_ptr.size());
+    if (tokenize_res != 0) {
+        LOG_ERR("Unable to tokenize mmproj-only prompt, res = %d\n", tokenize_res);
+        return false;
+    }
+
+    ctx.bitmaps.entries.clear();
+
+    json chunk_reports = json::array();
+    size_t image_chunk_count = 0;
+    size_t audio_chunk_count = 0;
+    size_t total_image_tokens = 0;
+    size_t total_audio_tokens = 0;
+    size_t total_positions = 0;
+
+    for (size_t i = 0; i < mtmd_input_chunks_size(chunks.ptr.get()); ++i) {
+        const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks.ptr.get(), i);
+        const enum mtmd_input_chunk_type type = mtmd_input_chunk_get_type(chunk);
+        const size_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk);
+        const llama_pos n_pos = mtmd_input_chunk_get_n_pos(chunk);
+        const char * chunk_id = mtmd_input_chunk_get_id(chunk);
+
+        json chunk_report = {
+            {"chunk_index", i},
+            {"chunk_type", chunk_type_name(type)},
+            {"chunk_id", chunk_id ? json(chunk_id) : json(nullptr)},
+            {"n_tokens", n_tokens},
+            {"n_positions", n_pos},
+        };
+
+        if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE || type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            if (mtmd_encode_chunk(ctx.ctx_vision.get(), chunk) != 0) {
+                LOG_ERR("Unable to encode chunk %zu in mmproj-only mode\n", i);
+                return false;
+            }
+        }
+
+        if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+            image_chunk_count += 1;
+            total_image_tokens += n_tokens;
+            total_positions += static_cast<size_t>(n_pos);
+        } else if (type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            audio_chunk_count += 1;
+            total_audio_tokens += n_tokens;
+            total_positions += static_cast<size_t>(n_pos);
+        }
+
+        chunk_reports.push_back(std::move(chunk_report));
+    }
+
+    *out_summary = {
+        {"profile_kind", "mmproj_only_run"},
+        {"mode", "mmproj_only"},
+        {"model", params.model.path},
+        {"mmproj", params.mmproj.path},
+        {"images", params.image},
+        {"threads", params.cpuparams.n_threads},
+        {"image_chunk_count", image_chunk_count},
+        {"audio_chunk_count", audio_chunk_count},
+        {"total_image_tokens", total_image_tokens},
+        {"total_audio_tokens", total_audio_tokens},
+        {"total_positions", total_positions},
+        {"chunks", chunk_reports},
+    };
+    return true;
+}
+
 static int eval_message(mtmd_profile_context & ctx, const std::string & prompt, bool add_bos) {
     common_chat_msg msg;
     msg.role = "user";
@@ -676,6 +826,11 @@ int main(int argc, char ** argv) {
     set_debug_env_if_needed("LLAMA_DUMP_DECODE_DOT", cli_args.dump_decode_dot);
     set_debug_env_if_needed("MTMD_DUMP_DOT", cli_args.dump_mmproj_dot);
     set_debug_env_if_needed("MTMD_PROFILE_MMPROJ_JSON", cli_args.profile_mmproj_output);
+    set_debug_env_if_needed("NPU_PROFILE_OUT", cli_args.npu_runtime_profile_output);
+    set_debug_env_if_needed("GGML_NPU_PROFILE_JSON", cli_args.npu_node_trace_output);
+    if (!cli_args.npu_node_trace_output.empty()) {
+        set_debug_env_if_needed("NPU_PROFILE_MANIFEST", derive_manifest_path(cli_args.npu_node_trace_output));
+    }
 
     int filtered_argc = static_cast<int>(cli_args.forwarded_argv.size());
     if (!common_params_parse(filtered_argc, cli_args.forwarded_argv.data(), params, LLAMA_EXAMPLE_MTMD, show_additional_info)) {
@@ -694,28 +849,65 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    if (params.prompt.empty()) {
-        params.prompt = DEFAULT_THROUGHPUT_PROMPT;
-    }
+    if (!cli_args.mmproj_only) {
+        if (params.prompt.empty()) {
+            params.prompt = DEFAULT_THROUGHPUT_PROMPT;
+        }
 
-    if (params.prompt.find(mtmd_default_marker()) == std::string::npos) {
-        for (size_t i = 0; i < params.image.size(); ++i) {
-            params.prompt += mtmd_default_marker();
+        if (params.prompt.find(mtmd_default_marker()) == std::string::npos) {
+            for (size_t i = 0; i < params.image.size(); ++i) {
+                params.prompt += mtmd_default_marker();
+            }
         }
     }
 
     operator_profiler profiler;
-    params.cb_eval = operator_profiler::eval_callback;
-    params.cb_eval_user_data = &profiler;
+    if (!cli_args.mmproj_only) {
+        params.cb_eval = operator_profiler::eval_callback;
+        params.cb_eval_user_data = &profiler;
+    }
     params.warmup = false;
 
-    mtmd_profile_context ctx(params);
+    mtmd_profile_context ctx(params, !cli_args.mmproj_only);
     LOG("%s: loading model: %s\n", __func__, params.model.path.c_str());
 
     for (const auto & image : params.image) {
         if (!ctx.load_media(image)) {
             return 1;
         }
+    }
+
+    if (cli_args.mmproj_only) {
+        json report;
+        if (!run_mmproj_only(ctx, params, &report)) {
+            return 1;
+        }
+
+        report["raw_artifacts"] = {
+            {"mmproj_operator_profile", cli_args.profile_mmproj_output.empty() ? json(nullptr) : json(cli_args.profile_mmproj_output)},
+            {"npu_runtime_profile", cli_args.npu_runtime_profile_output.empty() ? json(nullptr) : json(cli_args.npu_runtime_profile_output)},
+            {"npu_node_trace", cli_args.npu_node_trace_output.empty() ? json(nullptr) : json(cli_args.npu_node_trace_output)},
+            {"npu_manifest", cli_args.npu_node_trace_output.empty() ? json(nullptr) : json(derive_manifest_path(cli_args.npu_node_trace_output))},
+        };
+        report["note"] =
+            "This run only executes image encode / mmproj. "
+            "Detailed operator and NPU stage breakdowns are written to the raw artifact JSON files.";
+
+        if (!write_json_file(cli_args.profile_output, report)) {
+            return 1;
+        }
+
+        LOG("\nSaved mmproj-only run metadata to %s\n", cli_args.profile_output.c_str());
+        if (!cli_args.profile_mmproj_output.empty()) {
+            LOG("Saved mmproj operator profile to %s\n", cli_args.profile_mmproj_output.c_str());
+        }
+        if (!cli_args.npu_runtime_profile_output.empty()) {
+            LOG("Saved NPU runtime profile to %s\n", cli_args.npu_runtime_profile_output.c_str());
+        }
+        if (!cli_args.npu_node_trace_output.empty()) {
+            LOG("Saved ggml-npu node trace to %s\n", cli_args.npu_node_trace_output.c_str());
+        }
+        return 0;
     }
 
     profiler.begin(profile_phase::prefill);

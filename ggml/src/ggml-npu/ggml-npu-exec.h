@@ -6,6 +6,6 @@
 
 namespace ggml_npu {
 
-enum ggml_status npu_compute_node(const npu_node_plan & plan, std::string * error);
+enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, std::string * error);
 
 } // namespace ggml_npu

@@ -1,0 +1,42 @@
+{
+  "profile_kind": "llama_server_mtmd_prefill_summary",
+  "timing_unit": "us",
+  "slot_id": 0,
+  "task_id": 0,
+  "prompt_tokens_processed": 188,
+  "prefill_total_us": 115182503,
+  "mmproj": {
+    "has_media": true,
+    "media_chunk_count": 1,
+    "image_chunk_count": 1,
+    "audio_chunk_count": 0,
+    "media_tokens": 64,
+    "media_positions": 64,
+    "encode_us": 100174206,
+    "decode_us": 4996479,
+    "total_chunk_us": 105170789
+  },
+  "npu": {
+    "used_npu": true,
+    "node_count": 48,
+    "exec_tile_count": 64512,
+    "total_node_us": 68168161,
+    "activation_pack_us": 57989696,
+    "host_copy_activation_us": 341485,
+    "host_copy_weight_us": 677823,
+    "bias_prepare_us": 0,
+    "postprocess_us": 4549717,
+    "runtime_total_us": 68046397,
+    "runtime_dma_in_us": 3029437,
+    "runtime_compute_us": 703869,
+    "runtime_dma_out_us": 320265,
+    "runtime_layout_us": 0,
+    "runtime_wait_irq_us": 3743142
+  },
+  "derived": {
+    "npu_host_us": 63558721,
+    "npu_total_node_us": 68168161,
+    "mmproj_residual_cpu_us": 32006045,
+    "prefill_minus_mmproj_us": 15008297
+  }
+}

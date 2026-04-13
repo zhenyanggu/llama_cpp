@@ -1,0 +1,573 @@
+#include "ggml-npu-profile.h"
+
+#include "ggml.h"
+#include "npu_runtime.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <vector>
+
+using json = nlohmann::ordered_json;
+
+namespace ggml_npu {
+
+namespace {
+
+struct npu_profile_state {
+    std::mutex mutex;
+    std::string output_path;
+    std::string manifest_path;
+    std::vector<npu_profile_node_record> nodes;
+};
+
+struct npu_summary_state {
+    std::mutex mutex;
+    bool active = false;
+    ggml_npu_profile_summary summary = {};
+};
+
+static npu_profile_state & npu_get_profile_state() {
+    static npu_profile_state state;
+    return state;
+}
+
+static npu_summary_state & npu_get_summary_state() {
+    static npu_summary_state state;
+    return state;
+}
+
+static std::string env_string(const char * key) {
+    const char * value = std::getenv(key);
+    return value ? value : "";
+}
+
+static std::string derive_manifest_path(const std::string & output_path) {
+    const std::string override_path = env_string("GGML_NPU_PROFILE_MANIFEST_JSON");
+    if (!override_path.empty()) {
+        return override_path;
+    }
+
+    if (output_path.empty()) {
+        return "";
+    }
+
+    if (output_path.size() >= 5 && output_path.substr(output_path.size() - 5) == ".json") {
+        return output_path.substr(0, output_path.size() - 5) + "_manifest.json";
+    }
+
+    return output_path + ".manifest.json";
+}
+
+static std::string resolve_output_path() {
+    return env_string("GGML_NPU_PROFILE_JSON");
+}
+
+static double pct(double numerator, double denominator) {
+    if (denominator <= 0.0) {
+        return 0.0;
+    }
+    return numerator / denominator * 100.0;
+}
+
+static std::string to_lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return (char) std::tolower(c);
+    });
+    return value;
+}
+
+static bool contains_any(const std::string & haystack, const std::vector<std::string> & needles) {
+    for (const std::string & needle : needles) {
+        if (haystack.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static npu_profile_tensor_info capture_tensor_info(const struct ggml_tensor * tensor) {
+    npu_profile_tensor_info info;
+    if (tensor == nullptr) {
+        return info;
+    }
+
+    info.present = true;
+    info.name = tensor->name;
+    info.type = ggml_type_name(tensor->type);
+    info.is_quantized = ggml_is_quantized(tensor->type);
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        info.ne[i] = tensor->ne[i];
+    }
+    return info;
+}
+
+static json shape_json(const std::array<int64_t, GGML_MAX_DIMS> & ne) {
+    return {ne[0], ne[1], ne[2], ne[3]};
+}
+
+static json tensor_json(const npu_profile_tensor_info & info) {
+    if (!info.present) {
+        return nullptr;
+    }
+
+    return {
+        {"name", info.name},
+        {"type", info.type},
+        {"is_quantized", info.is_quantized},
+        {"shape", shape_json(info.ne)},
+    };
+}
+
+static std::string stage_name(npu_loop_stage stage) {
+    switch (stage) {
+        case npu_loop_stage::single: return "single";
+        case npu_loop_stage::head:   return "head";
+        case npu_loop_stage::body:   return "body";
+        case npu_loop_stage::tail:   return "tail";
+    }
+
+    return "unknown";
+}
+
+static std::string semantic_op_from_plan(const npu_node_plan & plan) {
+    const std::string joined = to_lower(
+        std::string(plan.src0 && plan.src0->name[0] ? plan.src0->name : "") + " " +
+        std::string(plan.root && plan.root->name[0] ? plan.root->name : "") + " " +
+        std::string(plan.dst && plan.dst->name[0] ? plan.dst->name : ""));
+
+    if (contains_any(joined, {"patch_embeddings", "patch_emb", "patch_embedding", "patch_conv"})) {
+        return "patch_embedding";
+    }
+    if (contains_any(joined, {"position_embeddings", "pos_embed", "position_embedding"})) {
+        return "position_embedding";
+    }
+    if (contains_any(joined, {"class_embedding"})) {
+        return "class_embedding";
+    }
+    if (contains_any(joined, {"attn_q", "q_proj", "mm_model_attn_q", ".q.weight", ".q_w"})) {
+        return "attn_q";
+    }
+    if (contains_any(joined, {"attn_k", "k_proj", "mm_model_attn_k", ".k.weight", ".k_w"})) {
+        return "attn_k";
+    }
+    if (contains_any(joined, {"attn_v", "v_proj", "mm_model_attn_v", ".v.weight", ".v_w"})) {
+        return "attn_v";
+    }
+    if (contains_any(joined, {"attn_out_proj", "o_proj", "out_proj", ".o.weight", ".o_w"})) {
+        return "attn_out_proj";
+    }
+    if (contains_any(joined, {"ffn_up", "up_proj", "fc1", "gate_up_proj"})) {
+        return "ffn_up";
+    }
+    if (contains_any(joined, {"ffn_gate", "gate_proj"})) {
+        return "ffn_gate";
+    }
+    if (contains_any(joined, {"ffn_down", "down_proj", "fc2"})) {
+        return "ffn_down";
+    }
+    if (contains_any(joined, {"projection", "projector", "mm_projector"})) {
+        return "projector";
+    }
+
+    return "unclassified";
+}
+
+static json tile_json(const npu_profile_tile_record & tile) {
+    return {
+        {"tile_index", tile.tile_index},
+        {"m0", tile.m0},
+        {"n0", tile.n0},
+        {"k0", tile.k0},
+        {"m", tile.m},
+        {"n", tile.n},
+        {"k", tile.k},
+        {"stage", tile.stage},
+        {"needs_bias", tile.needs_bias},
+        {"writes_output", tile.writes_output},
+        {"weight_pack_index", tile.weight_pack_index},
+        {"bias_pack_index", tile.bias_pack_index},
+        {"activation_bytes", tile.activation_bytes},
+        {"weight_bytes", tile.weight_bytes},
+        {"bias_bytes", tile.bias_bytes},
+        {"acc_readback_bytes", tile.acc_readback_bytes},
+        {"output_write_bytes", tile.output_write_bytes},
+        {"activation_pack_us", tile.activation_pack_us},
+        {"host_copy_activation_us", tile.host_copy_activation_us},
+        {"host_copy_weight_us", tile.host_copy_weight_us},
+        {"bias_prepare_us", tile.bias_prepare_us},
+        {"dma_in_activation_us", tile.dma_in_activation_us},
+        {"dma_in_weight_us", tile.dma_in_weight_us},
+        {"dma_in_bias_us", tile.dma_in_bias_us},
+        {"gemm_us", tile.gemm_us},
+        {"dma_out_us", tile.dma_out_us},
+        {"postprocess_us", tile.postprocess_us},
+        {"total_us", tile.total_us},
+    };
+}
+
+static json node_json(const npu_profile_node_record & node, double total_us) {
+    json tiles = json::array();
+    for (const auto & tile : node.tiles) {
+        tiles.push_back(tile_json(tile));
+    }
+
+    const double total_dma_in_us = node.dma_in_activation_us_total + node.dma_in_weight_us_total + node.dma_in_bias_us_total;
+
+    return {
+        {"layer_id", node.layer_id},
+        {"root_tensor", tensor_json(node.root_tensor)},
+        {"compute_tensor", tensor_json(node.compute_tensor)},
+        {"weight_tensor", tensor_json(node.weight_tensor)},
+        {"activation_tensor", tensor_json(node.activation_tensor)},
+        {"bias_tensor", tensor_json(node.bias_tensor)},
+        {"dst_tensor", tensor_json(node.dst_tensor)},
+        {"root_op_name", node.root_op_name},
+        {"compute_op_name", node.compute_op_name},
+        {"semantic_op", node.semantic_op},
+        {"summary", node.summary},
+        {"m", node.m},
+        {"n", node.n},
+        {"k", node.k},
+        {"use_aicas_w8a8", node.use_aicas_w8a8},
+        {"activation_scale", node.activation_scale},
+        {"activation_zero_point", node.activation_zero_point},
+        {"first_stage_tm", node.first_stage_tm},
+        {"first_stage_tn", node.first_stage_tn},
+        {"first_stage_tk", node.first_stage_tk},
+        {"stage2_k_block", node.stage2_k_block},
+        {"exec_tile_count", node.exec_tile_count},
+        {"weight_pack_count", node.weight_pack_count},
+        {"bias_pack_count", node.bias_pack_count},
+        {"spm_bytes", node.spm_bytes},
+        {"acc_bytes", node.acc_bytes},
+        {"activation_offset", node.activation_offset},
+        {"weight_offset", node.weight_offset},
+        {"accumulator_offset", node.accumulator_offset},
+        {"activation_pack_calls", node.activation_pack_calls},
+        {"host_copy_activation_calls", node.host_copy_activation_calls},
+        {"host_copy_weight_calls", node.host_copy_weight_calls},
+        {"bias_prepare_calls", node.bias_prepare_calls},
+        {"dma_in_activation_calls", node.dma_in_activation_calls},
+        {"dma_in_weight_calls", node.dma_in_weight_calls},
+        {"dma_in_bias_calls", node.dma_in_bias_calls},
+        {"gemm_calls", node.gemm_calls},
+        {"dma_out_calls", node.dma_out_calls},
+        {"postprocess_calls", node.postprocess_calls},
+        {"packed_activation_bytes_total", node.packed_activation_bytes_total},
+        {"copied_weight_bytes_total", node.copied_weight_bytes_total},
+        {"bias_bytes_total", node.bias_bytes_total},
+        {"acc_readback_bytes_total", node.acc_readback_bytes_total},
+        {"output_write_bytes_total", node.output_write_bytes_total},
+        {"activation_pack_us_total", node.activation_pack_us_total},
+        {"host_copy_activation_us_total", node.host_copy_activation_us_total},
+        {"host_copy_weight_us_total", node.host_copy_weight_us_total},
+        {"bias_prepare_us_total", node.bias_prepare_us_total},
+        {"dma_in_activation_us_total", node.dma_in_activation_us_total},
+        {"dma_in_weight_us_total", node.dma_in_weight_us_total},
+        {"dma_in_bias_us_total", node.dma_in_bias_us_total},
+        {"dma_in_total_us", total_dma_in_us},
+        {"gemm_us_total", node.gemm_us_total},
+        {"dma_out_us_total", node.dma_out_us_total},
+        {"postprocess_us_total", node.postprocess_us_total},
+        {"total_node_us", node.total_node_us},
+        {"share_of_profile_time_pct", pct(node.total_node_us, total_us)},
+        {"status", node.status},
+        {"error", node.error.empty() ? nullptr : json(node.error)},
+        {"tiles", tiles},
+    };
+}
+
+static json manifest_json(const std::vector<npu_profile_node_record> & nodes) {
+    json layers = json::array();
+
+    for (const auto & node : nodes) {
+        json fused_ops = json::array();
+        fused_ops.push_back(node.compute_op_name.empty() ? "MUL_MAT" : node.compute_op_name);
+        if (node.bias_tensor.present) {
+            fused_ops.push_back("ADD");
+        }
+
+        std::string layer_name = node.root_tensor.present && !node.root_tensor.name.empty()
+            ? node.root_tensor.name
+            : (node.weight_tensor.present ? node.weight_tensor.name : "");
+        if (layer_name.empty() && node.dst_tensor.present) {
+            layer_name = node.dst_tensor.name;
+        }
+
+        layers.push_back({
+            {"layer_id", node.layer_id},
+            {"onnx_node_name", layer_name},
+            {"origin_op_type", node.semantic_op.empty() ? node.compute_op_name : node.semantic_op},
+            {"device", "npu"},
+            {"fused_ops", fused_ops},
+            {"fallback_reason", nullptr},
+        });
+    }
+
+    return {{"layers", layers}};
+}
+
+} // namespace
+
+bool npu_profile_enabled() {
+    return !resolve_output_path().empty();
+}
+
+npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu_node_plan & plan) {
+    npu_profile_node_record record;
+    record.layer_id = layer_id;
+    record.root_tensor = capture_tensor_info(plan.root);
+    record.compute_tensor = capture_tensor_info(plan.op);
+    record.weight_tensor = capture_tensor_info(plan.src0);
+    record.activation_tensor = capture_tensor_info(plan.src1);
+    record.bias_tensor = capture_tensor_info(plan.bias);
+    record.dst_tensor = capture_tensor_info(plan.dst);
+    record.root_op_name = plan.root ? ggml_op_name(plan.root->op) : "";
+    record.compute_op_name = plan.op ? ggml_op_name(plan.op->op) : "";
+    record.semantic_op = semantic_op_from_plan(plan);
+    record.summary = plan.summary;
+    record.m = plan.m;
+    record.n = plan.n;
+    record.k = plan.k;
+    record.use_aicas_w8a8 = plan.aicas_w8a8.valid;
+    record.activation_scale = plan.activation_quant.scale;
+    record.activation_zero_point = plan.activation_quant.zero_point;
+    record.first_stage_tm = plan.first_stage_tm;
+    record.first_stage_tn = plan.first_stage_tn;
+    record.first_stage_tk = plan.first_stage_tk;
+    record.stage2_k_block = plan.config.stage2_k_block;
+    record.exec_tile_count = static_cast<int64_t>(plan.exec_tiles.size());
+    record.weight_pack_count = static_cast<int64_t>(plan.weight_packs.size());
+    record.bias_pack_count = static_cast<int64_t>(plan.bias_packs.size());
+    record.spm_bytes = plan.config.spm_bytes;
+    record.acc_bytes = plan.config.acc_bytes;
+    record.activation_offset = plan.config.layout.activation.offset;
+    record.weight_offset = plan.config.layout.weight.offset;
+    record.accumulator_offset = plan.config.layout.accumulator.offset;
+    return record;
+}
+
+void npu_profile_reset() {
+    if (!npu_profile_enabled()) {
+        return;
+    }
+
+    npu_profile_state & state = npu_get_profile_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.output_path = resolve_output_path();
+    state.manifest_path = derive_manifest_path(state.output_path);
+    state.nodes.clear();
+}
+
+void npu_profile_add_node_record(npu_profile_node_record record) {
+    if (!npu_profile_enabled()) {
+        return;
+    }
+
+    npu_profile_state & state = npu_get_profile_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.output_path = resolve_output_path();
+    state.manifest_path = derive_manifest_path(state.output_path);
+    state.nodes.push_back(std::move(record));
+}
+
+void npu_profile_flush() {
+    if (!npu_profile_enabled()) {
+        return;
+    }
+
+    npu_profile_state & state = npu_get_profile_state();
+    std::vector<npu_profile_node_record> snapshot;
+    std::string output_path;
+    std::string manifest_path;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        output_path = resolve_output_path();
+        manifest_path = derive_manifest_path(output_path);
+        state.output_path = output_path;
+        state.manifest_path = manifest_path;
+        snapshot = state.nodes;
+    }
+
+    if (output_path.empty()) {
+        return;
+    }
+
+    double total_us = 0.0;
+    double total_activation_pack_us = 0.0;
+    double total_host_copy_activation_us = 0.0;
+    double total_host_copy_weight_us = 0.0;
+    double total_bias_prepare_us = 0.0;
+    double total_dma_in_us = 0.0;
+    double total_gemm_us = 0.0;
+    double total_dma_out_us = 0.0;
+    double total_postprocess_us = 0.0;
+
+    std::sort(snapshot.begin(), snapshot.end(), [](const auto & lhs, const auto & rhs) {
+        return lhs.layer_id < rhs.layer_id;
+    });
+
+    for (const auto & node : snapshot) {
+        total_us += node.total_node_us;
+        total_activation_pack_us += node.activation_pack_us_total;
+        total_host_copy_activation_us += node.host_copy_activation_us_total;
+        total_host_copy_weight_us += node.host_copy_weight_us_total;
+        total_bias_prepare_us += node.bias_prepare_us_total;
+        total_dma_in_us += node.dma_in_activation_us_total + node.dma_in_weight_us_total + node.dma_in_bias_us_total;
+        total_gemm_us += node.gemm_us_total;
+        total_dma_out_us += node.dma_out_us_total;
+        total_postprocess_us += node.postprocess_us_total;
+    }
+
+    std::vector<npu_profile_node_record> hot_nodes = snapshot;
+    std::sort(hot_nodes.begin(), hot_nodes.end(), [](const auto & lhs, const auto & rhs) {
+        if (lhs.total_node_us != rhs.total_node_us) {
+            return lhs.total_node_us > rhs.total_node_us;
+        }
+        return lhs.layer_id < rhs.layer_id;
+    });
+
+    json hot = json::array();
+    for (size_t i = 0; i < hot_nodes.size() && i < 10; ++i) {
+        hot.push_back({
+            {"layer_id", hot_nodes[i].layer_id},
+            {"semantic_op", hot_nodes[i].semantic_op},
+            {"root_name", hot_nodes[i].root_tensor.present ? hot_nodes[i].root_tensor.name : ""},
+            {"weight_name", hot_nodes[i].weight_tensor.present ? hot_nodes[i].weight_tensor.name : ""},
+            {"total_node_us", hot_nodes[i].total_node_us},
+        });
+    }
+
+    json nodes = json::array();
+    for (const auto & node : snapshot) {
+        nodes.push_back(node_json(node, total_us));
+    }
+
+    json out = {
+        {"profile_kind", "ggml_npu_node_trace"},
+        {"timing_unit", "us"},
+        {"note", "Per-node and per-tile wall-clock timings captured around ggml-npu execution. DMA/GEMM timings here are user-space call latencies; NPU runtime profile JSON provides the lower-level stage split including wait_irq."},
+        {"node_count", snapshot.size()},
+        {"summary", {
+            {"total_node_us", total_us},
+            {"total_activation_pack_us", total_activation_pack_us},
+            {"total_host_copy_activation_us", total_host_copy_activation_us},
+            {"total_host_copy_weight_us", total_host_copy_weight_us},
+            {"total_bias_prepare_us", total_bias_prepare_us},
+            {"total_dma_in_us", total_dma_in_us},
+            {"total_gemm_us", total_gemm_us},
+            {"total_dma_out_us", total_dma_out_us},
+            {"total_postprocess_us", total_postprocess_us},
+            {"hot_nodes", hot},
+        }},
+        {"nodes", nodes},
+    };
+
+    std::ofstream out_stream(output_path);
+    if (out_stream.is_open()) {
+        out_stream << out.dump(2) << '\n';
+    }
+
+    if (!manifest_path.empty()) {
+        std::ofstream manifest_stream(manifest_path);
+        if (manifest_stream.is_open()) {
+            manifest_stream << manifest_json(snapshot).dump(2) << '\n';
+        }
+    }
+}
+
+bool npu_summary_active() {
+    npu_summary_state & state = npu_get_summary_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return state.active;
+}
+
+void npu_summary_session_start() {
+    npu_summary_state & state = npu_get_summary_state();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.active = true;
+        state.summary = {};
+    }
+
+    npu_profile_reset_summary();
+}
+
+void npu_summary_session_stop(ggml_npu_profile_summary * out) {
+    ggml_npu_profile_summary snapshot = {};
+    {
+        npu_summary_state & state = npu_get_summary_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        snapshot = state.summary;
+        snapshot.valid = 1;
+        state.active = false;
+        state.summary = {};
+    }
+
+    npu_profile_runtime_summary runtime = {};
+    npu_profile_get_summary(&runtime);
+
+    snapshot.runtime_total_us = static_cast<int64_t>(runtime.total_ns / 1000);
+    snapshot.runtime_dma_in_us = static_cast<int64_t>(runtime.dma_in_ns / 1000);
+    snapshot.runtime_compute_us = static_cast<int64_t>(runtime.compute_ns / 1000);
+    snapshot.runtime_dma_out_us = static_cast<int64_t>(runtime.dma_out_ns / 1000);
+    snapshot.runtime_layout_us = static_cast<int64_t>(runtime.layout_ns / 1000);
+    snapshot.runtime_wait_irq_us = static_cast<int64_t>(runtime.wait_irq_ns / 1000);
+    snapshot.runtime_mvin_calls = static_cast<int64_t>(runtime.mvin_calls);
+    snapshot.runtime_compute_calls = static_cast<int64_t>(runtime.compute_calls);
+    snapshot.runtime_mvout_calls = static_cast<int64_t>(runtime.mvout_calls);
+    snapshot.runtime_layout_calls = static_cast<int64_t>(runtime.layout_calls);
+
+    if (out != nullptr) {
+        *out = snapshot;
+    }
+}
+
+void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
+    npu_summary_state & state = npu_get_summary_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!state.active) {
+        return;
+    }
+
+    ggml_npu_profile_summary & summary = state.summary;
+    summary.used_npu = 1;
+    summary.node_count += delta.node_count;
+    summary.exec_tile_count += delta.exec_tile_count;
+    summary.weight_pack_count += delta.weight_pack_count;
+    summary.bias_pack_count += delta.bias_pack_count;
+    summary.activation_pack_calls += delta.activation_pack_calls;
+    summary.host_copy_activation_calls += delta.host_copy_activation_calls;
+    summary.host_copy_weight_calls += delta.host_copy_weight_calls;
+    summary.bias_prepare_calls += delta.bias_prepare_calls;
+    summary.dma_in_activation_calls += delta.dma_in_activation_calls;
+    summary.dma_in_weight_calls += delta.dma_in_weight_calls;
+    summary.dma_in_bias_calls += delta.dma_in_bias_calls;
+    summary.gemm_calls += delta.gemm_calls;
+    summary.dma_out_calls += delta.dma_out_calls;
+    summary.postprocess_calls += delta.postprocess_calls;
+    summary.packed_activation_bytes_total += delta.packed_activation_bytes_total;
+    summary.copied_weight_bytes_total += delta.copied_weight_bytes_total;
+    summary.bias_bytes_total += delta.bias_bytes_total;
+    summary.acc_readback_bytes_total += delta.acc_readback_bytes_total;
+    summary.output_write_bytes_total += delta.output_write_bytes_total;
+    summary.total_node_us += delta.total_node_us;
+    summary.activation_pack_us_total += delta.activation_pack_us_total;
+    summary.host_copy_activation_us_total += delta.host_copy_activation_us_total;
+    summary.host_copy_weight_us_total += delta.host_copy_weight_us_total;
+    summary.bias_prepare_us_total += delta.bias_prepare_us_total;
+    summary.dma_in_activation_us_total += delta.dma_in_activation_us_total;
+    summary.dma_in_weight_us_total += delta.dma_in_weight_us_total;
+    summary.dma_in_bias_us_total += delta.dma_in_bias_us_total;
+    summary.gemm_us_total += delta.gemm_us_total;
+    summary.dma_out_us_total += delta.dma_out_us_total;
+    summary.postprocess_us_total += delta.postprocess_us_total;
+}
+
+} // namespace ggml_npu

@@ -2086,6 +2086,48 @@ void npu_profile_dump(const char* path) {
     dumpProfilerReport(path);
 }
 
+void npu_profile_reset_summary() {
+    NPU_CAPI_LOG("npu_profile_reset_summary()");
+    if (isProfilingDisabled()) {
+        return;
+    }
+
+    ProfilerState& state = getProfilerState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.layers.clear();
+    g_activeLayer = ActiveLayerFrame{};
+}
+
+void npu_profile_get_summary(struct npu_profile_runtime_summary * out) {
+    if (out == nullptr) {
+        return;
+    }
+
+    *out = {};
+    if (isProfilingDisabled()) {
+        return;
+    }
+
+    ProfilerState& state = getProfilerState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    out->layer_count = state.layers.size();
+
+    for (const auto & entry : state.layers) {
+        const LayerProfileRecord & record = entry.second;
+        out->layer_invocations += record.invocations;
+        out->total_ns += record.totalNs;
+        out->dma_in_ns += record.dmaInNs;
+        out->compute_ns += record.computeNs;
+        out->dma_out_ns += record.dmaOutNs;
+        out->layout_ns += record.layoutNs;
+        out->wait_irq_ns += record.waitIrqNs;
+        out->mvin_calls += record.mvinCalls;
+        out->compute_calls += record.computeCalls;
+        out->mvout_calls += record.mvoutCalls;
+        out->layout_calls += record.layoutCalls;
+    }
+}
+
 void* npu_mem_alloc(size_t size) {
     NPU_CAPI_LOG("npu_mem_alloc(size=%zu)", size);
     if (!g_npu_runtime && npu_init() < 0) return nullptr;

@@ -10,6 +10,7 @@ set(NPU_RUNTIME_ROOT "${LLAMA_CPP_ROOT}/npuruntime/kv260/runtime")
 
 target_include_directories(ggml-npu PRIVATE
     "${NPU_RUNTIME_ROOT}"
+    "${LLAMA_CPP_ROOT}/vendor"
     "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 set(NPU_RUNTIME_SRC "${NPU_RUNTIME_ROOT}/npu_runtime.cpp")
@@ -17,4 +18,8 @@ if (EXISTS "${NPU_RUNTIME_SRC}")
     target_sources(ggml-npu PRIVATE "${NPU_RUNTIME_SRC}")
 else()
     message(FATAL_ERROR "NPU runtime source not found: ${NPU_RUNTIME_SRC}")
+endif()
+
+if (GGML_NPU_RUNTIME_PROFILE)
+    target_compile_definitions(ggml-npu PRIVATE NPU_PROFILE)
 endif()

@@ -2,6 +2,7 @@
 
 #include "ggml-npu-exec.h"
 #include "ggml-npu-plan.h"
+#include "ggml-npu-profile.h"
 
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
@@ -16,6 +17,21 @@ namespace ggml_npu {
 
 static bool npu_debug_log_enabled() {
     return std::getenv("GGML_NPU_DEBUG_LOG") != nullptr || std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
+}
+
+static bool npu_runtime_profile_requested() {
+    const char * path = std::getenv("NPU_PROFILE_OUT");
+    return path != nullptr && path[0] != '\0';
+}
+
+static int64_t & npu_profile_next_layer_id() {
+    static int64_t next_layer_id = 0;
+    return next_layer_id;
+}
+
+static bool & npu_profile_session_started() {
+    static bool started = false;
+    return started;
 }
 
 struct npu_backend_context {
@@ -236,7 +252,15 @@ static enum ggml_status npu_backend_graph_plan_compute(
         return GGML_STATUS_FAILED;
     }
 
-    for (const npu_node_plan & node_plan : graph_plan->nodes) {
+    if ((npu_profile_enabled() || npu_runtime_profile_requested() || npu_summary_active()) && !npu_profile_session_started()) {
+        npu_profile_reset();
+        npu_profile_next_layer_id() = 0;
+        npu_profile_session_started() = true;
+    }
+
+    for (size_t i = 0; i < graph_plan->nodes.size(); ++i) {
+        const npu_node_plan & node_plan = graph_plan->nodes[i];
+        const int64_t layer_id = npu_profile_next_layer_id()++;
         if (npu_debug_log_enabled()) {
             const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
             GGML_LOG_INFO("%s: start root=%s op=%s summary=%s\n",
@@ -246,8 +270,9 @@ static enum ggml_status npu_backend_graph_plan_compute(
                     node_plan.summary.c_str());
         }
         std::string error;
-        const enum ggml_status status = npu_compute_node(node_plan, &error);
+        const enum ggml_status status = npu_compute_node(node_plan, layer_id, &error);
         if (status != GGML_STATUS_SUCCESS) {
+            npu_profile_flush();
             if (npu_debug_log_enabled()) {
                 const char * root_name = node_plan.root && node_plan.root->name[0] != '\0' ? node_plan.root->name : "(unnamed)";
                 GGML_LOG_ERROR("%s: failed root=%s status=%d error=%s\n",
@@ -264,6 +289,7 @@ static enum ggml_status npu_backend_graph_plan_compute(
         }
     }
 
+    npu_profile_flush();
     return GGML_STATUS_SUCCESS;
 }
 
@@ -508,6 +534,14 @@ ggml_backend_t ggml_backend_npu_init(void) {
 
 bool ggml_backend_is_npu(ggml_backend_t backend) {
     return backend != nullptr && ggml_guid_matches(backend->guid, ggml_npu::ggml_backend_npu_guid());
+}
+
+void ggml_backend_npu_profile_summary_start(void) {
+    ggml_npu::npu_summary_session_start();
+}
+
+void ggml_backend_npu_profile_summary_stop(ggml_npu_profile_summary * out) {
+    ggml_npu::npu_summary_session_stop(out);
 }
 
 void ggml_backend_npu_w8a8_clear(void) {

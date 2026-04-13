@@ -1716,6 +1716,8 @@ struct server_slot {
     double t_prompt_processing; // ms
     double t_token_generation;  // ms
 
+    server_mtmd_prefill_profile mmproj_profile;
+
     std::function<void(int)> callback_on_release;
 
     // Speculative decoding stats
@@ -1746,6 +1748,7 @@ struct server_slot {
         // clear speculative decoding stats
         n_draft_total = 0;
         n_draft_accepted = 0;
+        mmproj_profile.reset(server_mtmd_profile_enabled());
 
         task.reset();
         task_prev.reset();
@@ -1926,6 +1929,29 @@ struct server_slot {
                     draft_ratio, n_draft_accepted, n_draft_total
             );
         }
+    }
+
+    void write_mtmd_prefill_profile_summary() const {
+        if (!mmproj_profile.enabled || !mmproj_profile.has_media || task == nullptr) {
+            return;
+        }
+
+        const std::string path = server_mtmd_profile_output_path();
+        if (path.empty()) {
+            return;
+        }
+
+        std::ofstream out(path);
+        if (!out.is_open()) {
+            SLT_WRN(*this, "failed to open mtmd prefill summary output: %s\n", path.c_str());
+            return;
+        }
+
+        out << mmproj_profile.to_json(
+            t_prompt_processing * 1000.0,
+            n_prompt_tokens_processed,
+            id,
+            task->id).dump(2) << '\n';
     }
 
     json to_json(bool only_metrics = false) const {
@@ -2513,6 +2539,7 @@ struct server_context {
             slot.n_ctx = n_ctx_slot;
             slot.mctx = mctx;
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
+            slot.mmproj_profile.reset(server_mtmd_profile_enabled());
 
             if (model_dft) {
                 slot.batch_spec = llama_batch_init(params_base.speculative.n_max + 1, 0, 1);
@@ -3948,7 +3975,7 @@ struct server_context {
                     if (slot.n_past < slot.n_prompt_tokens() && input_tokens[slot.n_past] == LLAMA_TOKEN_NULL) {
                         // process the image
                         int32_t new_n_past;
-                        int32_t res = input_tokens.process_chunk(ctx, mctx, slot.n_past, slot.id, new_n_past);
+                        int32_t res = input_tokens.process_chunk(ctx, mctx, slot.n_past, slot.id, new_n_past, &slot.mmproj_profile);
                         if (res != 0) {
                             SLT_ERR(slot, "failed to process image, res = %d\n", res);
                             send_error(slot, "failed to process image", ERROR_TYPE_SERVER);
@@ -4231,6 +4258,7 @@ struct server_context {
                 if (slot.n_decoded == 1) {
                     slot.t_start_generation = t_current;
                     slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
+                    slot.write_mtmd_prefill_profile_summary();
                     metrics.on_prompt_eval(slot);
                 }
 

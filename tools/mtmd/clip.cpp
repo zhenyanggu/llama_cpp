@@ -71,6 +71,13 @@ struct clip_profile_signature_aggregate {
     std::vector<std::string> example_node_names;
 };
 
+struct clip_profile_node_name_aggregate {
+    clip_profile_tensor_info output;
+    std::string op_name;
+    double duration_us = 0.0;
+    int64_t node_count = 0;
+};
+
 static clip_profile_tensor_info clip_capture_tensor_info(const ggml_tensor * t) {
     clip_profile_tensor_info info;
     if (t == nullptr) {
@@ -120,6 +127,31 @@ static std::string clip_mul_mat_signature_key(const clip_profile_node_timing & n
     return node.srcs[0].type + "|" + clip_shape_key(node.srcs[0].ne) + "|" +
            node.srcs[1].type + "|" + clip_shape_key(node.srcs[1].ne) + "|" +
            node.tensor_type + "|" + clip_shape_key(node.ne);
+}
+
+static json clip_node_json(const clip_profile_node_timing & node, double total_us) {
+    json inputs = json::array();
+    for (const auto & src : node.srcs) {
+        if (src.present) {
+            inputs.push_back(clip_tensor_json(src));
+        }
+    }
+
+    return {
+        {"event_index", node.event_index},
+        {"node_name", node.node_name},
+        {"operator_name", node.op_name},
+        {"output", {
+            {"name", node.node_name},
+            {"type", node.tensor_type},
+            {"is_quantized", node.tensor_is_quantized},
+            {"shape", clip_shape_json(node.ne)},
+        }},
+        {"inputs", inputs},
+        {"duration_us", node.duration_us},
+        {"duration_ms", node.duration_us / 1000.0},
+        {"share_of_total_time_pct", clip_pct(node.duration_us, total_us)},
+    };
 }
 
 struct clip_profiler {
@@ -179,6 +211,7 @@ struct clip_profiler {
     json summarize() const {
         std::unordered_map<std::string, clip_profile_op_aggregate> ops;
         std::unordered_map<std::string, clip_profile_signature_aggregate> matmuls;
+        std::unordered_map<std::string, clip_profile_node_name_aggregate> node_names;
         double total_us = 0.0;
 
         for (const auto & node : nodes) {
@@ -186,6 +219,18 @@ struct clip_profiler {
             auto & agg = ops[node.op_name];
             agg.duration_us += node.duration_us;
             agg.node_count += 1;
+
+            auto & node_name_agg = node_names[node.node_name + "|" + node.op_name];
+            if (node_name_agg.node_count == 0) {
+                node_name_agg.output.present = true;
+                node_name_agg.output.name = node.node_name;
+                node_name_agg.output.type = node.tensor_type;
+                node_name_agg.output.is_quantized = node.tensor_is_quantized;
+                node_name_agg.output.ne = node.ne;
+                node_name_agg.op_name = node.op_name;
+            }
+            node_name_agg.duration_us += node.duration_us;
+            node_name_agg.node_count += 1;
 
             if (node.op_name == "MUL_MAT" && node.srcs[0].present && node.srcs[1].present) {
                 auto & sig = matmuls[clip_mul_mat_signature_key(node)];
@@ -224,6 +269,22 @@ struct clip_profiler {
             return lhs.first < rhs.first;
         });
 
+        std::vector<std::pair<std::string, clip_profile_node_name_aggregate>> sorted_node_names(node_names.begin(), node_names.end());
+        std::sort(sorted_node_names.begin(), sorted_node_names.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.second.duration_us != rhs.second.duration_us) {
+                return lhs.second.duration_us > rhs.second.duration_us;
+            }
+            return lhs.first < rhs.first;
+        });
+
+        std::vector<clip_profile_node_timing> sorted_nodes = nodes;
+        std::sort(sorted_nodes.begin(), sorted_nodes.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.duration_us != rhs.duration_us) {
+                return lhs.duration_us > rhs.duration_us;
+            }
+            return lhs.node_name < rhs.node_name;
+        });
+
         json operators = json::array();
         for (const auto & [name, agg] : sorted_ops) {
             operators.push_back({
@@ -251,6 +312,29 @@ struct clip_profiler {
             });
         }
 
+        json node_name_summary = json::array();
+        for (const auto & [_, agg] : sorted_node_names) {
+            node_name_summary.push_back({
+                {"node_name", agg.output.name},
+                {"operator_name", agg.op_name},
+                {"output", clip_tensor_json(agg.output)},
+                {"duration_us", agg.duration_us},
+                {"duration_ms", agg.duration_us / 1000.0},
+                {"share_of_total_time_pct", clip_pct(agg.duration_us, total_us)},
+                {"node_event_count", agg.node_count},
+            });
+        }
+
+        json top_nodes = json::array();
+        for (size_t i = 0; i < sorted_nodes.size() && i < 25; ++i) {
+            top_nodes.push_back(clip_node_json(sorted_nodes[i], total_us));
+        }
+
+        json all_nodes = json::array();
+        for (const auto & node : nodes) {
+            all_nodes.push_back(clip_node_json(node, total_us));
+        }
+
         return {
             {"profile_kind", "mmproj_operator_latency_share"},
             {"timing_unit", "us"},
@@ -263,6 +347,9 @@ struct clip_profiler {
             {"mul_mat_share_of_total_time_pct", clip_pct(mul_mat_total_us, total_us)},
             {"operators", operators},
             {"mul_mat_signatures", mul_mat_signatures},
+            {"node_name_summary", node_name_summary},
+            {"top_nodes", top_nodes},
+            {"nodes", all_nodes},
         };
     }
 
