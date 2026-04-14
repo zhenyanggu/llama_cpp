@@ -14,6 +14,7 @@ void npu_clear_aicas_w8a8_table(void);
 bool npu_register_aicas_w8a8(
         const char * weight_name,
         float act_scale,
+        int32_t act_scale_q8_24,
         int32_t act_zero_point_u8,
         const float * weight_scale,
         size_t weight_scale_len,

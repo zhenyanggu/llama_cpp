@@ -101,6 +101,7 @@ struct npu_activation_quant_config {
 struct npu_aicas_w8a8_config {
     bool valid = false;
     float act_scale = 1.0f;
+    int32_t act_scale_q8_24 = 0;
     int32_t act_zero_point_i8 = 0;
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;

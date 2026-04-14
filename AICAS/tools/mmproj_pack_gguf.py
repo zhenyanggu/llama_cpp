@@ -125,6 +125,19 @@ def maybe_build_sum_w(q: np.ndarray, act_quant_mode: str, act_zero_point: int) -
     return q.astype(np.int32).sum(axis=1).astype(np.int32)
 
 
+def float_to_q8_24(scale: float) -> int:
+    scaled = int(np.rint(np.float64(scale) * np.float64(1 << 24)))
+    i32 = np.iinfo(np.int32)
+    return int(np.clip(scaled, i32.min, i32.max))
+
+
+def array_to_q8_24(scales: np.ndarray) -> np.ndarray:
+    scaled = np.rint(scales.astype(np.float64) * np.float64(1 << 24)).astype(np.int64)
+    i32 = np.iinfo(np.int32)
+    clipped = np.clip(scaled, i32.min, i32.max)
+    return clipped.astype(np.int32)
+
+
 def copy_metadata(reader: gguf.GGUFReader, writer: gguf.GGUFWriter) -> None:
     for field in reader.fields.values():
         if field.name.startswith("GGUF."):
@@ -225,11 +238,15 @@ def main() -> int:
             writer.add_bool(prefix + "enabled", layer.enabled)
             writer.add_string(prefix + "policy", resolved_policy)
             if resolved_policy == "W8A8":
+                act_scale_q8_24 = float_to_q8_24(layer.act_scale)
+                dequant_scale_q8_24 = array_to_q8_24(scale * np.float32(layer.act_scale))
                 writer.add_float32(prefix + "act_scale", layer.act_scale)
+                writer.add_int32(prefix + "act_scale_q8_24", act_scale_q8_24)
                 writer.add_int32(prefix + "act_zero_point", layer.act_zero_point)
                 writer.add_string(prefix + "act_quant_mode", layer.act_quant_mode)
                 writer.add_string(prefix + "weight_scale_mode", args.weight_granularity)
                 writer.add_array(prefix + "weight_scale", scale.tolist())
+                writer.add_array(prefix + "dequant_scale_q8_24", dequant_scale_q8_24.tolist())
                 if sum_w is not None:
                     writer.add_array(prefix + "sum_w", sum_w.tolist())
 
@@ -239,10 +256,12 @@ def main() -> int:
                     "enabled": layer.enabled,
                     "policy": resolved_policy,
                     "act_scale": layer.act_scale,
+                    "act_scale_q8_24": float_to_q8_24(layer.act_scale) if scale is not None else 0,
                     "act_zero_point": layer.act_zero_point,
                     "act_quant_mode": layer.act_quant_mode,
                     "weight_scale_mode": args.weight_granularity if scale is not None else "",
                     "weight_scale_len": int(len(scale)) if scale is not None else 0,
+                    "dequant_scale_q8_24_len": int(len(scale)) if scale is not None else 0,
                     "sum_w_len": int(len(sum_w)) if sum_w is not None else 0,
                     "sum_w_mode": "omitted" if sum_w is None and scale is not None else "per_output_channel",
                 }

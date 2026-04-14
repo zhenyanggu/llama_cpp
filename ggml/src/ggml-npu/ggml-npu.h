@@ -65,6 +65,7 @@ GGML_BACKEND_API void ggml_backend_npu_w8a8_clear(void);
 GGML_BACKEND_API bool ggml_backend_npu_w8a8_register(
         const char * weight_name,
         float act_scale,
+    int32_t act_scale_q8_24,
         int32_t act_zero_point_u8,
         const float * weight_scale,
         size_t weight_scale_len,

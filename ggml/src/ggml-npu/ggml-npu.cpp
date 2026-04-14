@@ -551,6 +551,7 @@ void ggml_backend_npu_w8a8_clear(void) {
 bool ggml_backend_npu_w8a8_register(
         const char * weight_name,
         float act_scale,
+        int32_t act_scale_q8_24,
         int32_t act_zero_point_u8,
         const float * weight_scale,
         size_t weight_scale_len,
@@ -559,6 +560,7 @@ bool ggml_backend_npu_w8a8_register(
     return ggml_npu::npu_register_aicas_w8a8(
         weight_name,
         act_scale,
+        act_scale_q8_24,
         act_zero_point_u8,
         weight_scale,
         weight_scale_len,

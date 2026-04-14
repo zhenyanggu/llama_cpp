@@ -43,6 +43,17 @@ static npu_aicas_w8a8_table & npu_get_aicas_w8a8_table() {
     return table;
 }
 
+static int32_t npu_float_to_q8_24(float scale) {
+    const double scaled = std::nearbyint(static_cast<double>(scale) * static_cast<double>(1u << 24));
+    if (scaled > static_cast<double>(INT32_MAX)) {
+        return INT32_MAX;
+    }
+    if (scaled < static_cast<double>(INT32_MIN)) {
+        return INT32_MIN;
+    }
+    return static_cast<int32_t>(scaled);
+}
+
 void npu_clear_aicas_w8a8_table(void) {
     npu_aicas_w8a8_table & table = npu_get_aicas_w8a8_table();
     std::lock_guard<std::mutex> lock(table.mutex);
@@ -52,6 +63,7 @@ void npu_clear_aicas_w8a8_table(void) {
 bool npu_register_aicas_w8a8(
         const char * weight_name,
         float act_scale,
+    int32_t act_scale_q8_24,
         int32_t act_zero_point_u8,
         const float * weight_scale,
         size_t weight_scale_len,
@@ -76,6 +88,7 @@ bool npu_register_aicas_w8a8(
     npu_aicas_w8a8_config cfg;
     cfg.valid = true;
     cfg.act_scale = act_scale;
+    cfg.act_scale_q8_24 = act_scale_q8_24 != 0 ? act_scale_q8_24 : npu_float_to_q8_24(act_scale);
     cfg.act_zero_point_i8 = act_zero_point_u8 - 128;
     cfg.weight_scale.assign(weight_scale, weight_scale + weight_scale_len);
     cfg.sum_w.assign(sum_w, sum_w + sum_w_len);

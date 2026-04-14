@@ -39,6 +39,17 @@ static std::string npu_stage_name(npu_loop_stage stage) {
     return "unknown";
 }
 
+static uint32_t npu_float_to_q8_24_u32(float scale) {
+    const double scaled = std::nearbyint(static_cast<double>(scale) * static_cast<double>(1u << 24));
+    if (scaled > static_cast<double>(INT32_MAX)) {
+        return static_cast<uint32_t>(INT32_MAX);
+    }
+    if (scaled < static_cast<double>(INT32_MIN)) {
+        return static_cast<uint32_t>(INT32_MIN);
+    }
+    return static_cast<uint32_t>(static_cast<int32_t>(scaled));
+}
+
 static float npu_read_bias_value_f32_exec(
         const struct ggml_tensor * bias,
         int64_t m,
@@ -234,7 +245,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     std::unordered_map<npu_activation_tile_key, std::vector<int8_t>, npu_activation_tile_key_hash> activation_tile_cache;
     const float activation_scale = plan.activation_quant.scale;
     const bool use_aicas_w8a8 = plan.aicas_w8a8.valid;
-    std::vector<int32_t> acc_values;
+    const uint32_t mvout_f32_scale = use_aicas_w8a8 && plan.aicas_w8a8.act_scale_q8_24 != 0
+        ? static_cast<uint32_t>(plan.aicas_w8a8.act_scale_q8_24)
+        : npu_float_to_q8_24_u32(activation_scale);
+    std::vector<float> acc_scaled_values;
     std::vector<int32_t> bias_values;
 
     activation_tile_cache.reserve(plan.exec_tiles.size());
@@ -272,7 +286,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             active_n0 = exec_tile.n0;
             active_m = exec_tile.m;
             active_n = exec_tile.n;
-            acc_values.assign(static_cast<size_t>(active_n * active_m), 0);
+            acc_scaled_values.assign(static_cast<size_t>(active_n * active_m), 0.0f);
             bias_values.assign(static_cast<size_t>(active_m), 0);
         }
 
@@ -548,13 +562,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 0,
                 0,
                 0,
-                1,
+                3,
                 1,
                 true,
-                false,
+                true,
                 0,
-                0,
-                0);
+                mvout_f32_scale);
             if (collect_stage_profile) {
                 const int64_t dma_out_us = ggml_time_us() - dma_out_start_us;
                 exec_summary.delta.dma_out_calls += 1;
@@ -567,24 +580,26 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
 
             const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
             std::memcpy(
-                acc_values.data(),
+                acc_scaled_values.data(),
                 acc_buf,
-                static_cast<size_t>(exec_tile.n * exec_tile.m * sizeof(int32_t)));
+                static_cast<size_t>(exec_tile.n * exec_tile.m * sizeof(float)));
 
             for (int64_t n = 0; n < exec_tile.n; ++n) {
                 for (int64_t m = 0; m < exec_tile.m; ++m) {
                     const float wgt_scale = packed_weight.scales[static_cast<size_t>(m)];
                     const size_t idx = static_cast<size_t>(n * exec_tile.m + m);
-                    int32_t acc = acc_values[idx];
+                    const float acc_scaled = acc_scaled_values[idx];
                     const int64_t global_m = exec_tile.m0 + m;
 
+                    float value = acc_scaled * wgt_scale;
                     if (use_aicas_w8a8 &&
                         global_m >= 0 &&
                         static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
-                        acc -= plan.activation_quant.zero_point * plan.weight_column_sum_q[static_cast<size_t>(global_m)];
+                        value -= static_cast<float>(
+                            plan.activation_quant.zero_point *
+                            plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
+                            activation_scale * wgt_scale;
                     }
-
-                    float value = static_cast<float>(acc) * activation_scale * wgt_scale;
                     if (use_aicas_w8a8 && plan.bias != nullptr) {
                         value += npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0 + n);
                     }

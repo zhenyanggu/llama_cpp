@@ -507,6 +507,7 @@ struct clip_aicas_w8a8_tensor {
     bool enabled = true;
     std::string policy = "F16_FALLBACK";
     float act_scale = 0.0f;
+    int32_t act_scale_q8_24 = 0;
     int32_t act_zero_point = 0;
     std::string act_quant_mode = "asymmetric_u8";
     std::string weight_scale_mode = "per_channel";
@@ -1617,6 +1618,7 @@ struct clip_ctx {
             const bool ok = ggml_backend_npu_w8a8_register(
                 tensor_name.c_str(),
                 cfg.act_scale,
+                cfg.act_scale_q8_24,
                 cfg.act_zero_point,
                 cfg.weight_scale.data(),
                 cfg.weight_scale.size(),
@@ -4424,6 +4426,10 @@ struct clip_model_loader {
 
             if (cfg.enabled && cfg.policy == "W8A8") {
                 get_f32(prefix + "act_scale", cfg.act_scale);
+                get_i32(prefix + "act_scale_q8_24", cfg.act_scale_q8_24, false);
+                if (cfg.act_scale_q8_24 == 0 && cfg.act_scale != 0.0f) {
+                    cfg.act_scale_q8_24 = clip_fp32_bits_to_q8_24(clip_f32_to_bits(cfg.act_scale));
+                }
                 int act_zero_point = 0;
                 get_i32(prefix + "act_zero_point", act_zero_point);
                 cfg.act_zero_point = act_zero_point;
