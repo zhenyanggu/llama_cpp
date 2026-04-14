@@ -1,5 +1,7 @@
 # Extensions
 mmproj*.json
+AICAS/output
+artifacts
 *.a
 *.bat
 *.bin

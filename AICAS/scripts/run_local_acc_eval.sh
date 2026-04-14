@@ -270,11 +270,13 @@ setup_python
 
 mkdir -p "$OUTPUT_FOLDER"
 SERVER_LOG="$OUTPUT_FOLDER/server.log"
+BASE_URL="http://127.0.0.1:$PORT/v1"
 rm -f "$SERVER_LOG"
 
 echo "Using llama-server: $SERVER_BIN"
 echo "Using OCRBench file: $OCRBENCH_FILE"
 echo "Results output dir: $OUTPUT_FOLDER"
+echo "Using base URL: $BASE_URL"
 
 trap cleanup EXIT
 
@@ -299,7 +301,8 @@ fi
   --image_folder "$IMAGE_FOLDER" \
   --OCRBench_file "$OCRBENCH_FILE" \
   --output_folder "$OUTPUT_FOLDER" \
-  --save_name "$SAVE_NAME"
+  --save_name "$SAVE_NAME" \
+  --base-url "$BASE_URL"
 
 echo
 echo "Accuracy evaluation finished."

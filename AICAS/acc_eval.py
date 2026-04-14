@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from argparse import ArgumentParser
 
 from llama_server_client import (
@@ -24,6 +25,8 @@ def _get_args():
     parser.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL)
     parser.add_argument("--model", type=str, default="smolvlm2-gguf")
     parser.add_argument("--request-timeout", type=float, default=300.0)
+    parser.add_argument("--request-retries", type=int, default=2)
+    parser.add_argument("--retry-delay", type=float, default=2.0)
     parser.add_argument("--progress-every", type=int, default=10)
     return parser.parse_args()
 
@@ -176,15 +179,25 @@ if __name__ == "__main__":
                 }
             ]
 
-            response = chat_completion(
-                base_url=args.base_url,
-                model=args.model,
-                messages=messages_payload,
-                max_tokens=100,
-                temperature=0.0,
-                timeout=args.request_timeout,
-            )
-            item["predict"] = extract_text_content(response)
+            last_error = None
+            for attempt in range(args.request_retries + 1):
+                try:
+                    response = chat_completion(
+                        base_url=args.base_url,
+                        model=args.model,
+                        messages=messages_payload,
+                        max_tokens=100,
+                        temperature=0.0,
+                        timeout=args.request_timeout,
+                    )
+                    item["predict"] = extract_text_content(response)
+                    last_error = None
+                    break
+                except Exception as retry_error:
+                    last_error = retry_error
+                    if attempt >= args.request_retries:
+                        raise
+                    time.sleep(args.retry_delay)
 
         except Exception as e:
             print(f"Error processing {img_path}: {e}")

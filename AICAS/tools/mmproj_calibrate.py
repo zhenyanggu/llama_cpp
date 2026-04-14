@@ -12,6 +12,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--act-stats", required=True, help="Path to collected activation stats JSON")
     p.add_argument("--calib-manifest", default="", help="Optional calib_manifest.json for traceability")
     p.add_argument("--output", default="AICAS/artifacts/quant_params.json", help="Output JSON")
+    p.add_argument(
+        "--act-quant-mode",
+        choices=["asymmetric_u8", "symmetric_u8"],
+        default="asymmetric_u8",
+        help="Activation quantization mode written into the output calibration JSON",
+    )
     p.add_argument("--percentile-low", type=float, default=0.1, help="Lower percentile for asymmetric clipping")
     p.add_argument("--percentile-high", type=float, default=99.9, help="Upper percentile for asymmetric clipping")
     p.add_argument("--fallback-act-scale", type=float, default=0.02, help="Fallback activation scale when stats are missing")
@@ -50,10 +56,32 @@ def _compute_u8_params(samples: np.ndarray, p_low: float, p_high: float, min_sca
     return scale, zp, q_low, q_high, clipped
 
 
+def _compute_symmetric_u8_params(samples: np.ndarray, p_low: float, p_high: float, min_scale: float) -> tuple[float, int, float, float, float]:
+    if samples.size == 0:
+        raise ValueError("empty samples")
+
+    lo = float(np.percentile(samples, p_low))
+    hi = float(np.percentile(samples, p_high))
+    lo = min(lo, 0.0)
+    hi = max(hi, 0.0)
+
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("non-finite percentile values")
+
+    max_abs = max(abs(lo), abs(hi))
+    scale = max(max_abs / 127.0, min_scale)
+    zp = 128
+    q_low = -128.0 * scale
+    q_high = 127.0 * scale
+    clipped = float(np.mean((samples < q_low) | (samples > q_high))) if samples.size else 0.0
+    return scale, zp, q_low, q_high, clipped
+
+
 def main() -> int:
     args = parse_args()
     manifest = _load_json(args.layer_manifest)
     stats_doc = _load_json(args.act_stats)
+    fallback_zero_point = 128 if args.act_quant_mode == "symmetric_u8" else args.fallback_act_zero_point
 
     stats_map = {item["tensor_name"]: item for item in stats_doc.get("tensors", [])}
 
@@ -72,7 +100,8 @@ def main() -> int:
                     "enabled": False,
                     "policy": "F16_FALLBACK",
                     "act_scale": float(layer.get("act_scale", args.fallback_act_scale)),
-                    "act_zero_point": int(layer.get("act_zero_point", args.fallback_act_zero_point)),
+                    "act_zero_point": int(layer.get("act_zero_point", fallback_zero_point)),
+                    "act_quant_mode": args.act_quant_mode,
                     "observed_min": None,
                     "observed_max": None,
                     "clip_min": None,
@@ -86,12 +115,20 @@ def main() -> int:
             continue
 
         samples = np.asarray(stats["samples"], dtype=np.float32)
-        scale, zp, clip_min, clip_max, clipped_ratio = _compute_u8_params(
-            samples,
-            args.percentile_low,
-            args.percentile_high,
-            args.min_act_scale,
-        )
+        if args.act_quant_mode == "symmetric_u8":
+            scale, zp, clip_min, clip_max, clipped_ratio = _compute_symmetric_u8_params(
+                samples,
+                args.percentile_low,
+                args.percentile_high,
+                args.min_act_scale,
+            )
+        else:
+            scale, zp, clip_min, clip_max, clipped_ratio = _compute_u8_params(
+                samples,
+                args.percentile_low,
+                args.percentile_high,
+                args.min_act_scale,
+            )
 
         layers_out.append(
             {
@@ -101,6 +138,7 @@ def main() -> int:
                 "policy": base_policy if enabled else "F16_FALLBACK",
                 "act_scale": float(scale),
                 "act_zero_point": int(zp),
+                "act_quant_mode": args.act_quant_mode,
                 "observed_min": float(stats.get("min", float(samples.min()))),
                 "observed_max": float(stats.get("max", float(samples.max()))),
                 "clip_min": float(clip_min),
@@ -120,7 +158,8 @@ def main() -> int:
         "percentile_low": args.percentile_low,
         "percentile_high": args.percentile_high,
         "fallback_act_scale": args.fallback_act_scale,
-        "fallback_act_zero_point": args.fallback_act_zero_point,
+        "fallback_act_zero_point": fallback_zero_point,
+        "act_quant_mode": args.act_quant_mode,
         "layers": layers_out,
     }
 

@@ -22,9 +22,10 @@
 #include <unistd.h>
 #include <vector>
 
-// NOTE: Temporary compatibility behavior: MVIN/MVOUT precision is forced to 1
-// regardless of API input. API signature remains unchanged for now; update it
-// in a future revision when the interface change is allowed.
+// NOTE: Temporary compatibility behavior:
+// - MVIN precision is forced to 1 regardless of API input.
+// - MVOUT precision follows API input.
+// API behavior is adjusted per current hardware contract.
 
 // ==========================================
 // Profiling
@@ -1248,7 +1249,7 @@ void NpuRuntime::run_mvin(const MvinConfig& cfg) {
 void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
     NPU_TIMER_TOTAL("run_mvout");
     ScopedStageTimer profileTimer(ProfileStage::DmaOut, ProfileCallCounter::Mvout);
-    const uint8_t precision = 1; // force precision regardless of API input
+    const uint8_t precision = static_cast<uint8_t>(cfg.precision & 0x3);
     
     uint32_t phys_dram = virt_to_phys(cfg.host_ptr);
     NPU_TIMER_SECTION_BEGIN("run_mvout(pre_reg)")
@@ -1272,10 +1273,12 @@ void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
                        REG_FIELD(CFG_MVOUT0, DRAM_STRIDE, cfg.dram_stride);
     reg_write64_cached(RegOffset::MVOUT_CFG, val_cfg, &shadow.mvout_cfg);
     
-    if (cfg.is_quant) {
+    if (cfg.is_quant && precision == 3) {
+        uint16_t quant_scale = static_cast<uint16_t>(cfg.f32_scale & 0xFFFF);
+        uint16_t quant_scaleshift = static_cast<uint16_t>((cfg.f32_scale >> 16) & 0xFFFF);
         uint64_t val_quant = REG_FIELD(CFG_MVOUT1, ZEROPOINT, cfg.quant_zero) |
-                             REG_FIELD(CFG_MVOUT1, SCALE, cfg.quant_scale) |
-                             REG_FIELD(CFG_MVOUT1, SCALE_SHIFT, cfg.quant_shift);
+                             REG_FIELD(CFG_MVOUT1, SCALE, quant_scale) |
+                             REG_FIELD(CFG_MVOUT1, SCALE_SHIFT, quant_scaleshift);
         reg_write64_cached(RegOffset::MVOUT_QUANT, val_quant, &shadow.mvout_quant);
     }
     reg_write(RegOffset::START, BIT_START_DMA_MVOUT);
@@ -2086,48 +2089,6 @@ void npu_profile_dump(const char* path) {
     dumpProfilerReport(path);
 }
 
-void npu_profile_reset_summary() {
-    NPU_CAPI_LOG("npu_profile_reset_summary()");
-    if (isProfilingDisabled()) {
-        return;
-    }
-
-    ProfilerState& state = getProfilerState();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.layers.clear();
-    g_activeLayer = ActiveLayerFrame{};
-}
-
-void npu_profile_get_summary(struct npu_profile_runtime_summary * out) {
-    if (out == nullptr) {
-        return;
-    }
-
-    *out = {};
-    if (isProfilingDisabled()) {
-        return;
-    }
-
-    ProfilerState& state = getProfilerState();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    out->layer_count = state.layers.size();
-
-    for (const auto & entry : state.layers) {
-        const LayerProfileRecord & record = entry.second;
-        out->layer_invocations += record.invocations;
-        out->total_ns += record.totalNs;
-        out->dma_in_ns += record.dmaInNs;
-        out->compute_ns += record.computeNs;
-        out->dma_out_ns += record.dmaOutNs;
-        out->layout_ns += record.layoutNs;
-        out->wait_irq_ns += record.waitIrqNs;
-        out->mvin_calls += record.mvinCalls;
-        out->compute_calls += record.computeCalls;
-        out->mvout_calls += record.mvoutCalls;
-        out->layout_calls += record.layoutCalls;
-    }
-}
-
 void* npu_mem_alloc(size_t size) {
     NPU_CAPI_LOG("npu_mem_alloc(size=%zu)", size);
     if (!g_npu_runtime && npu_init() < 0) return nullptr;
@@ -2170,10 +2131,10 @@ void npu_dma_mvin(
 void npu_dma_mvout(
     void* host_ptr, uint32_t sram_addr, uint32_t col_num, uint32_t row_num,
     uint16_t sram_stride, uint32_t dram_stride, uint8_t precision, uint8_t output_type,
-    bool source, bool is_quant, uint32_t quant_zero, uint16_t quant_scale, uint16_t quant_shift
+    bool source, bool is_quant, uint32_t quant_zero, uint32_t f32_scale
 ) {
     NPU_CAPI_LOG(
-        "npu_dma_mvout(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, quant_scale=%u, quant_shift=%d)",
+        "npu_dma_mvout(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, f32_scale=0x%08X)",
         host_ptr,
         sram_addr,
         (unsigned)col_num,
@@ -2185,11 +2146,10 @@ void npu_dma_mvout(
         (int)source,
         (int)is_quant,
         quant_zero,
-        (unsigned)quant_scale,
-        (int)static_cast<int16_t>(quant_shift));
+        (unsigned)f32_scale);
     if (g_npu_runtime) {
         MvoutConfig cfg = {host_ptr, sram_addr, col_num, row_num, sram_stride, dram_stride,
-                           precision, output_type, source, is_quant, quant_zero, quant_scale, quant_shift};
+                           precision, output_type, source, is_quant, quant_zero, f32_scale};
         g_npu_runtime->run_mvout(cfg);
     }
 }
@@ -2579,9 +2539,9 @@ void npu_dma_mvin_test(void* host_ptr, uint32_t sram_addr, uint32_t col_num, uin
 
 void npu_dma_mvout_test(void* host_ptr, uint32_t sram_addr, uint32_t col_num, uint32_t row_num,
                         uint16_t sram_stride, uint32_t dram_stride, uint8_t precision, uint8_t output_type,
-                        bool source, bool is_quant, uint32_t quant_zero, uint16_t quant_scale, uint16_t quant_shift) {
+                        bool source, bool is_quant, uint32_t quant_zero, uint32_t f32_scale) {
     NPU_CAPI_LOG(
-        "npu_dma_mvout_test(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, quant_scale=%u, quant_shift=%d)",
+        "npu_dma_mvout_test(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, f32_scale=0x%08X)",
         host_ptr,
         sram_addr,
         (unsigned)col_num,
@@ -2593,8 +2553,7 @@ void npu_dma_mvout_test(void* host_ptr, uint32_t sram_addr, uint32_t col_num, ui
         (int)source,
         (int)is_quant,
         quant_zero,
-        (unsigned)quant_scale,
-        (int)static_cast<int16_t>(quant_shift));
+        (unsigned)f32_scale);
     #ifdef NPU_DEBUG
     printf("[TEST] MVOUT: Host=%p SRAM=0x%x Size=%dx%d\n", host_ptr, sram_addr, row_num, col_num);
     #endif

@@ -20,6 +20,7 @@ class LayerPolicy:
     policy: str
     act_scale: float
     act_zero_point: int
+    act_quant_mode: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-quant-params", default="AICAS/artifacts/quant_params.json")
     p.add_argument("--schema", default="smolvlm2_idefics3_static_w8a8_v1")
     p.add_argument("--mode", choices=["quantize", "metadata-only"], default="quantize")
+    p.add_argument(
+        "--weight-granularity",
+        choices=["per_channel", "per_tensor"],
+        default="per_channel",
+        help="Weight quantization granularity for emitted I8 tensors",
+    )
     p.add_argument("--default-act-scale", type=float, default=0.02)
     p.add_argument("--default-act-zero-point", type=int, default=128)
     return p.parse_args()
@@ -49,6 +56,7 @@ def load_manifest(path: str, default_scale: float, default_zp: int) -> list[Laye
                 policy=str(layer.get("policy", "W8A8")),
                 act_scale=float(layer.get("act_scale", default_scale)),
                 act_zero_point=int(layer.get("act_zero_point", default_zp)),
+                act_quant_mode=str(layer.get("act_quant_mode", "asymmetric_u8")),
             )
         )
     return out
@@ -61,6 +69,7 @@ def overlay_quant_params(layers: list[LayerPolicy], quant_params_path: str) -> l
     with open(quant_params_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    default_act_quant_mode = str(data.get("act_quant_mode", "asymmetric_u8"))
     overrides = {item["tensor_name"]: item for item in data.get("layers", [])}
     out: list[LayerPolicy] = []
     for layer in layers:
@@ -76,13 +85,14 @@ def overlay_quant_params(layers: list[LayerPolicy], quant_params_path: str) -> l
                 policy=str(item.get("policy", layer.policy)),
                 act_scale=float(item.get("act_scale", layer.act_scale)),
                 act_zero_point=int(item.get("act_zero_point", layer.act_zero_point)),
+                act_quant_mode=str(item.get("act_quant_mode", default_act_quant_mode)),
             )
         )
 
     return out
 
 
-def quantize_per_channel_i8(weight: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def quantize_per_channel_i8(weight: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if weight.ndim != 2:
         raise ValueError(f"Only 2D weight tensors are supported, got ndim={weight.ndim}")
 
@@ -92,8 +102,27 @@ def quantize_per_channel_i8(weight: np.ndarray) -> tuple[np.ndarray, np.ndarray,
     max_abs = np.max(np.abs(w), axis=1)
     scales = np.where(max_abs > 0, max_abs / 127.0, 1.0).astype(np.float32)
     q = np.clip(np.round(w / scales[:, np.newaxis]), -127, 127).astype(np.int8)
-    sum_w = q.astype(np.int32).sum(axis=1).astype(np.int32)
-    return q, scales, sum_w
+    return q, scales
+
+
+def quantize_per_tensor_i8(weight: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if weight.ndim != 2:
+        raise ValueError(f"Only 2D weight tensors are supported, got ndim={weight.ndim}")
+
+    w = np.asarray(weight, dtype=np.float32)
+    max_abs = float(np.max(np.abs(w)))
+    scale = np.float32(max_abs / 127.0) if max_abs > 0.0 else np.float32(1.0)
+    q = np.clip(np.round(w / scale), -127, 127).astype(np.int8)
+    return q, np.asarray([scale], dtype=np.float32)
+
+
+def maybe_build_sum_w(q: np.ndarray, act_quant_mode: str, act_zero_point: int) -> np.ndarray | None:
+    if act_quant_mode == "symmetric_u8":
+        if act_zero_point != 128:
+            raise ValueError("symmetric_u8 requires act_zero_point=128 when omitting sum_w")
+        return None
+
+    return q.astype(np.int32).sum(axis=1).astype(np.int32)
 
 
 def copy_metadata(reader: gguf.GGUFReader, writer: gguf.GGUFWriter) -> None:
@@ -143,6 +172,8 @@ def main() -> int:
         "layer_manifest": os.path.abspath(args.layer_manifest),
         "quant_params_input": quant_params_input,
         "mode": args.mode,
+        "weight_granularity": args.weight_granularity,
+        "act_quant_modes": sorted({layer.act_quant_mode for layer in layers}),
         "layers": [],
     }
 
@@ -167,7 +198,15 @@ def main() -> int:
                 and np_data.ndim == 2
             )
             if can_quantize:
-                q, scale, sum_w = quantize_per_channel_i8(np_data)
+                if layer.act_quant_mode == "symmetric_u8" and layer.act_zero_point != 128:
+                    raise ValueError(
+                        f"{name}: symmetric_u8 requires act_zero_point=128, got {layer.act_zero_point}"
+                    )
+                if args.weight_granularity == "per_tensor":
+                    q, scale = quantize_per_tensor_i8(np_data)
+                else:
+                    q, scale = quantize_per_channel_i8(np_data)
+                sum_w = maybe_build_sum_w(q, layer.act_quant_mode, layer.act_zero_point)
                 out_data = np.ascontiguousarray(q)
                 out_raw_dtype = None
                 resolved_policy = "W8A8"
@@ -188,8 +227,11 @@ def main() -> int:
             if resolved_policy == "W8A8":
                 writer.add_float32(prefix + "act_scale", layer.act_scale)
                 writer.add_int32(prefix + "act_zero_point", layer.act_zero_point)
+                writer.add_string(prefix + "act_quant_mode", layer.act_quant_mode)
+                writer.add_string(prefix + "weight_scale_mode", args.weight_granularity)
                 writer.add_array(prefix + "weight_scale", scale.tolist())
-                writer.add_array(prefix + "sum_w", sum_w.tolist())
+                if sum_w is not None:
+                    writer.add_array(prefix + "sum_w", sum_w.tolist())
 
             quant_params["layers"].append(
                 {
@@ -198,8 +240,11 @@ def main() -> int:
                     "policy": resolved_policy,
                     "act_scale": layer.act_scale,
                     "act_zero_point": layer.act_zero_point,
+                    "act_quant_mode": layer.act_quant_mode,
+                    "weight_scale_mode": args.weight_granularity if scale is not None else "",
                     "weight_scale_len": int(len(scale)) if scale is not None else 0,
                     "sum_w_len": int(len(sum_w)) if sum_w is not None else 0,
+                    "sum_w_mode": "omitted" if sum_w is None and scale is not None else "per_output_channel",
                 }
             )
 

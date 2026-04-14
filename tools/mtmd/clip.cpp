@@ -35,6 +35,8 @@
 #include <numeric>
 #include <functional>
 #include <mutex>
+#include <memory>
+#include <atomic>
 
 using json = nlohmann::ordered_json;
 
@@ -506,11 +508,624 @@ struct clip_aicas_w8a8_tensor {
     std::string policy = "F16_FALLBACK";
     float act_scale = 0.0f;
     int32_t act_zero_point = 0;
+    std::string act_quant_mode = "asymmetric_u8";
+    std::string weight_scale_mode = "per_channel";
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;
+
+    bool uses_symmetric_u8() const {
+        return act_quant_mode == "symmetric_u8";
+    }
+
+    bool uses_per_tensor_weight_scale() const {
+        return weight_scale_mode == "per_tensor";
+    }
+
+    size_t expected_weight_scale_len(int64_t out_channels) const {
+        return uses_per_tensor_weight_scale() ? size_t(1) : static_cast<size_t>(out_channels);
+    }
+
+    bool has_valid_compensation_config(int64_t out_channels) const {
+        if (sum_w.empty()) {
+            return uses_symmetric_u8() && act_zero_point == 128;
+        }
+        return sum_w.size() == static_cast<size_t>(out_channels);
+    }
+
+    bool is_npu_compatible(int64_t out_channels) const {
+        if (uses_per_tensor_weight_scale()) {
+            return false;
+        }
+        if (out_channels < 0) {
+            return !weight_scale.empty() && !sum_w.empty() && weight_scale.size() == sum_w.size();
+        }
+        return weight_scale.size() == static_cast<size_t>(out_channels) &&
+            sum_w.size() == static_cast<size_t>(out_channels);
+    }
 };
 
+enum class clip_aicas_dequant_sim_mode {
+    off,
+    versa_q8_24,
+    versa_q8_24_fp_reconstruct,
+    scale_shift_i32_round,
+    scale_shift_fp_reconstruct,
+};
+
+static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
+    switch (mode) {
+        case clip_aicas_dequant_sim_mode::off:
+            return "off";
+        case clip_aicas_dequant_sim_mode::versa_q8_24:
+            return "versa_q8_24";
+        case clip_aicas_dequant_sim_mode::versa_q8_24_fp_reconstruct:
+            return "versa_q8_24_fp_reconstruct";
+        case clip_aicas_dequant_sim_mode::scale_shift_i32_round:
+            return "scale_shift_i32_round";
+        case clip_aicas_dequant_sim_mode::scale_shift_fp_reconstruct:
+            return "scale_shift_fp_reconstruct";
+    }
+
+    return "off";
+}
+
+static clip_aicas_dequant_sim_mode clip_get_dequant_sim_mode() {
+    const char * env = std::getenv("AICAS_MMPROJ_DEQUANT_SIM");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "off") == 0) {
+        return clip_aicas_dequant_sim_mode::off;
+    }
+    if (std::strcmp(env, "versa_q8_24") == 0) {
+        return clip_aicas_dequant_sim_mode::versa_q8_24;
+    }
+    if (std::strcmp(env, "versa_q8_24_fp_reconstruct") == 0) {
+        return clip_aicas_dequant_sim_mode::versa_q8_24_fp_reconstruct;
+    }
+    if (std::strcmp(env, "scale_shift_i32_round") == 0) {
+        return clip_aicas_dequant_sim_mode::scale_shift_i32_round;
+    }
+    if (std::strcmp(env, "scale_shift_fp_reconstruct") == 0) {
+        return clip_aicas_dequant_sim_mode::scale_shift_fp_reconstruct;
+    }
+    return clip_aicas_dequant_sim_mode::off;
+}
+
+static uint32_t clip_f32_to_bits(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static float clip_bits_to_f32(uint32_t bits) {
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 struct clip_ctx;
+
+struct clip_aicas_scale_shift32 {
+    int32_t scale = 0;
+    int32_t shift = 0;
+};
+
+struct clip_aicas_dequant_result {
+    float value = 0.0f;
+    bool scale_zero = false;
+    bool rounded_to_zero = false;
+    bool sat_i32 = false;
+    bool sat_fp_exp = false;
+    bool flush_to_zero_exp = false;
+    bool mul_overflow_guard_hit = false;
+};
+
+struct clip_aicas_dequant_diag_counters {
+    std::atomic<uint64_t> scale_zero {0};
+    std::atomic<uint64_t> rounded_to_zero {0};
+    std::atomic<uint64_t> sat_i32 {0};
+    std::atomic<uint64_t> sat_fp_exp {0};
+    std::atomic<uint64_t> flush_to_zero_exp {0};
+    std::atomic<uint64_t> mul_overflow_guard_hit {0};
+
+    json to_json() const {
+        return {
+            {"scale_zero", scale_zero.load(std::memory_order_relaxed)},
+            {"rounded_to_zero", rounded_to_zero.load(std::memory_order_relaxed)},
+            {"sat_i32", sat_i32.load(std::memory_order_relaxed)},
+            {"sat_fp_exp", sat_fp_exp.load(std::memory_order_relaxed)},
+            {"flush_to_zero_exp", flush_to_zero_exp.load(std::memory_order_relaxed)},
+            {"mul_overflow_guard_hit", mul_overflow_guard_hit.load(std::memory_order_relaxed)},
+        };
+    }
+
+    bool empty() const {
+        return scale_zero.load(std::memory_order_relaxed) == 0 &&
+            rounded_to_zero.load(std::memory_order_relaxed) == 0 &&
+            sat_i32.load(std::memory_order_relaxed) == 0 &&
+            sat_fp_exp.load(std::memory_order_relaxed) == 0 &&
+            flush_to_zero_exp.load(std::memory_order_relaxed) == 0 &&
+            mul_overflow_guard_hit.load(std::memory_order_relaxed) == 0;
+    }
+};
+
+struct clip_aicas_w8a8_kernel_userdata {
+    const clip_aicas_w8a8_tensor * cfg = nullptr;
+    clip_aicas_dequant_sim_mode mode = clip_aicas_dequant_sim_mode::off;
+    clip_aicas_dequant_diag_counters * stats = nullptr;
+};
+
+static void clip_record_aicas_dequant_result(
+        clip_aicas_dequant_diag_counters * stats,
+        const clip_aicas_dequant_result & result) {
+    if (stats == nullptr) {
+        return;
+    }
+    if (result.scale_zero) {
+        stats->scale_zero.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.rounded_to_zero) {
+        stats->rounded_to_zero.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.sat_i32) {
+        stats->sat_i32.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.sat_fp_exp) {
+        stats->sat_fp_exp.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.flush_to_zero_exp) {
+        stats->flush_to_zero_exp.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.mul_overflow_guard_hit) {
+        stats->mul_overflow_guard_hit.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+static int32_t clip_fp32_bits_to_q_fixed(uint32_t fp_bits, int frac_width) {
+    const bool sign_bit = (fp_bits >> 31) != 0;
+    const uint32_t exp_bits = (fp_bits >> 23) & 0xFFu;
+    const uint32_t frac_field = fp_bits & 0x7FFFFFu;
+    const bool is_nan = exp_bits == 0xFFu && frac_field != 0;
+    const bool is_inf = exp_bits == 0xFFu && frac_field == 0;
+
+    if (is_nan) {
+        return 0;
+    }
+    if (is_inf) {
+        return sign_bit ? INT32_MIN : INT32_MAX;
+    }
+    if (exp_bits == 0 && frac_field == 0) {
+        return 0;
+    }
+
+    const uint32_t mantissa = exp_bits == 0 ? frac_field : ((1u << 23) | frac_field);
+    const int exp_unbiased = exp_bits == 0 ? -126 : static_cast<int>(exp_bits) - 127;
+    const int shift_amount = exp_unbiased + (frac_width - 23);
+
+    uint64_t abs_value = 0;
+    if (shift_amount >= 0) {
+        if (shift_amount >= 40) {
+            abs_value = UINT64_MAX;
+        } else {
+            abs_value = static_cast<uint64_t>(mantissa) << shift_amount;
+        }
+    } else {
+        const int right_shift = -shift_amount;
+        if (right_shift < 64) {
+            const uint64_t base_value = static_cast<uint64_t>(mantissa) >> right_shift;
+            const uint64_t lower_mask = right_shift == 1 ? 0x1ULL : ((1ULL << right_shift) - 1ULL);
+            const uint64_t half_ulp = right_shift == 1 ? 0x1ULL : (1ULL << (right_shift - 1));
+            const uint64_t remainder = static_cast<uint64_t>(mantissa) & lower_mask;
+            abs_value = base_value;
+            if (remainder > half_ulp || (remainder == half_ulp && (base_value & 1ULL))) {
+                abs_value += 1ULL;
+            }
+        }
+    }
+
+    if (!sign_bit) {
+        return abs_value > static_cast<uint64_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(abs_value);
+    }
+
+    return abs_value >= 2147483648ULL ? INT32_MIN : -static_cast<int32_t>(abs_value);
+}
+
+static int32_t clip_fp32_bits_to_q8_24(uint32_t fp_bits) {
+    return clip_fp32_bits_to_q_fixed(fp_bits, 24);
+}
+
+static int32_t clip_fixed_mul_to_i32(int32_t int_value, int32_t scale_value, int frac_width, bool * saturated = nullptr) {
+    const int64_t product = static_cast<int64_t>(int_value) * static_cast<int64_t>(scale_value);
+    const bool product_is_neg = product < 0;
+    const uint64_t abs_product = product_is_neg
+        ? static_cast<uint64_t>(-product)
+        : static_cast<uint64_t>(product);
+
+    uint64_t quotient = abs_product >> frac_width;
+    const uint64_t remainder_mask = (1ULL << frac_width) - 1ULL;
+    const uint64_t remainder = abs_product & remainder_mask;
+    const uint64_t half_ulp = 1ULL << (frac_width - 1);
+    if (remainder > half_ulp || (remainder == half_ulp && (quotient & 1ULL))) {
+        quotient += 1ULL;
+    }
+
+    const int64_t rounded_value = product_is_neg
+        ? -static_cast<int64_t>(quotient)
+        : static_cast<int64_t>(quotient);
+    if (rounded_value > INT32_MAX) {
+        if (saturated != nullptr) {
+            *saturated = true;
+        }
+        return INT32_MAX;
+    }
+    if (rounded_value < INT32_MIN) {
+        if (saturated != nullptr) {
+            *saturated = true;
+        }
+        return INT32_MIN;
+    }
+    if (saturated != nullptr) {
+        *saturated = false;
+    }
+    return static_cast<int32_t>(rounded_value);
+}
+
+static uint32_t clip_i32_to_fp32_bits_exact(int32_t int_value) {
+    if (int_value == 0) {
+        return 0;
+    }
+
+    const uint32_t int_bits = static_cast<uint32_t>(int_value);
+    const bool sign_bit = (int_bits >> 31) != 0;
+    const uint32_t abs_value = sign_bit ? ((~int_bits) + 1u) : int_bits;
+
+    int msb_idx = 0;
+    for (int bit_idx = 31; bit_idx >= 0; --bit_idx) {
+        if ((abs_value >> bit_idx) & 1u) {
+            msb_idx = bit_idx;
+            break;
+        }
+    }
+
+    uint32_t exponent_bits = static_cast<uint32_t>(msb_idx + 127);
+    uint32_t mantissa_24 = 0;
+    if (msb_idx <= 23) {
+        mantissa_24 = abs_value << (23 - msb_idx);
+    } else {
+        const int right_shift = msb_idx - 23;
+        mantissa_24 = abs_value >> right_shift;
+
+        const uint32_t remainder_mask = (1u << right_shift) - 1u;
+        const uint32_t remainder_bits = abs_value & remainder_mask;
+        const uint32_t half_ulp = 1u << (right_shift - 1);
+        if (remainder_bits > half_ulp || (remainder_bits == half_ulp && (mantissa_24 & 1u))) {
+            mantissa_24 += 1u;
+        }
+
+        if (mantissa_24 == 0x1000000u) {
+            exponent_bits += 1u;
+            mantissa_24 = 0x800000u;
+        }
+    }
+
+    const uint32_t frac_bits = mantissa_24 & 0x7FFFFFu;
+    return (sign_bit ? 0x80000000u : 0u) | (exponent_bits << 23) | frac_bits;
+}
+
+static clip_aicas_scale_shift32 clip_dequant_scale_to_scale_shift(float scale) {
+    clip_aicas_scale_shift32 out;
+    if (!std::isfinite(scale) || scale == 0.0f) {
+        return out;
+    }
+
+    int exponent = 0;
+    const double abs_scale = std::fabs(static_cast<double>(scale));
+    const double mantissa = std::frexp(abs_scale, &exponent);
+    int64_t scale_i64 = llrint(mantissa * static_cast<double>(1ULL << 31));
+    if (scale_i64 >= (1LL << 31)) {
+        scale_i64 >>= 1;
+        exponent += 1;
+    }
+
+    if (scale_i64 > INT32_MAX) {
+        scale_i64 = INT32_MAX;
+    }
+    if (std::signbit(scale)) {
+        scale_i64 = -scale_i64;
+    }
+
+    out.scale = static_cast<int32_t>(scale_i64);
+    out.shift = exponent - 31;
+    return out;
+}
+
+static int clip_u64_msb_index(uint64_t value) {
+    GGML_ASSERT(value != 0);
+#if defined(__GNUC__) || defined(__clang__)
+    return 63 - __builtin_clzll(value);
+#else
+    int idx = 0;
+    while ((value >> (idx + 1)) != 0) {
+        ++idx;
+    }
+    return idx;
+#endif
+}
+
+static int32_t clip_apply_scale_shift_i32_round(
+        int32_t acc,
+        const clip_aicas_scale_shift32 & scale_shift,
+        bool * saturated = nullptr,
+        bool * rounded_to_zero = nullptr,
+        bool * overflow_guard_hit = nullptr) {
+    if (saturated != nullptr) {
+        *saturated = false;
+    }
+    if (rounded_to_zero != nullptr) {
+        *rounded_to_zero = false;
+    }
+    if (overflow_guard_hit != nullptr) {
+        *overflow_guard_hit = false;
+    }
+    if (acc == 0 || scale_shift.scale == 0) {
+        return 0;
+    }
+
+    const bool product_is_neg = (acc < 0) ^ (scale_shift.scale < 0);
+    const uint64_t abs_product = static_cast<uint64_t>(std::llabs(static_cast<long long>(acc))) *
+        static_cast<uint64_t>(std::llabs(static_cast<long long>(scale_shift.scale)));
+    const uint64_t sat_limit = product_is_neg ? 2147483648ULL : 2147483647ULL;
+
+    uint64_t abs_result = 0;
+    if (scale_shift.shift >= 0) {
+        const int shift = scale_shift.shift;
+        if (shift >= 64) {
+            if (overflow_guard_hit != nullptr && abs_product != 0) {
+                *overflow_guard_hit = true;
+            }
+            if (saturated != nullptr && abs_product != 0) {
+                *saturated = true;
+            }
+            return product_is_neg ? INT32_MIN : INT32_MAX;
+        }
+
+        const uint64_t limit = sat_limit >> shift;
+        if (abs_product > limit) {
+            if (overflow_guard_hit != nullptr) {
+                *overflow_guard_hit = true;
+            }
+            if (saturated != nullptr) {
+                *saturated = true;
+            }
+            return product_is_neg ? INT32_MIN : INT32_MAX;
+        }
+        abs_result = static_cast<uint64_t>(abs_product << shift);
+    } else {
+        const int right_shift = -scale_shift.shift;
+        if (right_shift >= 128) {
+            if (rounded_to_zero != nullptr) {
+                *rounded_to_zero = true;
+            }
+            return 0;
+        }
+
+        if (right_shift >= 64) {
+            if (rounded_to_zero != nullptr) {
+                *rounded_to_zero = true;
+            }
+            return 0;
+        }
+
+        uint64_t quotient = abs_product >> right_shift;
+        if (right_shift > 0) {
+            const uint64_t remainder_mask = (1ULL << right_shift) - 1ULL;
+            const uint64_t remainder = abs_product & remainder_mask;
+            const uint64_t half_ulp = 1ULL << (right_shift - 1);
+            if (remainder > half_ulp || (remainder == half_ulp && (quotient & 1))) {
+                quotient += 1;
+            }
+        }
+
+        if (quotient > sat_limit) {
+            if (saturated != nullptr) {
+                *saturated = true;
+            }
+            return product_is_neg ? INT32_MIN : INT32_MAX;
+        }
+        abs_result = static_cast<uint64_t>(quotient);
+    }
+
+    if (abs_result == 0 && rounded_to_zero != nullptr) {
+        *rounded_to_zero = true;
+    }
+    if (abs_result > sat_limit) {
+        if (saturated != nullptr) {
+            *saturated = true;
+        }
+        return product_is_neg ? INT32_MIN : INT32_MAX;
+    }
+
+    if (!product_is_neg) {
+        return static_cast<int32_t>(abs_result);
+    }
+    if (abs_result == 2147483648ULL) {
+        return INT32_MIN;
+    }
+    return -static_cast<int32_t>(abs_result);
+}
+
+static uint32_t clip_u64_to_fp32_bits_with_shift(
+        uint64_t abs_value,
+        bool sign_bit,
+        int32_t value_shift,
+        bool * sat_fp_exp = nullptr,
+        bool * flush_to_zero_exp = nullptr,
+        bool * rounded_to_zero = nullptr) {
+    if (sat_fp_exp != nullptr) {
+        *sat_fp_exp = false;
+    }
+    if (flush_to_zero_exp != nullptr) {
+        *flush_to_zero_exp = false;
+    }
+    if (rounded_to_zero != nullptr) {
+        *rounded_to_zero = false;
+    }
+    if (abs_value == 0) {
+        return sign_bit ? 0x80000000u : 0u;
+    }
+
+    int exponent_unbiased = clip_u64_msb_index(abs_value) + value_shift;
+    if (exponent_unbiased > 127) {
+        if (sat_fp_exp != nullptr) {
+            *sat_fp_exp = true;
+        }
+        return (sign_bit ? 0x80000000u : 0u) | 0x7F800000u;
+    }
+    if (exponent_unbiased < -126) {
+        if (flush_to_zero_exp != nullptr) {
+            *flush_to_zero_exp = true;
+        }
+        if (rounded_to_zero != nullptr) {
+            *rounded_to_zero = true;
+        }
+        return sign_bit ? 0x80000000u : 0u;
+    }
+
+    const int msb_idx = clip_u64_msb_index(abs_value);
+    uint64_t mantissa_24 = 0;
+    if (msb_idx <= 23) {
+        mantissa_24 = abs_value << (23 - msb_idx);
+    } else {
+        const int right_shift = msb_idx - 23;
+        mantissa_24 = abs_value >> right_shift;
+
+        const uint64_t remainder_mask = right_shift == 64 ? UINT64_MAX : ((1ULL << right_shift) - 1ULL);
+        const uint64_t remainder_bits = abs_value & remainder_mask;
+        const uint64_t half_ulp = 1ULL << (right_shift - 1);
+        if (remainder_bits > half_ulp || (remainder_bits == half_ulp && (mantissa_24 & 1ULL))) {
+            mantissa_24 += 1ULL;
+        }
+
+        if (mantissa_24 == 0x1000000ULL) {
+            exponent_unbiased += 1;
+            mantissa_24 = 0x800000ULL;
+            if (exponent_unbiased > 127) {
+                if (sat_fp_exp != nullptr) {
+                    *sat_fp_exp = true;
+                }
+                return (sign_bit ? 0x80000000u : 0u) | 0x7F800000u;
+            }
+        }
+    }
+
+    const uint32_t exponent_bits = static_cast<uint32_t>(exponent_unbiased + 127);
+    const uint32_t frac_bits = static_cast<uint32_t>(mantissa_24 & 0x7FFFFFULL);
+    return (sign_bit ? 0x80000000u : 0u) | (exponent_bits << 23) | frac_bits;
+}
+
+static clip_aicas_dequant_result clip_dequantize_i32_versa_q8_24(int32_t acc, float scale) {
+    clip_aicas_dequant_result out;
+    const int32_t scale_q8_24 = clip_fp32_bits_to_q8_24(clip_f32_to_bits(scale));
+    out.scale_zero = (scale != 0.0f) && (scale_q8_24 == 0);
+
+    bool saturated = false;
+    const int32_t rounded = clip_fixed_mul_to_i32(acc, scale_q8_24, 24, &saturated);
+    out.sat_i32 = saturated;
+    out.rounded_to_zero = (acc != 0) && (scale_q8_24 != 0) && (rounded == 0);
+    out.value = clip_bits_to_f32(clip_i32_to_fp32_bits_exact(rounded));
+    return out;
+}
+
+static clip_aicas_dequant_result clip_dequantize_i32_versa_q8_24_fp_reconstruct(int32_t acc, float scale) {
+    clip_aicas_dequant_result out;
+    const int32_t scale_q8_24 = clip_fp32_bits_to_q8_24(clip_f32_to_bits(scale));
+    out.scale_zero = (scale != 0.0f) && (scale_q8_24 == 0);
+
+    if (acc == 0 || scale_q8_24 == 0) {
+        out.value = 0.0f;
+        return out;
+    }
+
+    const int64_t product = static_cast<int64_t>(acc) * static_cast<int64_t>(scale_q8_24);
+    const bool sign_bit = product < 0;
+    const uint64_t abs_product = sign_bit
+        ? static_cast<uint64_t>(-product)
+        : static_cast<uint64_t>(product);
+    const uint32_t fp_bits = clip_u64_to_fp32_bits_with_shift(
+        abs_product,
+        sign_bit,
+        -24,
+        &out.sat_fp_exp,
+        &out.flush_to_zero_exp,
+        &out.rounded_to_zero);
+    out.value = clip_bits_to_f32(fp_bits);
+    return out;
+}
+
+static clip_aicas_dequant_result clip_dequantize_i32_scale_shift_i32_round(int32_t acc, float scale) {
+    clip_aicas_dequant_result out;
+    const clip_aicas_scale_shift32 scale_shift = clip_dequant_scale_to_scale_shift(scale);
+    out.scale_zero = (scale != 0.0f) && (scale_shift.scale == 0);
+
+    bool saturated = false;
+    bool rounded_to_zero = false;
+    bool overflow_guard_hit = false;
+    const int32_t rounded = clip_apply_scale_shift_i32_round(
+        acc,
+        scale_shift,
+        &saturated,
+        &rounded_to_zero,
+        &overflow_guard_hit);
+    out.sat_i32 = saturated;
+    out.rounded_to_zero = rounded_to_zero;
+    out.mul_overflow_guard_hit = overflow_guard_hit;
+    out.value = clip_bits_to_f32(clip_i32_to_fp32_bits_exact(rounded));
+    return out;
+}
+
+static clip_aicas_dequant_result clip_dequantize_i32_scale_shift_fp_reconstruct(int32_t acc, float scale) {
+    clip_aicas_dequant_result out;
+    const clip_aicas_scale_shift32 scale_shift = clip_dequant_scale_to_scale_shift(scale);
+    out.scale_zero = (scale != 0.0f) && (scale_shift.scale == 0);
+
+    if (acc == 0 || scale_shift.scale == 0) {
+        out.value = 0.0f;
+        return out;
+    }
+
+    const int64_t product = static_cast<int64_t>(acc) * static_cast<int64_t>(scale_shift.scale);
+    const bool sign_bit = product < 0;
+    const uint64_t abs_product = sign_bit
+        ? static_cast<uint64_t>(-product)
+        : static_cast<uint64_t>(product);
+    const uint32_t fp_bits = clip_u64_to_fp32_bits_with_shift(
+        abs_product,
+        sign_bit,
+        scale_shift.shift,
+        &out.sat_fp_exp,
+        &out.flush_to_zero_exp,
+        &out.rounded_to_zero);
+    out.value = clip_bits_to_f32(fp_bits);
+    return out;
+}
+
+static clip_aicas_dequant_result clip_dequantize_i32_aicas(
+        int32_t acc,
+        float scale,
+        clip_aicas_dequant_sim_mode mode) {
+    switch (mode) {
+        case clip_aicas_dequant_sim_mode::off:
+            return {(float) acc * scale, false, false, false, false, false, false};
+        case clip_aicas_dequant_sim_mode::versa_q8_24:
+            return clip_dequantize_i32_versa_q8_24(acc, scale);
+        case clip_aicas_dequant_sim_mode::versa_q8_24_fp_reconstruct:
+            return clip_dequantize_i32_versa_q8_24_fp_reconstruct(acc, scale);
+        case clip_aicas_dequant_sim_mode::scale_shift_i32_round:
+            return clip_dequantize_i32_scale_shift_i32_round(acc, scale);
+        case clip_aicas_dequant_sim_mode::scale_shift_fp_reconstruct:
+            return clip_dequantize_i32_scale_shift_fp_reconstruct(acc, scale);
+    }
+
+    return {(float) acc * scale, false, false, false, false, false, false};
+}
 
 struct clip_aicas_activation_stats {
     uint64_t count = 0;
@@ -778,8 +1393,10 @@ static void clip_compute_w8a8_mul_mat(
         void * userdata) {
     GGML_UNUSED(a);
 
-    const auto * cfg = static_cast<const clip_aicas_w8a8_tensor *>(userdata);
-    GGML_ASSERT(cfg != nullptr);
+    const auto * kernel_userdata = static_cast<const clip_aicas_w8a8_kernel_userdata *>(userdata);
+    GGML_ASSERT(kernel_userdata != nullptr);
+    GGML_ASSERT(kernel_userdata->cfg != nullptr);
+    const auto * cfg = kernel_userdata->cfg;
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
     GGML_ASSERT(b->type == GGML_TYPE_F32);
     GGML_ASSERT(c->type == GGML_TYPE_I8);
@@ -791,8 +1408,8 @@ static void clip_compute_w8a8_mul_mat(
     GGML_ASSERT(b->ne[0] == k);
     GGML_ASSERT(dst->ne[0] == out_channels);
     GGML_ASSERT(dst->ne[1] == n_cols);
-    GGML_ASSERT(cfg->weight_scale.size() == (size_t) out_channels);
-    GGML_ASSERT(cfg->sum_w.size() == (size_t) out_channels);
+    GGML_ASSERT(cfg->weight_scale.size() == cfg->expected_weight_scale_len(out_channels));
+    GGML_ASSERT(cfg->has_valid_compensation_config(out_channels));
     GGML_ASSERT(cfg->act_scale > 0.0f);
 
     const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
@@ -805,6 +1422,7 @@ static void clip_compute_w8a8_mul_mat(
     const float sa = cfg->act_scale;
     const int32_t za = cfg->act_zero_point;
     const int32_t compensation_base = 128 - za;
+    const clip_aicas_dequant_sim_mode dequant_sim_mode = kernel_userdata->mode;
     std::vector<int8_t> act_i8(k);
 
     for (int64_t col = col_begin; col < col_end; ++col) {
@@ -823,8 +1441,17 @@ static void clip_compute_w8a8_mul_mat(
             for (int64_t i = 0; i < k; ++i) {
                 acc += (int32_t) act_i8[i] * (int32_t) w_col[i];
             }
-            acc += compensation_base * cfg->sum_w[j];
-            out_col[j] = (float) acc * sa * cfg->weight_scale[j];
+            if (!cfg->sum_w.empty()) {
+                acc += compensation_base * cfg->sum_w[j];
+            }
+
+            const float weight_scale = cfg->uses_per_tensor_weight_scale()
+                ? cfg->weight_scale[0]
+                : cfg->weight_scale[j];
+            const float dequant_scale = sa * weight_scale;
+            const clip_aicas_dequant_result dequant_result = clip_dequantize_i32_aicas(acc, dequant_scale, dequant_sim_mode);
+            clip_record_aicas_dequant_result(kernel_userdata->stats, dequant_result);
+            out_col[j] = dequant_result.value;
         }
     }
 }
@@ -861,11 +1488,15 @@ struct clip_ctx {
     clip_profiler profiler;
     std::vector<ggml_tensor *> debug_print_tensors;
     bool aicas_w8a8_debug = false;
+    clip_aicas_dequant_sim_mode aicas_dequant_sim_mode = clip_aicas_dequant_sim_mode::off;
+    std::string aicas_dequant_stats_path;
+    mutable clip_aicas_dequant_diag_counters aicas_dequant_stats;
     std::string aicas_act_stats_path;
     size_t aicas_act_stats_samples_per_tensor = 0;
     mutable std::mutex aicas_act_stats_mutex;
     mutable std::unordered_map<std::string, clip_aicas_activation_stats> aicas_act_stats;
     mutable std::unordered_map<std::string, clip_aicas_activation_observer> aicas_act_observers;
+    mutable std::unordered_map<std::string, std::unique_ptr<clip_aicas_w8a8_kernel_userdata>> aicas_w8a8_kernel_userdata_map;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -873,6 +1504,15 @@ struct clip_ctx {
         debug_dump_dot_path = dump_dot ? dump_dot : "";
         profiler.init_from_env();
         aicas_w8a8_debug = std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
+        aicas_dequant_sim_mode = clip_get_dequant_sim_mode();
+        if (aicas_dequant_sim_mode != clip_aicas_dequant_sim_mode::off) {
+            LOG_INF("%s: AICAS mmproj dequant simulation enabled: %s\n",
+                __func__,
+                clip_dequant_sim_mode_name(aicas_dequant_sim_mode));
+        }
+        if (const char * stats_path = std::getenv("AICAS_MMPROJ_DEQUANT_STATS_FILE")) {
+            aicas_dequant_stats_path = stats_path;
+        }
         if (const char * stats_path = std::getenv("AICAS_MMPROJ_ACT_STATS_FILE")) {
             aicas_act_stats_path = stats_path;
             aicas_act_stats_samples_per_tensor = 4096;
@@ -927,6 +1567,7 @@ struct clip_ctx {
     }
 
     ~clip_ctx() {
+        flush_aicas_dequant_stats();
         flush_aicas_activation_stats();
         ggml_backend_free(backend);
         if (backend != backend_cpu) {
@@ -942,10 +1583,10 @@ struct clip_ctx {
 #endif
     }
 
-    void register_aicas_w8a8_for_npu() const {
+    bool register_aicas_w8a8_for_npu() const {
 #ifdef GGML_USE_NPU
         if (!backend_is_npu() || !model.aicas_w8a8_enabled) {
-            return;
+            return true;
         }
 
         int registered = 0;
@@ -954,6 +1595,18 @@ struct clip_ctx {
             const std::string & tensor_name = kv.first;
             const auto & cfg = kv.second;
             if (!cfg.enabled || cfg.policy != "W8A8") {
+                continue;
+            }
+            if (!cfg.is_npu_compatible(-1)) {
+                LOG_WRN(
+                    "%s: tensor %s is not compatible with current NPU W8A8 path (act_quant_mode=%s, weight_scale_mode=%s, scale_len=%zu, sumw_len=%zu)\n",
+                    __func__,
+                    tensor_name.c_str(),
+                    cfg.act_quant_mode.c_str(),
+                    cfg.weight_scale_mode.c_str(),
+                    cfg.weight_scale.size(),
+                    cfg.sum_w.size());
+                ++failed;
                 continue;
             }
             if (cfg.weight_scale.empty() || cfg.sum_w.empty()) {
@@ -977,6 +1630,9 @@ struct clip_ctx {
         }
 
         LOG_INF("%s: registered %d AICAS W8A8 tensors for NPU (%d failed)\n", __func__, registered, failed);
+        return failed == 0;
+#else
+        return false;
 #endif
     }
 
@@ -1002,6 +1658,21 @@ struct clip_ctx {
     // this function is added so that we don't change too much of the existing code
     projector_type proj_type() const {
         return model.proj_type;
+    }
+
+    clip_aicas_w8a8_kernel_userdata * get_aicas_w8a8_kernel_userdata(
+            const std::string & tensor_name,
+            const clip_aicas_w8a8_tensor * cfg) const {
+        auto it = aicas_w8a8_kernel_userdata_map.find(tensor_name);
+        if (it == aicas_w8a8_kernel_userdata_map.end()) {
+            auto userdata = std::make_unique<clip_aicas_w8a8_kernel_userdata>();
+            userdata->cfg = cfg;
+            userdata->mode = aicas_dequant_sim_mode;
+            userdata->stats = const_cast<clip_aicas_dequant_diag_counters *>(&aicas_dequant_stats);
+            it = aicas_w8a8_kernel_userdata_map.emplace(tensor_name, std::move(userdata)).first;
+        }
+
+        return it->second.get();
     }
 
     clip_aicas_activation_observer * get_aicas_activation_observer(const std::string & tensor_name) const {
@@ -1082,6 +1753,41 @@ struct clip_ctx {
         std::ofstream fout(aicas_act_stats_path, std::ios::binary);
         if (!fout.is_open()) {
             LOG_ERR("%s: failed to open activation stats file: %s\n", __func__, aicas_act_stats_path.c_str());
+            return;
+        }
+        fout << out.dump(2);
+    }
+
+    void flush_aicas_dequant_stats() const {
+        if (aicas_dequant_sim_mode == clip_aicas_dequant_sim_mode::off) {
+            return;
+        }
+
+        const json counters = aicas_dequant_stats.to_json();
+        LOG_INF(
+            "%s: AICAS mmproj dequant stats mode=%s scale_zero=%" PRIu64 " rounded_to_zero=%" PRIu64 " sat_i32=%" PRIu64 " sat_fp_exp=%" PRIu64 " flush_to_zero_exp=%" PRIu64 " mul_overflow_guard_hit=%" PRIu64 "\n",
+            __func__,
+            clip_dequant_sim_mode_name(aicas_dequant_sim_mode),
+            counters["scale_zero"].get<uint64_t>(),
+            counters["rounded_to_zero"].get<uint64_t>(),
+            counters["sat_i32"].get<uint64_t>(),
+            counters["sat_fp_exp"].get<uint64_t>(),
+            counters["flush_to_zero_exp"].get<uint64_t>(),
+            counters["mul_overflow_guard_hit"].get<uint64_t>());
+
+        if (aicas_dequant_stats_path.empty()) {
+            return;
+        }
+
+        json out = {
+            {"schema", "aicas.mmproj.dequant_stats.v1"},
+            {"mode", clip_dequant_sim_mode_name(aicas_dequant_sim_mode)},
+            {"counters", counters},
+        };
+
+        std::ofstream fout(aicas_dequant_stats_path, std::ios::binary);
+        if (!fout.is_open()) {
+            LOG_ERR("%s: failed to open dequant stats file: %s\n", __func__, aicas_dequant_stats_path.c_str());
             return;
         }
         fout << out.dump(2);
@@ -2522,13 +3228,13 @@ private:
             weight->ne[2] == 1 && weight->ne[3] == 1 &&
             act->ne[2] == 1 && act->ne[3] == 1 &&
             act->ne[0] == weight->ne[0] &&
-            cfg.weight_scale.size() == (size_t) weight->ne[1] &&
-            cfg.sum_w.size() == (size_t) weight->ne[1];
+            cfg.weight_scale.size() == cfg.expected_weight_scale_len(weight->ne[1]) &&
+            cfg.has_valid_compensation_config(weight->ne[1]);
 
         if (!ok_shape) {
             if (ctx->aicas_w8a8_debug) {
                 LOG_WRN(
-                    "%s: fallback to ggml_mul_mat for %s (layer=%d, weight=%s, wtype=%s, acttype=%s, wshape=[%" PRId64 ",%" PRId64 "], ashape=[%" PRId64 ",%" PRId64 "], scale_len=%zu, sumw_len=%zu)\n",
+                    "%s: fallback to ggml_mul_mat for %s (layer=%d, weight=%s, wtype=%s, acttype=%s, wshape=[%" PRId64 ",%" PRId64 "], ashape=[%" PRId64 ",%" PRId64 "], act_quant_mode=%s, weight_scale_mode=%s, scale_len=%zu, sumw_len=%zu)\n",
                     __func__,
                     label,
                     il,
@@ -2537,6 +3243,8 @@ private:
                     ggml_type_name(act->type),
                     weight->ne[0], weight->ne[1],
                     act->ne[0], act->ne[1],
+                    cfg.act_quant_mode.c_str(),
+                    cfg.weight_scale_mode.c_str(),
                     cfg.weight_scale.size(),
                     cfg.sum_w.size());
             }
@@ -2544,6 +3252,7 @@ private:
         }
 
         ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, weight->ne[1], act->ne[1]);
+        auto * kernel_userdata = ctx->get_aicas_w8a8_kernel_userdata(weight->name, &cfg);
         ggml_tensor * out = ggml_map_custom3(
             ctx0,
             out_template,
@@ -2551,7 +3260,7 @@ private:
             weight,
             clip_compute_w8a8_mul_mat,
             GGML_N_TASKS_MAX,
-            (void *) &cfg);
+            kernel_userdata);
 
         if (ctx->aicas_w8a8_debug) {
             LOG_DBG("%s: using W8A8 for %s (layer=%d)\n", __func__, weight->name, il);
@@ -3718,8 +4427,26 @@ struct clip_model_loader {
                 int act_zero_point = 0;
                 get_i32(prefix + "act_zero_point", act_zero_point);
                 cfg.act_zero_point = act_zero_point;
+                get_string(prefix + "act_quant_mode", cfg.act_quant_mode, false);
+                if (cfg.act_quant_mode.empty()) {
+                    cfg.act_quant_mode = "asymmetric_u8";
+                }
+                if (cfg.act_quant_mode != "asymmetric_u8" && cfg.act_quant_mode != "symmetric_u8") {
+                    throw std::runtime_error("Unsupported aicas.w8a8 act_quant_mode: " + cfg.act_quant_mode);
+                }
+                get_string(prefix + "weight_scale_mode", cfg.weight_scale_mode, false);
+                if (cfg.weight_scale_mode.empty()) {
+                    cfg.weight_scale_mode = "per_channel";
+                }
+                if (cfg.weight_scale_mode != "per_channel" && cfg.weight_scale_mode != "per_tensor") {
+                    throw std::runtime_error("Unsupported aicas.w8a8 weight_scale_mode: " + cfg.weight_scale_mode);
+                }
                 get_arr_f32(prefix + "weight_scale", cfg.weight_scale);
-                get_arr_i32(prefix + "sum_w", cfg.sum_w);
+                get_arr_i32(prefix + "sum_w", cfg.sum_w, false);
+
+                if (cfg.uses_symmetric_u8() && cfg.act_zero_point != 128) {
+                    throw std::runtime_error("symmetric_u8 AICAS W8A8 metadata requires act_zero_point=128");
+                }
             }
 
             model.aicas_w8a8_tensors[tensor_name] = std::move(cfg);
@@ -3757,8 +4484,8 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             ctx_vision = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_vision->model, CLIP_MODALITY_VISION);
             if (ctx_vision->model.aicas_w8a8_enabled) {
-                ctx_vision->register_aicas_w8a8_for_npu();
-                if (!ctx_vision->backend_is_npu()) {
+                const bool npu_compatible = ctx_vision->register_aicas_w8a8_for_npu();
+                if (!ctx_vision->backend_is_npu() || !npu_compatible) {
                     ctx_vision->force_cpu_backend_for_w8a8();
                 }
             }
@@ -3770,8 +4497,8 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             ctx_audio = new clip_ctx(ctx_params);
             loader.load_hparams(ctx_audio->model, CLIP_MODALITY_AUDIO);
             if (ctx_audio->model.aicas_w8a8_enabled) {
-                ctx_audio->register_aicas_w8a8_for_npu();
-                if (!ctx_audio->backend_is_npu()) {
+                const bool npu_compatible = ctx_audio->register_aicas_w8a8_for_npu();
+                if (!ctx_audio->backend_is_npu() || !npu_compatible) {
                     ctx_audio->force_cpu_backend_for_w8a8();
                 }
             }

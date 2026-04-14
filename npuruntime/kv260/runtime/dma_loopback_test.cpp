@@ -92,7 +92,6 @@ int main()
         false,
         false,
         0,
-        0,
         0);
     const auto mvout_end = std::chrono::steady_clock::now();
 
