@@ -8,6 +8,7 @@
 #include "npu_runtime.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -385,6 +386,15 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
 
         const int64_t dma_in_activation_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        if (npu_debug_log_enabled()) {
+            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_ACT col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
+                    __func__,
+                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                    npu_stage_name(exec_tile.stage).c_str(),
+                    static_cast<uint32_t>(exec_tile.k - 1),
+                    static_cast<uint32_t>(exec_tile.n - 1),
+                    plan.config.layout.activation.offset);
+        }
         npu_dma_mvin(
             activation_buf,
             plan.config.layout.activation.offset,
@@ -410,6 +420,15 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
 
         const int64_t dma_in_weight_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        if (npu_debug_log_enabled()) {
+            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_WGT col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
+                    __func__,
+                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                    npu_stage_name(exec_tile.stage).c_str(),
+                    static_cast<uint32_t>(exec_tile.m - 1),
+                    static_cast<uint32_t>(exec_tile.k - 1),
+                    plan.config.layout.weight.offset);
+        }
         npu_dma_mvin(
             weight_buf,
             plan.config.layout.weight.offset,
@@ -511,6 +530,13 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
 
         const int64_t gemm_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        if (npu_debug_log_enabled()) {
+            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " GEMM n=%" PRId64 " m=%" PRId64 " k=%" PRId64 " acc=0x%08x\n",
+                    __func__,
+                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                    exec_tile.n, exec_tile.m, exec_tile.k,
+                    plan.config.layout.accumulator.offset);
+        }
         npu_gemm_run(
             /*dataflow=*/true,
             /*int_type=*/0,
@@ -555,6 +581,14 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             }
 
             const int64_t dma_out_start_us = collect_stage_profile ? ggml_time_us() : 0;
+            if (npu_debug_log_enabled()) {
+                GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " MVOUT_ACC_F32 col=%" PRIu32 " row=0 sram=0x%08x f32_scale=0x%08x\n",
+                        __func__,
+                        exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                        static_cast<uint32_t>(exec_tile.n * exec_tile.m - 1),
+                        plan.config.layout.accumulator.offset,
+                        mvout_f32_scale);
+            }
             npu_dma_mvout(
                 acc_buf,
                 plan.config.layout.accumulator.offset,

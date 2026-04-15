@@ -44,7 +44,7 @@ struct MvoutConfig {
     bool     source;       // 1-bit: 0=SPM, 1=ACC
     bool     is_quant;     // 1-bit: 是否量化（没有作用，全0）
     uint32_t quant_zero;
-    uint32_t f32_scale;
+    uint32_t f32_scale;//要求是q8.24格式
 };
 
 struct SfuConfig {
@@ -375,9 +375,26 @@ extern "C" {
     // ---------------------------------------------------------------------
 
     // 标记逻辑层开始/结束，并在需要时手动落盘 profiling 报告。
+    struct npu_profile_runtime_summary {
+        uint64_t layer_count;
+        uint64_t layer_invocations;
+        uint64_t total_ns;
+        uint64_t dma_in_ns;
+        uint64_t compute_ns;
+        uint64_t dma_out_ns;
+        uint64_t layout_ns;
+        uint64_t wait_irq_ns;
+        uint64_t mvin_calls;
+        uint64_t compute_calls;
+        uint64_t mvout_calls;
+        uint64_t layout_calls;
+    };
+
     void npu_profile_begin(int64_t layer_id);
     void npu_profile_end(int64_t layer_id);
     void npu_profile_dump(const char* path);
+    void npu_profile_reset_summary();
+    void npu_profile_get_summary(struct npu_profile_runtime_summary * out);
     
     // ---------------------------------------------------------------------
     // Memory

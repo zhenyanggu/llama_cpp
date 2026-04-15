@@ -1,0 +1,10 @@
+== xmutil ==
+(xmutil unavailable or mynpu not listed)
+== dev ==
+crw------- 1 root root 507, 0 Feb 22 04:36 /dev/npu_kv260
+== modules ==
+npu_kv260 20480 0 - Live 0x0000000000000000 (OE)
+== platform ==
+a0000000.T_NPU_FPGA
+== summary ==
+xmutil_mynpu=0 dev=1 module=1 platform=1

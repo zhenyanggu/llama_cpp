@@ -118,6 +118,25 @@ struct ActiveLayerFrame {
 
 thread_local ActiveLayerFrame g_activeLayer;
 
+struct NpuLastOpContext {
+    const char * op = "none";
+    uint64_t reg0 = 0;
+    uint64_t reg1 = 0;
+    uint64_t cfg0 = 0;
+    uint64_t cfg1 = 0;
+    uint32_t start_bit = 0;
+};
+
+thread_local NpuLastOpContext g_last_op_ctx;
+
+static bool abort_on_irq_timeout() {
+    const char * env = std::getenv("NPU_ABORT_ON_IRQ_TIMEOUT");
+    if (env == nullptr || env[0] == '\0') {
+        return true;
+    }
+    return std::strcmp(env, "0") != 0;
+}
+
 static std::string jsonEscape(const std::string& input) {
     std::ostringstream escaped;
     for (char c : input) {
@@ -1149,6 +1168,20 @@ void NpuRuntime::wait_irq() {
     
     if (ret < 0) {
         perror("Wait IRQ failed");
+        NPU_ERR(
+            "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX",
+            g_last_op_ctx.op,
+            g_last_op_ctx.start_bit,
+            (unsigned long long) g_last_op_ctx.reg0,
+            (unsigned long long) g_last_op_ctx.reg1,
+            (unsigned long long) g_last_op_ctx.cfg0,
+            (unsigned long long) g_last_op_ctx.cfg1);
+        if (abort_on_irq_timeout()) {
+            NPU_ERR("abort due to IRQ timeout (set NPU_ABORT_ON_IRQ_TIMEOUT=0 to disable abort)");
+            std::abort();
+        }
+        NPU_TIMER_SECTION_END()
+        return;
     }
     NPU_LOG("IRQ received via interrupt (status=0x%X).", status);
     NPU_TIMER_SECTION_END()
@@ -1227,12 +1260,21 @@ void NpuRuntime::run_mvin(const MvinConfig& cfg) {
                        REG_FIELD(CFG_MVIN0, SRAM_STRIDE, cfg.sram_stride) |
                        REG_FIELD(CFG_MVIN0, DRAM_STRIDE, cfg.dram_stride);
     reg_write64_cached(RegOffset::MVIN_CFG, val_cfg, &shadow.mvin_cfg);
+    g_last_op_ctx = {
+        "MVIN",
+        val_dram,
+        val_sram,
+        val_cfg,
+        0,
+        BIT_START_DMA_MVIN
+    };
     
     if (cfg.is_quant) {
         uint64_t val_quant = REG_FIELD(CFG_MVIN1, ZEROPOINT, cfg.quant_zero) |
                              REG_FIELD(CFG_MVIN1, SCALE, cfg.quant_scale) |
                              REG_FIELD(CFG_MVIN1, SCALE_SHIFT, cfg.quant_shift);
         reg_write64_cached(RegOffset::MVIN_QUANT, val_quant, &shadow.mvin_quant);
+        g_last_op_ctx.cfg1 = val_quant;
     }
     reg_write(RegOffset::START, BIT_START_DMA_MVIN);
     NPU_TIMER_SECTION_END()
@@ -1272,14 +1314,23 @@ void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
                        REG_FIELD(CFG_MVOUT0, SRAM_STRIDE, cfg.sram_stride) |
                        REG_FIELD(CFG_MVOUT0, DRAM_STRIDE, cfg.dram_stride);
     reg_write64_cached(RegOffset::MVOUT_CFG, val_cfg, &shadow.mvout_cfg);
+    g_last_op_ctx = {
+        "MVOUT",
+        val_dram,
+        val_sram,
+        val_cfg,
+        0,
+        BIT_START_DMA_MVOUT
+    };
     
     if (cfg.is_quant && precision == 3) {
-        uint16_t quant_scale = static_cast<uint16_t>(cfg.f32_scale & 0xFFFF);
-        uint16_t quant_scaleshift = static_cast<uint16_t>((cfg.f32_scale >> 16) & 0xFFFF);
+        uint16_t quant_scale = static_cast<uint16_t>(cfg.f32_scale & 0xFFFF);//低位
+        uint16_t quant_scaleshift = static_cast<uint16_t>((cfg.f32_scale >> 16) & 0xFFFF);//高位
         uint64_t val_quant = REG_FIELD(CFG_MVOUT1, ZEROPOINT, cfg.quant_zero) |
                              REG_FIELD(CFG_MVOUT1, SCALE, quant_scale) |
                              REG_FIELD(CFG_MVOUT1, SCALE_SHIFT, quant_scaleshift);
         reg_write64_cached(RegOffset::MVOUT_QUANT, val_quant, &shadow.mvout_quant);
+        g_last_op_ctx.cfg1 = val_quant;
     }
     reg_write(RegOffset::START, BIT_START_DMA_MVOUT);
     NPU_TIMER_SECTION_END()
@@ -1628,6 +1679,14 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
                            REG_FIELD(SA_IN_B, ROW, cfg.input_b_row_num) |
                            REG_FIELD(SA_IN_B, STRIDE, cfg.input_b_stride);
     reg_write64(RegOffset::SA_INPUT_B, val_input_b);
+    g_last_op_ctx = {
+        "GEMM",
+        val_input_a,
+        val_input_b,
+        val_cfg1,
+        val_cfg2,
+        BIT_START_SA
+    };
 
     // 7. Start SA
     reg_write(RegOffset::START, BIT_START_SA);
@@ -2087,6 +2146,48 @@ void _mlir_ciface_npu_profile_end(int64_t layer_id) {
 void npu_profile_dump(const char* path) {
     NPU_CAPI_LOG("npu_profile_dump(path=%s)", path ? path : "(null)");
     dumpProfilerReport(path);
+}
+
+void npu_profile_reset_summary() {
+    NPU_CAPI_LOG("npu_profile_reset_summary()");
+    if (isProfilingDisabled()) {
+        return;
+    }
+
+    ProfilerState & state = getProfilerState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.layers.clear();
+    g_activeLayer = ActiveLayerFrame{};
+}
+
+void npu_profile_get_summary(struct npu_profile_runtime_summary * out) {
+    if (out == nullptr) {
+        return;
+    }
+
+    *out = {};
+    if (isProfilingDisabled()) {
+        return;
+    }
+
+    ProfilerState & state = getProfilerState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    out->layer_count = state.layers.size();
+
+    for (const auto & entry : state.layers) {
+        const LayerProfileRecord & record = entry.second;
+        out->layer_invocations += record.invocations;
+        out->total_ns += record.totalNs;
+        out->dma_in_ns += record.dmaInNs;
+        out->compute_ns += record.computeNs;
+        out->dma_out_ns += record.dmaOutNs;
+        out->layout_ns += record.layoutNs;
+        out->wait_irq_ns += record.waitIrqNs;
+        out->mvin_calls += record.mvinCalls;
+        out->compute_calls += record.computeCalls;
+        out->mvout_calls += record.mvoutCalls;
+        out->layout_calls += record.layoutCalls;
+    }
 }
 
 void* npu_mem_alloc(size_t size) {
