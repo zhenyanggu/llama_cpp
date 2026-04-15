@@ -277,6 +277,11 @@ public:
     // 执行指令接口
     void run_mvin(const MvinConfig& cfg);
     void run_mvout(const MvoutConfig& cfg);
+    void run_mvin_async(uint32_t dma_id, const MvinConfig& cfg);
+    void run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg);
+    void wait_mvin(uint32_t dma_mask);
+    void wait_mvout(uint32_t dma_mask);
+    void run_double_mvin(const MvinConfig& dma0_cfg, const MvinConfig& dma1_cfg);
     void run_sfu(const SfuConfig& cfg);
     void run_conv(const ConvConfig& cfg);
     void run_gemm(const GemmConfig& cfg);
@@ -292,11 +297,14 @@ public:
     void free(void* ptr);
 
 private:
+    static constexpr uint32_t DMA_CHANNEL_COUNT = 2;
+
     int fd;
     void* regs_virt_base;   // 寄存器空间的虚拟基地址
     void* data_virt_base;   // CMA 数据空间的虚拟基地址
     uint32_t data_phy_base; // CMA 数据空间的 DMA/物理基地址
     uint32_t data_map_size; // CMA 数据空间的实际映射大小
+    void* pending_mvin_staging[DMA_CHANNEL_COUNT];
 
     // Allocator State
     static const size_t ALIGNMENT = 64; 
@@ -319,6 +327,7 @@ private:
     void reg_write(uint32_t offset, uint32_t val);
     void reg_write64(uint32_t offset, uint64_t val);
     uint32_t reg_read(uint32_t offset);
+    uint32_t read_dma_busy_mask(bool is_mvin);
     
     // ----------------------------------------------------
     // 【优化】影子寄存器逻辑
@@ -347,8 +356,14 @@ private:
     // 混合轮询+中断等待
     void wait_irq();
     bool check_irq_pending();  // 检查中断是否挂起，返回挂起的中断位
-    void ack_irq();  // 清除/应答全部中断位
+    void ack_irq(uint32_t mask = NPU_REGS__IAR__ACK_bm);  // 清除/应答中断位
     void dump_irq_regs(); // 轮询超时后打印中断相关寄存器
+    void validate_dma_id(uint32_t dma_id) const;
+    void validate_dma_mask(uint32_t dma_mask) const;
+    void validate_mvin_dma_cfg(uint32_t dma_id, const MvinConfig& cfg) const;
+    void validate_mvout_dma_cfg(uint32_t dma_id, const MvoutConfig& cfg) const;
+    void wait_dma_idle(bool is_mvin, uint32_t dma_mask);
+    void release_mvin_staging(uint32_t dma_mask);
 };
 
 // ==========================================
@@ -479,6 +494,15 @@ extern "C" {
         uint32_t quant_zero,
         uint32_t f32_scale
     );
+
+    // 异步 DMA：提交后立即返回，调用者后续用 wait 接口等待完成。
+    void npu_dma_mvin_async(uint32_t dma_id, const MvinConfig* cfg);
+    void npu_dma_mvout_async(uint32_t dma_id, const MvoutConfig* cfg);
+    void npu_dma_wait_mvin(uint32_t dma_mask);
+    void npu_dma_wait_mvout(uint32_t dma_mask);
+
+    // 便捷接口：DMA0 和 DMA1 并发执行两个 SPM MVIN，内部等待两路都完成。
+    void npu_dma_double_mvin(const MvinConfig* dma0_cfg, const MvinConfig* dma1_cfg);
 
     // ---------------------------------------------------------------------
     // SFU Operations

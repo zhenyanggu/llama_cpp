@@ -350,6 +350,14 @@ extern "C" {
 #define NPU_REGS__START_REG__SFU_bp 5
 #define NPU_REGS__START_REG__SFU_bw 1
 #define NPU_REGS__START_REG__SFU_reset 0x0
+#define NPU_REGS__START_REG__MVIN_DMA_SEL_bm 0x100
+#define NPU_REGS__START_REG__MVIN_DMA_SEL_bp 8
+#define NPU_REGS__START_REG__MVIN_DMA_SEL_bw 1
+#define NPU_REGS__START_REG__MVIN_DMA_SEL_reset 0x0
+#define NPU_REGS__START_REG__MVOUT_DMA_SEL_bm 0x1000
+#define NPU_REGS__START_REG__MVOUT_DMA_SEL_bp 12
+#define NPU_REGS__START_REG__MVOUT_DMA_SEL_bw 1
+#define NPU_REGS__START_REG__MVOUT_DMA_SEL_reset 0x0
 
 // Reg - npu_regs::IAR
 #define NPU_REGS__IAR__ACK_bm 0x3f
@@ -375,6 +383,14 @@ extern "C" {
 #define NPU_REGS__IPR__PENDING_bm 0x3f
 #define NPU_REGS__IPR__PENDING_bp 0
 #define NPU_REGS__IPR__PENDING_bw 6
+
+// Reg - npu_regs::DMA_STATUS
+#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bm 0x3
+#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bp 0
+#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bw 2
+#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bm 0x300
+#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bp 8
+#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bw 2
 
 // Addrmap - npu_regs
 typedef struct __attribute__ ((__packed__)) {
@@ -406,10 +422,11 @@ typedef struct __attribute__ ((__packed__)) {
     uint64_t IER;
     uint64_t ISR;
     uint64_t IPR;
+    uint64_t DMA_STATUS;
 } npu_regs_t;
 
 
-static_assert(sizeof(npu_regs_t) == 0xe0, "Packing error");
+static_assert(sizeof(npu_regs_t) == 0xe8, "Packing error");
 
 #ifdef __cplusplus
 }

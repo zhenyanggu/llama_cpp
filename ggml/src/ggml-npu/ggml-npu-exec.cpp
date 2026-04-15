@@ -51,28 +51,6 @@ static uint32_t npu_float_to_q8_24_u32(float scale) {
     return static_cast<uint32_t>(static_cast<int32_t>(scaled));
 }
 
-static float npu_read_bias_value_f32_exec(
-        const struct ggml_tensor * bias,
-        int64_t m,
-        int64_t n) {
-    if (bias == nullptr) {
-        return 0.0f;
-    }
-
-    const int64_t i0 = bias->ne[0] == 1 ? 0 : m;
-    const int64_t i1 = bias->ne[1] == 1 ? 0 : n;
-    const char * base = static_cast<const char *>(bias->data) + i1 * bias->nb[1] + i0 * bias->nb[0];
-
-    switch (bias->type) {
-        case GGML_TYPE_F32:
-            return *reinterpret_cast<const float *>(base);
-        case GGML_TYPE_F16:
-            return ggml_fp16_to_fp32(*reinterpret_cast<const ggml_fp16_t *>(base));
-        default:
-            return 0.0f;
-    }
-}
-
 static bool npu_ensure_runtime(std::string * error) {
     if (npu_init() == 0) {
         return true;
@@ -385,17 +363,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             }
         }
 
-        const int64_t dma_in_activation_start_us = collect_stage_profile ? ggml_time_us() : 0;
-        if (npu_debug_log_enabled()) {
-            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_ACT col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
-                    __func__,
-                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
-                    npu_stage_name(exec_tile.stage).c_str(),
-                    static_cast<uint32_t>(exec_tile.k - 1),
-                    static_cast<uint32_t>(exec_tile.n - 1),
-                    plan.config.layout.activation.offset);
-        }
-        npu_dma_mvin(
+        const MvinConfig activation_mvin_cfg {
             activation_buf,
             plan.config.layout.activation.offset,
             static_cast<uint32_t>(exec_tile.k - 1),
@@ -409,27 +377,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             false,
             0,
             0,
-            0);
-        if (collect_stage_profile) {
-            const int64_t dma_in_activation_us = ggml_time_us() - dma_in_activation_start_us;
-            exec_summary.delta.dma_in_activation_calls += 1;
-            exec_summary.delta.dma_in_activation_us_total += dma_in_activation_us;
-            if (collect_detailed_profile) {
-                tile_record.dma_in_activation_us = static_cast<double>(dma_in_activation_us);
-            }
-        }
+            0,
+        };
 
-        const int64_t dma_in_weight_start_us = collect_stage_profile ? ggml_time_us() : 0;
-        if (npu_debug_log_enabled()) {
-            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_WGT col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
-                    __func__,
-                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
-                    npu_stage_name(exec_tile.stage).c_str(),
-                    static_cast<uint32_t>(exec_tile.m - 1),
-                    static_cast<uint32_t>(exec_tile.k - 1),
-                    plan.config.layout.weight.offset);
-        }
-        npu_dma_mvin(
+        const MvinConfig weight_mvin_cfg {
             weight_buf,
             plan.config.layout.weight.offset,
             static_cast<uint32_t>(exec_tile.m - 1),
@@ -443,17 +394,42 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             false,
             0,
             0,
-            0);
+            0,
+        };
+
+        const int64_t dma_in_pair_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        if (npu_debug_log_enabled()) {
+            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_ACT_DMA0 col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
+                    __func__,
+                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                    npu_stage_name(exec_tile.stage).c_str(),
+                    static_cast<uint32_t>(exec_tile.k - 1),
+                    static_cast<uint32_t>(exec_tile.n - 1),
+                    plan.config.layout.activation.offset);
+            GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " stage=%s MVIN_WGT_DMA1 col=%" PRIu32 " row=%" PRIu32 " sram=0x%08x\n",
+                    __func__,
+                    exec_tile.m0, exec_tile.n0, exec_tile.k0,
+                    npu_stage_name(exec_tile.stage).c_str(),
+                    static_cast<uint32_t>(exec_tile.m - 1),
+                    static_cast<uint32_t>(exec_tile.k - 1),
+                    plan.config.layout.weight.offset);
+        }
+        npu_dma_double_mvin(&activation_mvin_cfg, &weight_mvin_cfg);
         if (collect_stage_profile) {
-            const int64_t dma_in_weight_us = ggml_time_us() - dma_in_weight_start_us;
+            const int64_t dma_in_pair_us = ggml_time_us() - dma_in_pair_start_us;
+            const int64_t dma_in_activation_us = dma_in_pair_us / 2;
+            const int64_t dma_in_weight_us = dma_in_pair_us - dma_in_activation_us;
+            exec_summary.delta.dma_in_activation_calls += 1;
             exec_summary.delta.dma_in_weight_calls += 1;
+            exec_summary.delta.dma_in_activation_us_total += dma_in_activation_us;
             exec_summary.delta.dma_in_weight_us_total += dma_in_weight_us;
             if (collect_detailed_profile) {
+                tile_record.dma_in_activation_us = static_cast<double>(dma_in_activation_us);
                 tile_record.dma_in_weight_us = static_cast<double>(dma_in_weight_us);
             }
         }
 
-        if (!use_aicas_w8a8 && plan.bias != nullptr && exec_tile.needs_bias) {
+        if (plan.bias != nullptr && exec_tile.needs_bias) {
             if (exec_tile.bias_pack_index < 0 ||
                 static_cast<size_t>(exec_tile.bias_pack_index) >= plan.bias_packs.size()) {
                 if (error) {
@@ -556,7 +532,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             /*isaccu=*/!exec_tile.needs_bias,
             /*relu=*/false,
             /*relu_type=*/0,
-            /*is_bias=*/!use_aicas_w8a8 && plan.bias != nullptr && exec_tile.needs_bias,
+            /*is_bias=*/plan.bias != nullptr && exec_tile.needs_bias,
             /*input_a_addr=*/plan.config.layout.activation.offset,
             /*input_a_col_num=*/static_cast<uint16_t>(exec_tile.k - 1),
             /*input_a_row_num=*/static_cast<uint8_t>(exec_tile.n - 1),
@@ -633,9 +609,6 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                             plan.activation_quant.zero_point *
                             plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
                             activation_scale * wgt_scale;
-                    }
-                    if (use_aicas_w8a8 && plan.bias != nullptr) {
-                        value += npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0 + n);
                     }
                     char * dst_ptr = static_cast<char *>(plan.dst->data) +
                         (exec_tile.n0 + n) * plan.dst->nb[1] +

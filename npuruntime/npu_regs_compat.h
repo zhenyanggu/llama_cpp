@@ -54,6 +54,7 @@ namespace RegOffset {
     constexpr uint32_t IER            = offsetof(npu_regs_t, IER);          // 0xC8
     constexpr uint32_t ISR            = offsetof(npu_regs_t, ISR);          // 0xD0
     constexpr uint32_t IPR            = offsetof(npu_regs_t, IPR);          // 0xD8
+    constexpr uint32_t DMA_STATUS     = offsetof(npu_regs_t, DMA_STATUS);   // 0xE0
 }
 
 // ==========================================
