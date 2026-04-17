@@ -1,0 +1,45 @@
+{
+  "run_id": "20260416T075956Z-v2-throughput-profile-double-dma-only",
+  "throughput_only": true,
+  "acc_ran": false,
+  "e2e": {
+    "total_ms": 286688.907,
+    "prefill_ms": 214664.841,
+    "decode_ms": 72024.066,
+    "prefill_pct": 74.87727489923424,
+    "decode_pct": 25.12272510076576,
+    "prefill_tps": 0.8757838457579553,
+    "decode_tps": 7.108735016431869
+  },
+  "prefill_split": {
+    "image_processed_ms": 205343.0,
+    "text_prefill_non_image_ms": 9321.840999999986,
+    "image_share_in_prefill_pct": 95.65749055291268,
+    "image_share_in_e2e_pct": 71.62572216301344
+  },
+  "runtime_profile": {
+    "total_ms": 10616.468748,
+    "dma_in_ms": 154.711831,
+    "compute_ms": 750.665384,
+    "dma_out_ms": 321.712246,
+    "wait_irq_ms": 641.013439,
+    "other_ms": 9389.379287,
+    "dma_in_pct": 1.457281462154218,
+    "compute_pct": 7.070763375453022,
+    "dma_out_pct": 3.030313126109906,
+    "wait_irq_pct": 6.037915753491558,
+    "other_pct": 88.44164203628286
+  },
+  "ggml_node_profile": {
+    "total_ms": 10716.576,
+    "activation_pack_ms": 1412.17,
+    "host_copy_act_ms": 362.38,
+    "host_copy_weight_ms": 660.618,
+    "bias_prepare_ms": 22.901,
+    "dma_in_ms": 3337.811,
+    "gemm_ms": 915.743,
+    "dma_out_ms": 480.241,
+    "postprocess_ms": 3239.994,
+    "residual_ms": 284.718
+  }
+}

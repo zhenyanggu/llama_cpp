@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image is a screenshot of a webpage. The webpage is displaying a list of products with their prices and descriptions. The products are listed in a table format, with each row representing a product and each column representing a different feature or condition of the product. The table is divided into two main sections: the left section contains the product names and prices, while the right section contains the descriptions and additional information about the products.\n\nThe table is organized in a way that makes it easy to read and",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The image is a screenshot of a webpage. The webpage is displaying a list of products with their prices. The products are listed in a table format, with each product having a unique identifier and a price. The table is divided into two columns: the first column is labeled \"Product Name\" and the second column is labeled \"Price\". The products are listed in alphabetical order, and each product has a unique identifier. The prices are displayed in dollars and cents. The webpage also includes a search bar at",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "The image is a screenshot of a webpage. The webpage is displaying a list of products, each with a price and a description. The products are listed in a table format, with the price and description of each product. The table is divided into two columns: the first column lists the product name, and the second column lists the price. The prices are displayed in a currency format, with the currency symbol \"\u00a5\" indicating the currency. The table is surrounded by a border, and the text",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The image is a screenshot of a webpage. The webpage is displaying a list of products, each with a price and a description. The products are listed in a table format, with the product name, price, and description. The table is divided into two columns: the first column contains the product name, and the second column contains the price. The prices are displayed in a currency format, with the currency symbol \"\u00a5\" indicating the currency. The description is also provided in a text format,",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image is a screenshot of a webpage. The webpage is displaying a list of products, each with a price and a description. The products are listed in a table format, with the price and description of each product. The table is divided into two columns: the first column contains the product name, and the second column contains the price. The prices are displayed in a currency format, with the currency symbol \"\u00a5\" indicating the currency. The table is surrounded by a border, and the text",
+        "result": 0
+    }
+]

@@ -534,16 +534,92 @@ struct clip_aicas_w8a8_tensor {
     }
 
     bool is_npu_compatible(int64_t out_channels) const {
-        if (uses_per_tensor_weight_scale()) {
-            return false;
-        }
         if (out_channels < 0) {
+            if (uses_per_tensor_weight_scale()) {
+                return weight_scale.size() == 1 && !sum_w.empty();
+            }
             return !weight_scale.empty() && !sum_w.empty() && weight_scale.size() == sum_w.size();
+        }
+        if (uses_per_tensor_weight_scale()) {
+            return weight_scale.size() == 1 &&
+                sum_w.size() == static_cast<size_t>(out_channels);
         }
         return weight_scale.size() == static_cast<size_t>(out_channels) &&
             sum_w.size() == static_cast<size_t>(out_channels);
     }
 };
+
+static bool clip_aicas_fuse_bias_compensation(
+        ggml_tensor * bias,
+        const clip_aicas_w8a8_tensor & cfg,
+        std::string * error) {
+    if (bias == nullptr) {
+        if (error) {
+            *error = "missing bias tensor";
+        }
+        return false;
+    }
+    if (bias->ne[1] != 1 || bias->ne[2] != 1 || bias->ne[3] != 1) {
+        if (error) {
+            *error = "bias must be 1D broadcast";
+        }
+        return false;
+    }
+    if (bias->type != GGML_TYPE_F32 && bias->type != GGML_TYPE_F16) {
+        if (error) {
+            *error = std::string("unsupported bias type: ") + ggml_type_name(bias->type);
+        }
+        return false;
+    }
+
+    const int64_t out_channels = bias->ne[0];
+    if (out_channels < 0 || !cfg.is_npu_compatible(out_channels)) {
+        if (error) {
+            *error = "incompatible W8A8 metadata for bias fusion";
+        }
+        return false;
+    }
+
+    std::vector<uint8_t> raw(ggml_nbytes(bias));
+    ggml_backend_tensor_get(bias, raw.data(), 0, raw.size());
+
+    const int32_t act_zero_point_i8 = cfg.act_zero_point - 128;
+    for (int64_t i = 0; i < out_channels; ++i) {
+        const float weight_scale = cfg.uses_per_tensor_weight_scale()
+            ? cfg.weight_scale[0]
+            : cfg.weight_scale[static_cast<size_t>(i)];
+        const float fused_bias_delta =
+            cfg.act_scale * weight_scale * static_cast<float>(act_zero_point_i8 * cfg.sum_w[static_cast<size_t>(i)]);
+
+        if (bias->type == GGML_TYPE_F32) {
+            float * values = reinterpret_cast<float *>(raw.data());
+            values[i] -= fused_bias_delta;
+        } else {
+            ggml_fp16_t * values = reinterpret_cast<ggml_fp16_t *>(raw.data());
+            const float current = ggml_fp16_to_fp32(values[i]);
+            values[i] = ggml_fp32_to_fp16(current - fused_bias_delta);
+        }
+    }
+
+    ggml_backend_tensor_set(bias, raw.data(), 0, raw.size());
+    return true;
+}
+
+static bool clip_should_prefuse_aicas_bias_compensation() {
+    const char * bias_mode = std::getenv("GGML_NPU_AICAS_BIAS_MODE");
+    if (bias_mode == nullptr || bias_mode[0] == '\0') {
+        return true;
+    }
+
+    if (strcmp(bias_mode, "precomp") == 0) {
+        return true;
+    }
+    if (strcmp(bias_mode, "auto") == 0 || strcmp(bias_mode, "raw") == 0) {
+        return false;
+    }
+
+    return false;
+}
 
 enum class clip_aicas_dequant_sim_mode {
     off,
@@ -1422,7 +1498,6 @@ static void clip_compute_w8a8_mul_mat(
 
     const float sa = cfg->act_scale;
     const int32_t za = cfg->act_zero_point;
-    const int32_t compensation_base = 128 - za;
     const clip_aicas_dequant_sim_mode dequant_sim_mode = kernel_userdata->mode;
     std::vector<int8_t> act_i8(k);
 
@@ -1442,10 +1517,6 @@ static void clip_compute_w8a8_mul_mat(
             for (int64_t i = 0; i < k; ++i) {
                 acc += (int32_t) act_i8[i] * (int32_t) w_col[i];
             }
-            if (!cfg->sum_w.empty()) {
-                acc += compensation_base * cfg->sum_w[j];
-            }
-
             const float weight_scale = cfg->uses_per_tensor_weight_scale()
                 ? cfg->weight_scale[0]
                 : cfg->weight_scale[j];
@@ -4269,6 +4340,59 @@ struct clip_model_loader {
             fin.close();
 
             LOG_DBG("%s: loaded %zu tensors from %s\n", __func__, tensors_to_load.size(), fname.c_str());
+        }
+
+        if (model.aicas_w8a8_enabled && clip_should_prefuse_aicas_bias_compensation()) {
+            int fused = 0;
+            int disabled = 0;
+            for (auto & kv : model.aicas_w8a8_tensors) {
+                const std::string & weight_name = kv.first;
+                auto & cfg = kv.second;
+
+                if (!cfg.enabled || cfg.policy != "W8A8") {
+                    continue;
+                }
+                if (cfg.sum_w.empty()) {
+                    continue;
+                }
+                if (!(cfg.act_scale > 0.0f)) {
+                    cfg.enabled = false;
+                    cfg.policy = "F16_FALLBACK";
+                    ++disabled;
+                    LOG_WRN("%s: disable W8A8 for %s: invalid act_scale\n", __func__, weight_name.c_str());
+                    continue;
+                }
+
+                const std::string suffix = ".weight";
+                if (weight_name.size() <= suffix.size() ||
+                    weight_name.compare(weight_name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+                    cfg.enabled = false;
+                    cfg.policy = "F16_FALLBACK";
+                    ++disabled;
+                    LOG_WRN("%s: disable W8A8 for %s: cannot derive bias name\n", __func__, weight_name.c_str());
+                    continue;
+                }
+
+                const std::string bias_name =
+                    weight_name.substr(0, weight_name.size() - suffix.size()) + ".bias";
+                ggml_tensor * bias = ggml_get_tensor(ctx_clip.ctx_data.get(), bias_name.c_str());
+                std::string fuse_error;
+                if (!clip_aicas_fuse_bias_compensation(bias, cfg, &fuse_error)) {
+                    cfg.enabled = false;
+                    cfg.policy = "F16_FALLBACK";
+                    ++disabled;
+                    LOG_WRN("%s: disable W8A8 for %s: %s\n",
+                        __func__, weight_name.c_str(), fuse_error.c_str());
+                    continue;
+                }
+
+                ++fused;
+            }
+
+            LOG_INF("%s: fused AICAS W8A8 bias compensation for %d tensors (%d disabled)\n",
+                __func__, fused, disabled);
+        } else if (model.aicas_w8a8_enabled) {
+            LOG_INF("%s: keep original AICAS W8A8 bias tensors for raw runtime compensation path\n", __func__);
         }
     }
 

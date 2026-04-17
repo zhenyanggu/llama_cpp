@@ -12,7 +12,7 @@ RUNTIME_HDR := npu_runtime.h npu_regs_compat.h npu_regs.h ../driver/npu_kv260_ua
 
 .PHONY: all clean
 
-all: libnpu_kv260_runtime.a kv260_npu_smoke_test kv260_runtime_init_test kv260_dma_loopback_test kv260_dma_acc_int32_fp32_test kv260_mvin_problem_case_test
+all: libnpu_kv260_runtime.a kv260_npu_smoke_test kv260_runtime_init_test kv260_dma_loopback_test kv260_dma_acc_int32_fp32_test kv260_mvin_problem_case_test kv260_dma_double_mvin_async_test kv260_layer_gemm_replay_test kv260_mmproj_layer_asym_w8a8_test
 
 npu_runtime.o: $(RUNTIME_SRC) $(RUNTIME_HDR)
 	$(CXX) $(CXXFLAGS) -c $(RUNTIME_SRC) -o $@
@@ -35,5 +35,14 @@ kv260_dma_acc_int32_fp32_test: dma_acc_int32_fp32_test.cpp libnpu_kv260_runtime.
 kv260_mvin_problem_case_test: mvin_problem_case_test.cpp libnpu_kv260_runtime.a $(RUNTIME_HDR)
 	$(CXX) $(CXXFLAGS) mvin_problem_case_test.cpp libnpu_kv260_runtime.a -o $@ $(LDFLAGS) $(LDLIBS)
 
+kv260_dma_double_mvin_async_test: dma_double_mvin_async_test.cpp libnpu_kv260_runtime.a $(RUNTIME_HDR)
+	$(CXX) $(CXXFLAGS) dma_double_mvin_async_test.cpp libnpu_kv260_runtime.a -o $@ $(LDFLAGS) $(LDLIBS)
+
+kv260_layer_gemm_replay_test: layer_gemm_replay_test.cpp libnpu_kv260_runtime.a $(RUNTIME_HDR)
+	$(CXX) $(CXXFLAGS) layer_gemm_replay_test.cpp libnpu_kv260_runtime.a -o $@ $(LDFLAGS) $(LDLIBS)
+
+kv260_mmproj_layer_asym_w8a8_test: mmproj_layer_asym_w8a8_test.cpp libnpu_kv260_runtime.a $(RUNTIME_HDR)
+	$(CXX) $(CXXFLAGS) mmproj_layer_asym_w8a8_test.cpp libnpu_kv260_runtime.a -o $@ $(LDFLAGS) $(LDLIBS)
+
 clean:
-	rm -f npu_runtime.o libnpu_kv260_runtime.a kv260_npu_smoke_test kv260_runtime_init_test kv260_dma_loopback_test kv260_dma_acc_int32_fp32_test kv260_mvin_problem_case_test
+	rm -f npu_runtime.o libnpu_kv260_runtime.a kv260_npu_smoke_test kv260_runtime_init_test kv260_dma_loopback_test kv260_dma_acc_int32_fp32_test kv260_mvin_problem_case_test kv260_dma_double_mvin_async_test kv260_layer_gemm_replay_test kv260_mmproj_layer_asym_w8a8_test

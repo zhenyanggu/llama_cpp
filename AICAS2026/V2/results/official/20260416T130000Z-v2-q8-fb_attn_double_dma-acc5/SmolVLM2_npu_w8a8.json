@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The best way to get a job is to get a job.\" This statement is likely a motivational or advice-based message. The text is written in a clear and easy-to-read font, making it accessible to a wide audience. The use of the phrase \"The best way to get a job\" suggests that the message is meant to provide guidance on how to achieve success in the job market. The phrase \"get a job\" is a common phrase",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads: \"The best way to get the most out of your car is to know how to drive it.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The best way to get a job is to get a job.\" This statement is likely a motivational or advice-based message. The text is written in a clear and concise manner, making it easy to understand. The message is straightforward and straightforward, with no additional information or context provided. The text is written in a formal style, which is appropriate for a job-related context. The message is not overly complex or abstract, and it is easy to grasp the",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The best way to get a job is to get a job.\" This statement is likely a motivational or advice-based message. The text is written in a clear and concise manner, making it easy to understand. The use of the phrase \"The best way to get a job\" suggests that the message is meant to provide guidance on how to achieve success in the job market. The phrase \"get a job\" is a common phrase used to describe the process of",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The 100 best places to live in the world\". This text is likely a list of places that are considered to be the best places to live in the world. The text is written in a clear and legible font, making it easy to read. The text is positioned in the center of the image, and it is surrounded by a white border. The overall layout of the image is simple and straightforward, with the text being the main focus.",
+        "result": 0
+    }
+]

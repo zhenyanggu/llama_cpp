@@ -75,6 +75,12 @@ enum class npu_loop_stage {
     tail,
 };
 
+enum class npu_bias_mode {
+    auto_select,
+    precomp,
+    raw,
+};
+
 struct npu_exec_tile {
     int64_t m0 = 0;
     int64_t n0 = 0;
@@ -95,7 +101,8 @@ struct npu_activation_quant_config {
     bool symmetric = false;
     bool valid = false;
     float scale = 1.0f;
-    int32_t zero_point = 0;
+    int32_t zero_point = 0;       // signed offset relative to 128, used for compensation
+    int32_t zero_point_u8 = 128;  // raw u8 zero point used by activation packing / hardware asym path
 };
 
 struct npu_aicas_w8a8_config {
@@ -103,6 +110,7 @@ struct npu_aicas_w8a8_config {
     float act_scale = 1.0f;
     int32_t act_scale_q8_24 = 0;
     int32_t act_zero_point_i8 = 0;
+    int32_t act_zero_point_u8 = 128;
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;
 };
@@ -136,6 +144,7 @@ struct npu_node_plan {
     int64_t k = 0;
     npu_activation_quant_config activation_quant;
     npu_aicas_w8a8_config aicas_w8a8;
+    npu_bias_mode bias_mode = npu_bias_mode::auto_select;
 
     npu_tiling_config config;
     int64_t first_stage_tm = 0;

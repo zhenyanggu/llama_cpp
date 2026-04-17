@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": ". Toward That We Toward That We Toward That We They We Sil We They. Toward We They. We Sil.Q.Q.Y That We GIPQ.Q.Y. M. D. H. M. A HY That We QY. Hreddit. M Gwork. We We G A Haters. We We G. We G. Q. Hap. \"M power. G. From. \" That We G. \" That We G",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The two thes thes thes the two the two thes thes thes thes thes the case of thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes thes the therodes either thes thes thes thes thes thes thes thes",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "Thes the of its two the from the two the from the two of its two from the from the from the from the from the two from the two from the from the two from theudelemente-quiesseffour of the from the from the from the from the fromquiese of the fromquiese of the fromquiese of thequiese the from the fromquiese of the from the fromquiese from the two from the two",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The thea Beuzer (And the the the the the from the the offorma-co-Erotevo-Pro-co-Groepvollevo-vegeteroyaland the comes of theforma-\ufffdrvu-Therendvercule (Beh\u00f6rriginei-\u010ce-Co-Pro-culture Herii\ufffdver-formecirekiver-\u0134an (Gro-\ufffdritheveloop (Gor",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "adipat.atudeq.at.at.at.at.at.at.at.at.at.at.at.Q.at.Q.Q.Yat.reddit.at.reddit.Q.at.reddit.at.Q.at.reddit.at.at.at.at.at.at.ad.ad.ad.ad. \"at. 1at.Q.at. \"at.\u16d0.Q",
+        "result": 0
+    }
+]

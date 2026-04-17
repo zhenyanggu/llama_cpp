@@ -1299,7 +1299,94 @@ uint32_t NpuRuntime::virt_to_phys(void* ptr) {
 void NpuRuntime::run_mvin(const MvinConfig& cfg) {
     NPU_TIMER_TOTAL("run_mvin");
     ScopedStageTimer profileTimer(ProfileStage::DmaIn, ProfileCallCounter::Mvin);
-    run_mvin_async(0, cfg);
+    validate_mvin_dma_cfg(0, cfg);
+
+    const uint32_t busy_mask = read_dma_busy_mask(true);
+    if (busy_mask & (1u << 0)) {
+        NPU_LOG("DMA0 MVIN busy before sync launch, waiting for idle (busy_mask=0x%X)", busy_mask);
+        wait_mvin(1u << 0);
+    }
+    if (pending_mvin_staging[0]) {
+        throw std::runtime_error("DMA0 has unreleased MVIN staging buffer");
+    }
+
+    const uint8_t precision = 1; // force precision regardless of API input
+
+    auto calc_transfer_bytes = [&](const MvinConfig& c) -> size_t {
+        const uint64_t cols = static_cast<uint64_t>(c.col_num) + 1ULL;
+        const uint64_t rows = static_cast<uint64_t>(c.row_num) + 1ULL;
+        const uint64_t elem_bytes = 1ULL; // precision is forced to int8 path.
+        const uint64_t stride_bytes =
+            static_cast<uint64_t>(std::max<uint32_t>(c.dram_stride, c.col_num + 1U)) * elem_bytes;
+        if (rows <= 1ULL) return static_cast<size_t>(cols * elem_bytes);
+        const uint64_t total =
+            (rows - 1ULL) * stride_bytes + cols * elem_bytes;
+        return static_cast<size_t>(total);
+    };
+
+    void *dma_src_ptr = cfg.host_ptr;
+    uint32_t phys_dram = 0;
+    try {
+        phys_dram = virt_to_phys(dma_src_ptr);
+    } catch (const std::runtime_error &) {
+        size_t transfer_bytes = calc_transfer_bytes(cfg);
+        void * staging_ptr = alloc(transfer_bytes);
+        if (!staging_ptr) {
+            throw std::runtime_error(
+                "run_mvin staging alloc failed for non-NPU host pointer");
+        }
+        std::memcpy(staging_ptr, cfg.host_ptr, transfer_bytes);
+        pending_mvin_staging[0] = staging_ptr;
+        dma_src_ptr = staging_ptr;
+        phys_dram = virt_to_phys(dma_src_ptr);
+        NPU_LOG(
+            "MVIN sync DMA0 staged host ptr %p -> NPU ptr %p (%zu bytes)",
+            cfg.host_ptr, staging_ptr, transfer_bytes);
+    }
+
+    NPU_TIMER_SECTION_BEGIN("run_mvin(pre_reg)")
+    NPU_LOG("Running MVIN sync DMA0 (HostPtr=%p, phy_dram=0x%x, SRAM=0x%x)",
+            dma_src_ptr, phys_dram, cfg.sram_addr);
+    NPU_TIMER_SECTION_END()
+
+    NPU_TIMER_SECTION_BEGIN("run_mvin(reg_write)")
+    uint64_t val_dram = REG_FIELD(MVIN_CTRL0, DRAM_ADDR, phys_dram) |
+                        REG_FIELD(MVIN_CTRL0, ROW_NUM, cfg.row_num);
+    reg_write64(RegOffset::MVIN_DRAM_ADDR, val_dram);
+
+    uint64_t val_sram = REG_FIELD(MVIN_CTRL1, SRAM_ADDR, cfg.sram_addr) |
+                        REG_FIELD(MVIN_CTRL1, COL_NUM, cfg.col_num);
+    reg_write64(RegOffset::MVIN_SRAM_ADDR, val_sram);
+
+    uint64_t val_cfg = REG_FIELD(CFG_MVIN0, INPUT_TYPE, cfg.input_type) |
+                       REG_FIELD(CFG_MVIN0, INPUT_PRECISION, precision) |
+                       REG_FIELD(CFG_MVIN0, IS_QUANT, cfg.is_quant) |
+                       REG_FIELD(CFG_MVIN0, DEST, cfg.dest) |
+                       REG_FIELD(CFG_MVIN0, IS_BIAS, cfg.is_bias) |
+                       REG_FIELD(CFG_MVIN0, SRAM_STRIDE, cfg.sram_stride) |
+                       REG_FIELD(CFG_MVIN0, DRAM_STRIDE, cfg.dram_stride);
+    reg_write64_cached(RegOffset::MVIN_CFG, val_cfg, &shadow.mvin_cfg);
+    g_last_op_ctx = {
+        "MVIN",
+        val_dram,
+        val_sram,
+        val_cfg,
+        0,
+        BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, 0))
+    };
+
+    if (cfg.is_quant) {
+        uint64_t val_quant = REG_FIELD(CFG_MVIN1, ZEROPOINT, cfg.quant_zero) |
+                             REG_FIELD(CFG_MVIN1, SCALE, cfg.quant_scale) |
+                             REG_FIELD(CFG_MVIN1, SCALE_SHIFT, cfg.quant_shift);
+        reg_write64_cached(RegOffset::MVIN_QUANT, val_quant, &shadow.mvin_quant);
+        g_last_op_ctx.cfg1 = val_quant;
+    }
+    const uint32_t start_word =
+        BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, 0));
+    reg_write(RegOffset::START, start_word);
+    NPU_TIMER_SECTION_END()
+
     NPU_TIMER_SECTION_BEGIN("run_mvin(wait_dma)")
     wait_mvin(1u << 0);
     NPU_TIMER_SECTION_END()
@@ -1319,7 +1406,11 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
 
     const uint32_t busy_mask = read_dma_busy_mask(true);
     if (busy_mask & (1u << dma_id)) {
-        throw std::runtime_error(std::string("DMA") + std::to_string(dma_id) + " MVIN is busy");
+        NPU_LOG(
+            "DMA%u MVIN busy before async launch, waiting for idle (busy_mask=0x%X)",
+            dma_id,
+            busy_mask);
+        wait_mvin(1u << dma_id);
     }
     if (pending_mvin_staging[dma_id]) {
         throw std::runtime_error(
@@ -1411,7 +1502,11 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
 
     const uint32_t busy_mask = read_dma_busy_mask(false);
     if (busy_mask & (1u << dma_id)) {
-        throw std::runtime_error(std::string("DMA") + std::to_string(dma_id) + " MVOUT is busy");
+        NPU_LOG(
+            "DMA%u MVOUT busy before async launch, waiting for idle (busy_mask=0x%X)",
+            dma_id,
+            busy_mask);
+        wait_mvout(1u << dma_id);
     }
 
     const uint8_t precision = static_cast<uint8_t>(cfg.precision & 0x3);

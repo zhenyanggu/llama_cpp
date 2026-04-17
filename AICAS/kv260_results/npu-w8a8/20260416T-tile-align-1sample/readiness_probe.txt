@@ -1,0 +1,2 @@
+Readiness probe skipped by --skip-readiness-probe.
+Assuming manual root-validated NPU bring-up was completed before this run.

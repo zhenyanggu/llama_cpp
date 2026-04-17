@@ -1,0 +1,33 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": " The image you've shared is a photograph of a signboard. The signboard is rectangular and has a dark background. The text on the signboard is in white and is written in a serif font. The letters are evenly spaced and the text is neatly aligned. The signboard is not very large, but it is still quite prominent and occupies a significant portion of the image.\n\nThe text on the signboard reads \"Villa\". The letters are capitalized and are evenly spaced. The font used is a serif font, which is a type of font that has a traditional, classic look. The serif font gives the text a classic and elegant appearance.\n\nThe overall color scheme of the signboard is dark, which contrasts with the white text and makes the text stand out. The dark background also helps to draw attention to the white text, making it easy to read.\n\nThe image does not contain any other objects or text. The focus is solely on the signboard, which is the main subject of the image. The image is a simple and straightforward representation of the text \"Villa\".\n\nOverall, the image is a simple and straightforward representation of the text \"Villa\". The dark background, white text, and serif"
+      }
+    }
+  ],
+  "created": 1740284487,
+  "model": "smolvlm2-gguf-cpu",
+  "system_fingerprint": "b6830-20be41e5f",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 256,
+    "prompt_tokens": 93,
+    "total_tokens": 349
+  },
+  "id": "chatcmpl-RycwYydAPMvYpxSrNv8489s0ICA7PnTn",
+  "timings": {
+    "cache_n": 92,
+    "prompt_n": 1,
+    "prompt_ms": 482.846,
+    "prompt_per_token_ms": 482.846,
+    "prompt_per_second": 2.0710537107069333,
+    "predicted_n": 256,
+    "predicted_ms": 30678.021,
+    "predicted_per_token_ms": 119.83601953125,
+    "predicted_per_second": 8.344736448286543
+  }
+}

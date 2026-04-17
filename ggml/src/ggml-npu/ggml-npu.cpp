@@ -12,6 +12,7 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <unordered_set>
 
 namespace ggml_npu {
 
@@ -62,8 +63,8 @@ static void npu_buffer_memset_tensor(
         uint8_t value,
         size_t offset,
         size_t size) {
-    std::memset(static_cast<char *>(npu_buffer_get_base(buffer)) + offset, value, size);
-    GGML_UNUSED(tensor);
+    GGML_UNUSED(buffer);
+    std::memset(static_cast<char *>(tensor->data) + offset, value, size);
 }
 
 static void npu_buffer_set_tensor(
@@ -72,8 +73,8 @@ static void npu_buffer_set_tensor(
         const void * data,
         size_t offset,
         size_t size) {
-    std::memcpy(static_cast<char *>(npu_buffer_get_base(buffer)) + offset, data, size);
-    GGML_UNUSED(tensor);
+    GGML_UNUSED(buffer);
+    std::memcpy(static_cast<char *>(tensor->data) + offset, data, size);
 }
 
 static void npu_buffer_get_tensor(
@@ -82,8 +83,8 @@ static void npu_buffer_get_tensor(
         void * data,
         size_t offset,
         size_t size) {
-    std::memcpy(data, static_cast<char *>(npu_buffer_get_base(buffer)) + offset, size);
-    GGML_UNUSED(tensor);
+    GGML_UNUSED(buffer);
+    std::memcpy(data, static_cast<const char *>(tensor->data) + offset, size);
 }
 
 static bool npu_buffer_cpy_tensor(
@@ -193,27 +194,50 @@ static ggml_backend_graph_plan_t npu_backend_graph_plan_create(
         return nullptr;
     }
 
-    const npu_backend_context * ctx = static_cast<const npu_backend_context *>(backend->context);
-    std::vector<const struct ggml_tensor *> fused_mul_mat_nodes;
-
+    std::unordered_set<const struct ggml_tensor *> fused_mul_mat_roots;
+    fused_mul_mat_roots.reserve(static_cast<size_t>(cgraph->n_nodes));
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         struct ggml_tensor * node = cgraph->nodes[i];
-        if (node->op == GGML_OP_ADD && npu_is_fusable_bias_add(node, nullptr)) {
-            const struct ggml_tensor * mm = (node->src[0] && node->src[0]->op == GGML_OP_MUL_MAT)
-                ? node->src[0]
-                : node->src[1];
-            fused_mul_mat_nodes.push_back(mm);
+        if (node == nullptr || node->op != GGML_OP_ADD) {
+            continue;
+        }
+        if (!npu_is_fusable_bias_add(node, nullptr)) {
+            continue;
+        }
+        if (node->src[0] != nullptr && node->src[0]->op == GGML_OP_MUL_MAT) {
+            fused_mul_mat_roots.insert(node->src[0]);
+        } else if (node->src[1] != nullptr && node->src[1]->op == GGML_OP_MUL_MAT) {
+            fused_mul_mat_roots.insert(node->src[1]);
         }
     }
 
+    const npu_backend_context * ctx = static_cast<const npu_backend_context *>(backend->context);
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         struct ggml_tensor * node = cgraph->nodes[i];
-        if (node->op == GGML_OP_MUL_MAT &&
-            std::find(fused_mul_mat_nodes.begin(), fused_mul_mat_nodes.end(), node) != fused_mul_mat_nodes.end()) {
+        if (node == nullptr) {
+            continue;
+        }
+        if (node->op == GGML_OP_MUL_MAT && fused_mul_mat_roots.find(node) != fused_mul_mat_roots.end()) {
+            if (npu_debug_log_enabled()) {
+                const char * node_name = node->name[0] != '\0' ? node->name : "(unnamed)";
+                GGML_LOG_INFO("%s: skip node=%s op=%s reason=%s\n",
+                        __func__,
+                        node_name,
+                        ggml_op_name(node->op),
+                        "covered by fused ADD");
+            }
             continue;
         }
         std::string reason;
         if (!npu_can_handle_mul_mat(node, &reason)) {
+            if (npu_debug_log_enabled()) {
+                const char * node_name = node && node->name[0] != '\0' ? node->name : "(unnamed)";
+                GGML_LOG_INFO("%s: skip node=%s op=%s reason=%s\n",
+                        __func__,
+                        node_name,
+                        node ? ggml_op_name(node->op) : "(null)",
+                        reason.c_str());
+            }
             continue;
         }
         graph_plan->nodes.push_back(npu_create_mul_mat_plan(node, ctx->config));

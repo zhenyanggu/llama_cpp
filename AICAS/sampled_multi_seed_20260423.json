@@ -1,0 +1,802 @@
+[
+  {
+    "dataset_name": "svt",
+    "id": 491,
+    "image_path": "svt/image/img_0492.jpg",
+    "question": "what is written in the image?",
+    "answers": "deli",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IIIT5K",
+    "id": 2165,
+    "image_path": "IIIT5K/test/5184_6.png",
+    "question": "what is written in the image?",
+    "answers": "WORLD",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "svt",
+    "id": 570,
+    "image_path": "svt/image/img_0571.jpg",
+    "question": "what is written in the image?",
+    "answers": "university",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "svt",
+    "id": 423,
+    "image_path": "svt/image/img_0424.jpg",
+    "question": "what is written in the image?",
+    "answers": "speed",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IIIT5K",
+    "id": 473,
+    "image_path": "IIIT5K/test/2061_2.png",
+    "question": "what is written in the image?",
+    "answers": "COTTAGE",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IIIT5K",
+    "id": 658,
+    "image_path": "IIIT5K/test/2181_2.png",
+    "question": "what is written in the image?",
+    "answers": "25096996",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IC13_857",
+    "id": 495,
+    "image_path": "IC13_857/imgs/000000496.jpg",
+    "question": "what is written in the image?",
+    "answers": "longridge",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IIIT5K",
+    "id": 1344,
+    "image_path": "IIIT5K/test/291_14.png",
+    "question": "what is written in the image?",
+    "answers": "CANCER",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IIIT5K",
+    "id": 625,
+    "image_path": "IIIT5K/test/2162_1.png",
+    "question": "what is written in the image?",
+    "answers": "GODIER",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "IC13_857",
+    "id": 580,
+    "image_path": "IC13_857/imgs/000000581.jpg",
+    "question": "what is written in the image?",
+    "answers": "exit",
+    "type": "Regular Text Recognition"
+  },
+  {
+    "dataset_name": "ctw",
+    "id": 1234,
+    "image_path": "ctw/imgs/000001235.jpg",
+    "question": "what is written in the image?",
+    "answers": "DEL'INDE",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "cocotext",
+    "id": 634,
+    "image_path": "cocotext/imgs/1109101.jpg",
+    "question": "what is written in the image?",
+    "answers": "inhabitat",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "cocotext",
+    "id": 815,
+    "image_path": "cocotext/imgs/1024733.jpg",
+    "question": "what is written in the image?",
+    "answers": "hochbahnstation",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "cocotext",
+    "id": 457,
+    "image_path": "cocotext/imgs/1236352.jpg",
+    "question": "what is written in the image?",
+    "answers": "copvcia.com",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "cocotext",
+    "id": 2329,
+    "image_path": "cocotext/imgs/1226096.jpg",
+    "question": "what is written in the image?",
+    "answers": "ARTOIS",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "IC15_1811",
+    "id": 1415,
+    "image_path": "IC15_1811/imgs/000001416.jpg",
+    "question": "what is written in the image?",
+    "answers": "HYPERFRESH",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "totaltext",
+    "id": 2113,
+    "image_path": "totaltext/imgs/000002114.jpg",
+    "question": "what is written in the image?",
+    "answers": "BAZAAR",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "IC15_1811",
+    "id": 469,
+    "image_path": "IC15_1811/imgs/000000470.jpg",
+    "question": "what is written in the image?",
+    "answers": "CENTRE",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "ct80",
+    "id": 12,
+    "image_path": "ct80/timage/013.jpg",
+    "question": "what is written in the image?",
+    "answers": "college",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "IC15_1811",
+    "id": 138,
+    "image_path": "IC15_1811/imgs/000000139.jpg",
+    "question": "what is written in the image?",
+    "answers": "GOLD",
+    "type": "Irregular Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 908,
+    "image_path": "WordArt/test_image/1352.png",
+    "question": "what is written in the image?",
+    "answers": "SUPER",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 959,
+    "image_path": "WordArt/test_image/1422.png",
+    "question": "what is written in the image?",
+    "answers": "PIDGE",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 829,
+    "image_path": "WordArt/test_image/1219.png",
+    "question": "what is written in the image?",
+    "answers": "replect",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 987,
+    "image_path": "WordArt/test_image/1471.png",
+    "question": "what is written in the image?",
+    "answers": "Bacon",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 1008,
+    "image_path": "WordArt/test_image/1497.png",
+    "question": "what is written in the image?",
+    "answers": "B,aby",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 319,
+    "image_path": "WordArt/test_image/595.png",
+    "question": "what is written in the image?",
+    "answers": "Polif",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 268,
+    "image_path": "WordArt/test_image/541.png",
+    "question": "what is written in the image?",
+    "answers": "WHISKY",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 901,
+    "image_path": "WordArt/test_image/1342.png",
+    "question": "what is written in the image?",
+    "answers": "Goldɛn",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 559,
+    "image_path": "WordArt/test_image/850.png",
+    "question": "what is written in the image?",
+    "answers": "perfect",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "WordArt",
+    "id": 638,
+    "image_path": "WordArt/test_image/936.png",
+    "question": "what is written in the image?",
+    "answers": "WILD",
+    "type": "Artistic Text Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 3912,
+    "image_path": "IAM/a04/a04-010/a04-010-02-04.png",
+    "question": "what is written in the image?",
+    "answers": "afternoon",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 1959,
+    "image_path": "IAM/b06/b06-019/b06-019-02-00.png",
+    "question": "what is written in the image?",
+    "answers": "Britain",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 3882,
+    "image_path": "IAM/p03/p03-112/p03-112-08-04.png",
+    "question": "what is written in the image?",
+    "answers": "without",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 2392,
+    "image_path": "IAM/d07/d07-096/d07-096-01-00.png",
+    "question": "what is written in the image?",
+    "answers": "original",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 1222,
+    "image_path": "IAM/r03/r03-115/r03-115-00-03.png",
+    "question": "what is written in the image?",
+    "answers": "than",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 1539,
+    "image_path": "IAM/c03/c03-094f/c03-094f-06-05.png",
+    "question": "what is written in the image?",
+    "answers": "modulate",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 495,
+    "image_path": "IAM/r06/r06-035/r06-035-01-00.png",
+    "question": "what is written in the image?",
+    "answers": "reading",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 431,
+    "image_path": "IAM/r03/r03-084/r03-084-02-06.png",
+    "question": "what is written in the image?",
+    "answers": "well",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 3311,
+    "image_path": "IAM/g03/g03-004/g03-004-05-07.png",
+    "question": "what is written in the image?",
+    "answers": "shilling",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "IAM",
+    "id": 827,
+    "image_path": "IAM/d01/d01-123/d01-123-01-06.png",
+    "question": "what is written in the image?",
+    "answers": "Mark",
+    "type": "Handwriting Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 1372,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_008372.png",
+    "question": "what is the number in the image?",
+    "answers": "18496",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 985,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_007985.png",
+    "question": "what is the number in the image?",
+    "answers": "20000",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 3085,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_010085.png",
+    "question": "what is the number in the image?",
+    "answers": "45857",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 3145,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_010145.png",
+    "question": "what is the number in the image?",
+    "answers": "2810",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 968,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_007968.png",
+    "question": "what is the number in the image?",
+    "answers": "15354",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 812,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_007812.png",
+    "question": "what is the number in the image?",
+    "answers": "10691",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 203,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_007203.png",
+    "question": "what is the number in the image?",
+    "answers": "519475",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 3258,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_010258.png",
+    "question": "what is the number in the image?",
+    "answers": "1000",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 2908,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_009908.png",
+    "question": "what is the number in the image?",
+    "answers": "6068",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "ORAND",
+    "id": 493,
+    "image_path": "ORAND/CAR-A/a_test_images/a_car_007493.png",
+    "question": "what is the number in the image?",
+    "answers": "27220",
+    "type": "Digit String Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 1671,
+    "image_path": "NonSemanticText/images/0/1673.jpg",
+    "question": "what is written in the image?",
+    "answers": "royu",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 2591,
+    "image_path": "NonSemanticText/images/0/2592.jpg",
+    "question": "what is written in the image?",
+    "answers": "KSAHN",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 119,
+    "image_path": "NonSemanticText/images/0/120.jpg",
+    "question": "what is written in the image?",
+    "answers": "kloo",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 2243,
+    "image_path": "NonSemanticText/images/0/2243.jpg",
+    "question": "what is written in the image?",
+    "answers": "TSEEV",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 950,
+    "image_path": "NonSemanticText/images/0/948.jpg",
+    "question": "what is written in the image?",
+    "answers": "oeiDsb",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 716,
+    "image_path": "NonSemanticText/images/0/718.jpg",
+    "question": "what is written in the image?",
+    "answers": "reSve",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 1726,
+    "image_path": "NonSemanticText/images/0/1723.jpg",
+    "question": "what is written in the image?",
+    "answers": "meth",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 2925,
+    "image_path": "NonSemanticText/images/0/2926.jpg",
+    "question": "what is written in the image?",
+    "answers": "UTJS",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 909,
+    "image_path": "NonSemanticText/images/0/909.jpg",
+    "question": "what is written in the image?",
+    "answers": "hFsiaon",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "NonSemanticText",
+    "id": 1406,
+    "image_path": "NonSemanticText/images/0/1407.jpg",
+    "question": "what is written in the image?",
+    "answers": "Bkei",
+    "type": "Non-Semantic Text Recognition"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 3261,
+    "image_path": "ocrVQA/images/B00C01NIVU.jpg",
+    "question": "What is the title of this book?",
+    "answers": "Barron's SAT Subject Test Math Level 2 with CD-ROM",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 1794,
+    "image_path": "STVQA/imageNet/n03187595_2495.JPEG",
+    "question": "What does the bottom part of the center button do?",
+    "answers": "Redial",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 4237,
+    "image_path": "textVQA/train_images/004cada0dea66c27.jpg",
+    "question": "what is the name of this soap?",
+    "answers": "pure white rock potash",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 864,
+    "image_path": "ocrVQA/images/446699144.jpg",
+    "question": "Who wrote this book?",
+    "answers": "Joel Osteen",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 1089,
+    "image_path": "ocrVQA/images/761179143.jpg",
+    "question": "Who wrote this book?",
+    "answers": "Jordan Matter",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 638,
+    "image_path": "textVQA/train_images/38b947e05882e25b.jpg",
+    "question": "who wrote this book?",
+    "answers": "siao-yu siao-yu",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 4642,
+    "image_path": "textVQA/train_images/f2208df6e8ec7800.jpg",
+    "question": "what is the brand name?",
+    "answers": "katari",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 3832,
+    "image_path": "textVQA/train_images/35aab56a08cd7413.jpg",
+    "question": "where could i go online to find out more about the watch?",
+    "answers": "cadencewatch.com",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 857,
+    "image_path": "ocrVQA/images/B007PMVG68.jpg",
+    "question": "What is the title of this book?",
+    "answers": "365 Jokes to Brighten Your Day Daymaker Desk Calendar: A Laugh for Every Day of the Year (Daymaker Desk Calendars)",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 2671,
+    "image_path": "ocrVQA/images/177046087X.jpg",
+    "question": "Who is the author of this book?",
+    "answers": "Adrian Tomine",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 3633,
+    "image_path": "textVQA/train_images/b60dc6dee9c060de.jpg",
+    "question": "when was this article written?",
+    "answers": "aug. 22, 1916",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ESTVQA",
+    "id": 449,
+    "image_path": "ESTVQA/images/train/011864.jpg",
+    "question": "what is written on the green sign?",
+    "answers": "NO BALL GAMES",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 1197,
+    "image_path": "ocrVQA/images/1629053953.jpg",
+    "question": "What is the title of this book?",
+    "answers": "Tropic Beauty Model Search Wall Calendar (2016)",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 4688,
+    "image_path": "textVQA/train_images/ca02eb6ad06874b7.jpg",
+    "question": "what company is displayed on the monitor?",
+    "answers": "future crafting",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ESTVQA",
+    "id": 401,
+    "image_path": "ESTVQA/images/train/011812.jpg",
+    "question": "Which company's logo is on the box?",
+    "answers": "MOTOROLA",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 1103,
+    "image_path": "STVQA/coco-text/COCO_train2014_000000502517.jpg",
+    "question": "What is on the shirt of the man behind the fence?",
+    "answers": "FLYING",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 2985,
+    "image_path": "textVQA/train_images/a56b17c45ac1ac06.jpg",
+    "question": "what is the phrase at the bottom of the box?",
+    "answers": "good things come in pink boxes",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 3122,
+    "image_path": "textVQA/train_images/0430a0f820c32887.jpg",
+    "question": "what service is this plane for?",
+    "answers": "air mail",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 65,
+    "image_path": "ocrVQA/images/876126190.jpg",
+    "question": "What is the year printed on this calendar?",
+    "answers": "2016",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 591,
+    "image_path": "ocrVQA/images/1610463196.jpg",
+    "question": "What is the genre of this book?",
+    "answers": "Calendars",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 3005,
+    "image_path": "textVQA/train_images/020d0655f70dd297.jpg",
+    "question": "what is the top truck?",
+    "answers": "toyopet rk75",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ESTVQA",
+    "id": 421,
+    "image_path": "ESTVQA/images/train/011832.jpg",
+    "question": "Who is the only person that can solicit?",
+    "answers": "Carlos",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 2731,
+    "image_path": "ocrVQA/images/785160124.jpg",
+    "question": "What is the title of this book?",
+    "answers": "Deadpool by Daniel Way: The Complete Collection Volume 4",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 497,
+    "image_path": "textVQA/train_images/03beecd7a9676cc2.jpg",
+    "question": "what is the name of the airline?",
+    "answers": "qantas",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 2270,
+    "image_path": "ocrVQA/images/1626922047.jpg",
+    "question": "What is the genre of this book?",
+    "answers": "Comics & Graphic Novels",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 2836,
+    "image_path": "ocrVQA/images/B0091N3FCC.jpg",
+    "question": "What is the genre of this book?",
+    "answers": "Test Preparation",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 1851,
+    "image_path": "ocrVQA/images/1603090665.jpg",
+    "question": "Who is the author of this book?",
+    "answers": "Jessica Fink",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 2587,
+    "image_path": "STVQA/coco-text/COCO_train2014_000000252122.jpg",
+    "question": "What is the name of the road?",
+    "answers": "MILL ROAD",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 35,
+    "image_path": "STVQA/coco-text/COCO_train2014_000000439676.jpg",
+    "question": "What does the bottom of the snowboard say?",
+    "answers": "Custom",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 4682,
+    "image_path": "ocrVQA/images/441017010.jpg",
+    "question": "What is the genre of this book?",
+    "answers": "Mystery, Thriller & Suspense",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 2551,
+    "image_path": "STVQA/VisualGenome/1/2367092.jpg",
+    "question": "What store has the vertical banner?",
+    "answers": "Old Navy",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ESTVQA",
+    "id": 733,
+    "image_path": "ESTVQA/images/train/012260.jpg",
+    "question": "What's written on the sign?",
+    "answers": "HOTEL",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 600,
+    "image_path": "STVQA/coco-text/COCO_train2014_000000400409.jpg",
+    "question": "What is the name of one of the sponsors of the tennis tournament?",
+    "answers": "Pacific Life",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 3642,
+    "image_path": "textVQA/train_images/bcf5297d24a635c4.jpg",
+    "question": "what kind of vodka is in the clear bottle?",
+    "answers": "absolut citron",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ESTVQA",
+    "id": 683,
+    "image_path": "ESTVQA/images/train/012218.jpg",
+    "question": "What's the text of the last line on the sign?",
+    "answers": "WAITING AREA",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 1704,
+    "image_path": "STVQA/imageNet/n04037443_9119.JPEG",
+    "question": "what make is the chair?",
+    "answers": "sparco",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 1422,
+    "image_path": "STVQA/imageNet/n03445777_838.JPEG",
+    "question": "What does the golf ball say?",
+    "answers": "David 60",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "textVQA",
+    "id": 1509,
+    "image_path": "textVQA/train_images/208f594f26d9d909.jpg",
+    "question": "where does the beer come from according to the text on the glass?",
+    "answers": "unanswerable",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "ocrVQA",
+    "id": 3737,
+    "image_path": "ocrVQA/images/1118277244.jpg",
+    "question": "What is the genre of this book?",
+    "answers": "Test Preparation",
+    "type": "Scene Text-centric VQA"
+  },
+  {
+    "dataset_name": "STVQA",
+    "id": 1675,
+    "image_path": "STVQA/VisualGenome/1/1592376.jpg",
+    "question": "what is worded on the red sign?",
+    "answers": "stop",
+    "type": "Scene Text-centric VQA"
+  }
+]

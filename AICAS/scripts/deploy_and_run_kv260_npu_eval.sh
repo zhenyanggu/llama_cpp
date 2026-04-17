@@ -23,9 +23,10 @@ Options:
   --threads <n>              llama-server thread count (default: 4).
   --port <port>              llama-server port (default: 8081).
   --sdk-env <path>           KV260 SDK env script path.
-  --build-dir <path>         Cross-build directory (default: build-kv260-npu).
+  --build-dir <path>         Cross-build directory (default: build-kv260-npu-current).
   --run-id <id>              Override run id.
   --throughput-image <path>  Image used for throughput_eval.py.
+  --throughput-only          Run throughput_eval only (skip acc_eval).
   --skip-build               Reuse existing build output.
   --skip-readiness-probe     Skip the non-root readiness probe.
   --build-only               Build the NPU-enabled llama-server and exit.
@@ -37,6 +38,13 @@ Environment overrides for remote llama-server:
   GGML_NPU_ACC_BYTES         Default: 524288
   GGML_NPU_GUARD_BYTES       Default: 4096
   GGML_NPU_STAGE2_K_BYTES    Default: 4096
+  GGML_NPU_TILE_ALIGN_DEBUG  Enable single-tile NPU-vs-CPU reference check
+  GGML_NPU_TILE_ALIGN_LAYER_ID  Optional layer filter (default: all)
+  GGML_NPU_TILE_ALIGN_TILE_INDEX Optional tile filter (default: all)
+  GGML_NPU_TILE_ALIGN_MAX_LOGS   Max logs emitted (default: 1)
+  GGML_NPU_TILE_ALIGN_ABS_TOL    Absolute diff tolerance (default: 1e-3)
+  GGML_NPU_AICAS_BIAS_MODE       AICAS bias path mode: auto|precomp|raw
+  GGML_NPU_DISABLE_FOLD_OUTPUT   Disable NPU fold-output fast path when set
   NPU_CMA_SIZE               Default: 256M
 EOF
 }
@@ -49,7 +57,7 @@ USER_NAME="ubuntu"
 REMOTE_ROOT="/home/ubuntu/aicas"
 RESULTS_ROOT="$AICAS_DIR/kv260_results/npu-w8a8"
 SDK_ENV="/home/gugugu/petalinux/sdk/kv260-2025.1/environment-setup-cortexa72-cortexa53-amd-linux"
-BUILD_DIR="$ROOT_DIR/build-kv260-npu"
+BUILD_DIR="$ROOT_DIR/build-kv260-npu-current"
 
 MODEL_F16="$AICAS_DIR/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf"
 MODEL_Q8_0="$AICAS_DIR/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf"
@@ -69,6 +77,7 @@ SKIP_BUILD=0
 SKIP_READINESS_PROBE=0
 BUILD_ONLY=0
 FORCE_SYNC_SHARED=0
+THROUGHPUT_ONLY=0
 MODEL_ALIAS="smolvlm2-gguf-npu"
 SAVE_NAME="SmolVLM2_npu_w8a8"
 
@@ -77,6 +86,13 @@ NPU_ACC_BYTES="${GGML_NPU_ACC_BYTES:-524288}"
 NPU_GUARD_BYTES="${GGML_NPU_GUARD_BYTES:-4096}"
 NPU_STAGE2_K_BYTES="${GGML_NPU_STAGE2_K_BYTES:-4096}"
 NPU_CMA_BYTES="${NPU_CMA_SIZE:-256M}"
+NPU_TILE_ALIGN_DEBUG="${GGML_NPU_TILE_ALIGN_DEBUG:-}"
+NPU_TILE_ALIGN_LAYER_ID="${GGML_NPU_TILE_ALIGN_LAYER_ID:-}"
+NPU_TILE_ALIGN_TILE_INDEX="${GGML_NPU_TILE_ALIGN_TILE_INDEX:-}"
+NPU_TILE_ALIGN_MAX_LOGS="${GGML_NPU_TILE_ALIGN_MAX_LOGS:-}"
+NPU_TILE_ALIGN_ABS_TOL="${GGML_NPU_TILE_ALIGN_ABS_TOL:-}"
+NPU_AICAS_BIAS_MODE="${GGML_NPU_AICAS_BIAS_MODE:-}"
+NPU_DISABLE_FOLD_OUTPUT="${GGML_NPU_DISABLE_FOLD_OUTPUT:-}"
 
 SSH_OPTS=(
   -o BatchMode=yes
@@ -177,6 +193,10 @@ while [ $# -gt 0 ]; do
       THROUGHPUT_IMAGE="$2"
       shift 2
       ;;
+    --throughput-only)
+      THROUGHPUT_ONLY=1
+      shift
+      ;;
     --skip-build)
       SKIP_BUILD=1
       shift
@@ -222,6 +242,8 @@ GIT_STATUS_FILE=""
 DATA_MANIFEST_FILE=""
 READINESS_LOG_FILE=""
 DATA_MANIFEST_COUNT="0"
+SERVER_BIN_SHA256=""
+REMOTE_SERVER_BIN_SHA256=""
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 GIT_HEAD="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 SDK_ROOT=""
@@ -428,6 +450,7 @@ verify_server_bin() {
   local file_desc
   require_path "$SERVER_BIN" "llama-server binary"
   file_desc="$(file "$SERVER_BIN")"
+  SERVER_BIN_SHA256="$(sha256sum "$SERVER_BIN" | awk '{print $1}')"
   echo "Built binary: $file_desc"
   [[ "$file_desc" == *"ARM aarch64"* ]] || {
     echo "Expected an ARM aarch64 llama-server, got: $file_desc" >&2
@@ -581,12 +604,21 @@ write_run_meta() {
   RUN_META_REQUIRED_DATA_FILES="$DATA_MANIFEST_COUNT" \
   RUN_META_READINESS_LOG="$READINESS_LOG_FILE" \
   RUN_META_SKIP_READINESS_PROBE="$SKIP_READINESS_PROBE" \
+  RUN_META_SERVER_BIN_SHA256="$SERVER_BIN_SHA256" \
+  RUN_META_REMOTE_SERVER_BIN_SHA256="$REMOTE_SERVER_BIN_SHA256" \
   RUN_META_NPU_SPM_BYTES="$NPU_SPM_BYTES" \
   RUN_META_NPU_ACC_BYTES="$NPU_ACC_BYTES" \
   RUN_META_NPU_GUARD_BYTES="$NPU_GUARD_BYTES" \
   RUN_META_NPU_STAGE2_K_BYTES="$NPU_STAGE2_K_BYTES" \
   RUN_META_NPU_CMA_BYTES="$NPU_CMA_BYTES" \
   RUN_META_AICAS_MMPROJ_W8A8_DEBUG="${AICAS_MMPROJ_W8A8_DEBUG:-}" \
+  RUN_META_NPU_TILE_ALIGN_DEBUG="$NPU_TILE_ALIGN_DEBUG" \
+  RUN_META_NPU_TILE_ALIGN_LAYER_ID="$NPU_TILE_ALIGN_LAYER_ID" \
+  RUN_META_NPU_TILE_ALIGN_TILE_INDEX="$NPU_TILE_ALIGN_TILE_INDEX" \
+  RUN_META_NPU_TILE_ALIGN_MAX_LOGS="$NPU_TILE_ALIGN_MAX_LOGS" \
+  RUN_META_NPU_TILE_ALIGN_ABS_TOL="$NPU_TILE_ALIGN_ABS_TOL" \
+  RUN_META_NPU_AICAS_BIAS_MODE="$NPU_AICAS_BIAS_MODE" \
+  RUN_META_NPU_DISABLE_FOLD_OUTPUT="$NPU_DISABLE_FOLD_OUTPUT" \
   python3 - "$RUN_META_FILE" "$GIT_STATUS_FILE" "$OCRBENCH_FILE" <<'PY'
 import json
 import os
@@ -618,6 +650,8 @@ payload = {
     "sdk_env": os.environ["RUN_META_SDK_ENV"],
     "build_dir": os.environ["RUN_META_BUILD_DIR"],
     "server_bin": os.environ["RUN_META_SERVER_BIN"],
+    "server_bin_sha256": os.environ["RUN_META_SERVER_BIN_SHA256"],
+    "remote_server_bin_sha256": os.environ["RUN_META_REMOTE_SERVER_BIN_SHA256"],
     "build_flags": [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
@@ -655,6 +689,13 @@ payload = {
         "GGML_NPU_STAGE2_K_BYTES": os.environ["RUN_META_NPU_STAGE2_K_BYTES"],
         "NPU_CMA_SIZE": os.environ["RUN_META_NPU_CMA_BYTES"],
         "AICAS_MMPROJ_W8A8_DEBUG": os.environ["RUN_META_AICAS_MMPROJ_W8A8_DEBUG"],
+        "GGML_NPU_TILE_ALIGN_DEBUG": os.environ["RUN_META_NPU_TILE_ALIGN_DEBUG"],
+        "GGML_NPU_TILE_ALIGN_LAYER_ID": os.environ["RUN_META_NPU_TILE_ALIGN_LAYER_ID"],
+        "GGML_NPU_TILE_ALIGN_TILE_INDEX": os.environ["RUN_META_NPU_TILE_ALIGN_TILE_INDEX"],
+        "GGML_NPU_TILE_ALIGN_MAX_LOGS": os.environ["RUN_META_NPU_TILE_ALIGN_MAX_LOGS"],
+        "GGML_NPU_TILE_ALIGN_ABS_TOL": os.environ["RUN_META_NPU_TILE_ALIGN_ABS_TOL"],
+        "GGML_NPU_AICAS_BIAS_MODE": os.environ["RUN_META_NPU_AICAS_BIAS_MODE"],
+        "GGML_NPU_DISABLE_FOLD_OUTPUT": os.environ["RUN_META_NPU_DISABLE_FOLD_OUTPUT"],
     },
 }
 
@@ -667,6 +708,7 @@ stage_remote_run_dir() {
   scp "${SSH_OPTS[@]}" "$SERVER_BIN" "$TARGET:$RUN_DIR/llama-server"
   scp "${SSH_OPTS[@]}" "$RUN_META_FILE" "$TARGET:$RUN_DIR/run_meta.json"
   ssh "${SSH_OPTS[@]}" "$TARGET" "chmod +x '$RUN_DIR/llama-server'"
+  REMOTE_SERVER_BIN_SHA256="$(ssh "${SSH_OPTS[@]}" "$TARGET" "sha256sum '$RUN_DIR/llama-server' | awk '{print \$1}'")"
 }
 
 verify_remote_server_bin() {
@@ -694,6 +736,13 @@ NPU_GUARD_BYTES='$NPU_GUARD_BYTES'
 NPU_STAGE2_K_BYTES='$NPU_STAGE2_K_BYTES'
 NPU_CMA_BYTES='$NPU_CMA_BYTES'
 AICAS_MMPROJ_W8A8_DEBUG='${AICAS_MMPROJ_W8A8_DEBUG:-}'
+GGML_NPU_TILE_ALIGN_DEBUG='$NPU_TILE_ALIGN_DEBUG'
+GGML_NPU_TILE_ALIGN_LAYER_ID='$NPU_TILE_ALIGN_LAYER_ID'
+GGML_NPU_TILE_ALIGN_TILE_INDEX='$NPU_TILE_ALIGN_TILE_INDEX'
+GGML_NPU_TILE_ALIGN_MAX_LOGS='$NPU_TILE_ALIGN_MAX_LOGS'
+GGML_NPU_TILE_ALIGN_ABS_TOL='$NPU_TILE_ALIGN_ABS_TOL'
+GGML_NPU_AICAS_BIAS_MODE='$NPU_AICAS_BIAS_MODE'
+GGML_NPU_DISABLE_FOLD_OUTPUT='$NPU_DISABLE_FOLD_OUTPUT'
 
 cleanup() {
   if [ -n "\${SERVER_PID:-}" ]; then
@@ -715,6 +764,13 @@ env \
   GGML_NPU_STAGE2_K_BYTES="\$NPU_STAGE2_K_BYTES" \
   NPU_CMA_SIZE="\$NPU_CMA_BYTES" \
   AICAS_MMPROJ_W8A8_DEBUG="\$AICAS_MMPROJ_W8A8_DEBUG" \
+  GGML_NPU_TILE_ALIGN_DEBUG="\$GGML_NPU_TILE_ALIGN_DEBUG" \
+  GGML_NPU_TILE_ALIGN_LAYER_ID="\$GGML_NPU_TILE_ALIGN_LAYER_ID" \
+  GGML_NPU_TILE_ALIGN_TILE_INDEX="\$GGML_NPU_TILE_ALIGN_TILE_INDEX" \
+  GGML_NPU_TILE_ALIGN_MAX_LOGS="\$GGML_NPU_TILE_ALIGN_MAX_LOGS" \
+  GGML_NPU_TILE_ALIGN_ABS_TOL="\$GGML_NPU_TILE_ALIGN_ABS_TOL" \
+  GGML_NPU_AICAS_BIAS_MODE="\$GGML_NPU_AICAS_BIAS_MODE" \
+  GGML_NPU_DISABLE_FOLD_OUTPUT="\$GGML_NPU_DISABLE_FOLD_OUTPUT" \
 ./llama-server \
   --host 127.0.0.1 \
   --port "\$PORT" \
@@ -755,6 +811,7 @@ python3 "\$REMOTE_EVAL_DIR/throughput_eval.py" \
   --base-url "http://127.0.0.1:\$PORT/v1" \
   --model "\$MODEL_ALIAS"
 
+if [ "$THROUGHPUT_ONLY" -ne 1 ]; then
 python3 "\$REMOTE_EVAL_DIR/acc_eval.py" \
   --image_folder "\$REMOTE_DATA_DIR" \
   --OCRBench_file "\$REMOTE_OCRBENCH" \
@@ -762,6 +819,7 @@ python3 "\$REMOTE_EVAL_DIR/acc_eval.py" \
   --save_name "\$SAVE_NAME" \
   --base-url "http://127.0.0.1:\$PORT/v1" \
   --model "\$MODEL_ALIAS"
+fi
 EOF
 }
 

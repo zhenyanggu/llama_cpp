@@ -14,9 +14,14 @@ Options:
   --remote-root <path>       Remote root (default: /home/ubuntu/aicas)
   --run-id <id>              Run id (default: auto UTC timestamp)
   --samples <5|100>          Dataset size (default: 5)
+  --build-dir <path>         Cross-build directory (default: build-kv260-npu-current)
   --skip-build               Reuse existing build
   --skip-readiness-probe     Skip xmutil readiness probe
   -h, --help                 Show this help
+
+Fixed artifacts in V2:
+  text model: SmolVLM2-500M-Video-Instruct-Q8_0.gguf
+  mmproj:    mmproj-fallback-search-fb_attn_k-per-tensor.gguf
 EOF
 }
 
@@ -28,6 +33,9 @@ RUN_ID=""
 SAMPLES="5"
 SKIP_BUILD=0
 SKIP_READINESS=1
+BUILD_DIR="$ROOT_DIR/build-kv260-npu-current"
+MODEL_GGUF="$ROOT_DIR/AICAS/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf"
+MMPROJ_GGUF="$ROOT_DIR/AICAS/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,6 +44,7 @@ while [ $# -gt 0 ]; do
     --remote-root) REMOTE_ROOT="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --samples) SAMPLES="$2"; shift 2 ;;
+    --build-dir) BUILD_DIR="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-readiness-probe) SKIP_READINESS=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -58,8 +67,9 @@ CMD=(
   --user "$USER_NAME"
   --remote-root "$REMOTE_ROOT"
   --results-dir "$ROOT_DIR/AICAS2026/V2/results/official"
-  --model q8_0
-  --mmproj mixed_v1
+  --build-dir "$BUILD_DIR"
+  --model "$MODEL_GGUF"
+  --mmproj "$MMPROJ_GGUF"
   --ocrbench-file "$OCR_FILE"
   --run-id "$RUN_ID"
 )
@@ -72,4 +82,3 @@ if [ "$SKIP_READINESS" -eq 1 ]; then
 fi
 
 "${CMD[@]}"
-

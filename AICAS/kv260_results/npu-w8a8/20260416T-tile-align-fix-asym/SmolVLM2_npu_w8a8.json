@@ -1,0 +1,12 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1631,
+        "image_path": "IIIT5K/test/40_4.png",
+        "question": "what is written in the image?",
+        "answers": "NOSTANDING",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene of a person sitting on a bed, wearing a white shirt and a black jacket. The person is holding a book in their hands, which appears to be a novel or a storybook. The person is sitting in a relaxed position, with their legs crossed and their hands resting on the book. The background of the image is a cozy bedroom setting, with a bed, a nightstand, and a lamp visible. The room is well-lit, and the overall atmosphere is",
+        "result": 0
+    }
+]

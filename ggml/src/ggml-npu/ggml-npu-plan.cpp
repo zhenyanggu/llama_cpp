@@ -78,7 +78,13 @@ bool npu_register_aicas_w8a8(
     if (act_zero_point_u8 < 0 || act_zero_point_u8 > 255) {
         return false;
     }
-    if (weight_scale_len == 0 || sum_w_len == 0 || weight_scale_len != sum_w_len) {
+    if (weight_scale_len == 0 || sum_w_len == 0) {
+        return false;
+    }
+    // Support both metadata layouts:
+    // - per-channel: weight_scale_len == sum_w_len == out_channels
+    // - per-tensor:  weight_scale_len == 1, sum_w_len == out_channels
+    if (!(weight_scale_len == sum_w_len || weight_scale_len == 1)) {
         return false;
     }
     if (weight_scale == nullptr || sum_w == nullptr) {
@@ -89,6 +95,7 @@ bool npu_register_aicas_w8a8(
     cfg.valid = true;
     cfg.act_scale = act_scale;
     cfg.act_scale_q8_24 = act_scale_q8_24 != 0 ? act_scale_q8_24 : npu_float_to_q8_24(act_scale);
+    cfg.act_zero_point_u8 = act_zero_point_u8;
     cfg.act_zero_point_i8 = act_zero_point_u8 - 128;
     cfg.weight_scale.assign(weight_scale, weight_scale + weight_scale_len);
     cfg.sum_w.assign(sum_w, sum_w + sum_w_len);
@@ -97,6 +104,14 @@ bool npu_register_aicas_w8a8(
     std::lock_guard<std::mutex> lock(table.mutex);
     table.entries[weight_name] = std::move(cfg);
     return true;
+}
+
+static bool npu_weight_scale_len_compatible(size_t scale_len, size_t out_channels) {
+    return scale_len == out_channels || scale_len == 1;
+}
+
+static bool npu_can_fold_output_reconstruction(const npu_node_plan & plan) {
+    return plan.aicas_w8a8.valid && plan.aicas_w8a8.weight_scale.size() == 1;
 }
 
 static bool npu_lookup_aicas_w8a8(
@@ -192,6 +207,7 @@ static npu_activation_quant_config npu_lookup_static_quant_config(
     cfg.dynamic = false;
     cfg.per_tensor = true;
     cfg.symmetric = false;
+    cfg.zero_point_u8 = 128;
 
     const npu_static_quant_table & table = npu_get_static_quant_table();
     const std::string key = npu_quant_param_key(dst, src1);
@@ -209,7 +225,8 @@ static npu_activation_quant_config npu_lookup_static_quant_config(
         }
         cfg.valid = true;
         cfg.scale = entry.scale;
-        cfg.zero_point = entry.zero_point;
+        cfg.zero_point_u8 = entry.zero_point;
+        cfg.zero_point = entry.zero_point - 128;
         return cfg;
     }
 
@@ -219,7 +236,8 @@ static npu_activation_quant_config npu_lookup_static_quant_config(
         }
         cfg.valid = true;
         cfg.scale = entry.scale;
-        cfg.zero_point = entry.zero_point;
+        cfg.zero_point_u8 = entry.zero_point;
+        cfg.zero_point = entry.zero_point - 128;
         return cfg;
     }
 
@@ -371,24 +389,29 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
     }
 
     const struct ggml_tensor * root = op;
+    const struct ggml_tensor * compute_root = op;
     if (op->op == GGML_OP_ADD) {
         std::string add_reason;
         if (!npu_is_fusable_bias_add(op, &add_reason)) {
             if (reason) {
-                *reason = add_reason;
+                *reason = std::string("ADD 不可融合: ") + add_reason;
             }
             return false;
         }
-        root = (op->src[0] && op->src[0]->op == GGML_OP_MUL_MAT) ? op->src[0] : op->src[1];
+        if (op->src[0] != nullptr && op->src[0]->op == GGML_OP_MUL_MAT) {
+            compute_root = op->src[0];
+        } else {
+            compute_root = op->src[1];
+        }
     } else if (op->op != GGML_OP_MUL_MAT) {
         if (reason) {
-            *reason = "只支持 GGML_OP_MUL_MAT 或其 bias 融合 ADD";
+            *reason = "只支持 GGML_OP_MUL_MAT 或可融合 ADD";
         }
         return false;
     }
 
-    const struct ggml_tensor * src0 = root->src[0];
-    const struct ggml_tensor * src1 = root->src[1];
+    const struct ggml_tensor * src0 = compute_root->src[0];
+    const struct ggml_tensor * src1 = compute_root->src[1];
 
     if (src0 == nullptr || src1 == nullptr) {
         if (reason) {
@@ -397,7 +420,7 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
         return false;
     }
 
-    if (!npu_is_tensor_2d(src0) || !npu_is_tensor_2d(src1) || !npu_is_tensor_2d(op)) {
+    if (!npu_is_tensor_2d(src0) || !npu_is_tensor_2d(src1) || !npu_is_tensor_2d(root)) {
         if (reason) {
             *reason = "当前仅支持 2D MUL_MAT";
         }
@@ -432,7 +455,7 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
         return false;
     }
 
-    if (op->type != GGML_TYPE_F32) {
+    if (root->type != GGML_TYPE_F32) {
         if (reason) {
             *reason = "当前仅支持 F32 输出";
         }
@@ -446,35 +469,32 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
         return false;
     }
 
-    if (src0->type == GGML_TYPE_I8) {
-        npu_aicas_w8a8_config cfg;
-        if (!npu_lookup_aicas_w8a8(src0, &cfg) || !cfg.valid) {
-            if (reason) {
-                *reason = "I8 权重缺少 AICAS W8A8 元数据";
-            }
-            return false;
+    if (src0->type != GGML_TYPE_I8) {
+        if (reason) {
+            *reason = "当前仅对 AICAS W8A8 I8 权重层启用 NPU offload";
         }
-        if (!(cfg.act_scale > 0.0f)) {
-            if (reason) {
-                *reason = "AICAS W8A8 激活 scale 非法";
-            }
-            return false;
+        return false;
+    }
+
+    npu_aicas_w8a8_config cfg;
+    if (!npu_lookup_aicas_w8a8(src0, &cfg) || !cfg.valid) {
+        if (reason) {
+            *reason = "I8 权重缺少 AICAS W8A8 元数据";
         }
-        if (cfg.weight_scale.size() != static_cast<size_t>(src0->ne[1]) ||
-            cfg.sum_w.size() != static_cast<size_t>(src0->ne[1])) {
-            if (reason) {
-                *reason = "AICAS W8A8 权重元数据长度与输出通道不匹配";
-            }
-            return false;
+        return false;
+    }
+    if (!(cfg.act_scale > 0.0f)) {
+        if (reason) {
+            *reason = "AICAS W8A8 激活 scale 非法";
         }
-    } else {
-        const npu_activation_quant_config act_cfg = npu_lookup_static_quant_config(op, src1);
-        if (!act_cfg.valid) {
-            if (reason) {
-                *reason = "缺少静态非对称量化参数";
-            }
-            return false;
+        return false;
+    }
+    if (!npu_weight_scale_len_compatible(cfg.weight_scale.size(), static_cast<size_t>(src0->ne[1])) ||
+        cfg.sum_w.size() != static_cast<size_t>(src0->ne[1])) {
+        if (reason) {
+            *reason = "AICAS W8A8 权重元数据长度与输出通道不匹配";
         }
+        return false;
     }
 
     return true;
@@ -639,15 +659,25 @@ static int32_t npu_find_or_create_weight_pack(
     packed.k0 = k0;
     packed.k = k;
     if (plan->aicas_w8a8.valid) {
-        if (m0 < 0 || m < 0 || static_cast<size_t>(m0 + m) > plan->aicas_w8a8.weight_scale.size()) {
+        if (m0 < 0 || m < 0) {
             if (error) {
-                *error = "AICAS W8A8 weight_scale 越界";
+                *error = "AICAS W8A8 非法 tile 形状";
             }
             return -1;
         }
-        packed.scales.assign(
-            plan->aicas_w8a8.weight_scale.begin() + m0,
-            plan->aicas_w8a8.weight_scale.begin() + m0 + m);
+        if (plan->aicas_w8a8.weight_scale.size() == 1) {
+            packed.scales.assign(static_cast<size_t>(m), plan->aicas_w8a8.weight_scale[0]);
+        } else {
+            if (static_cast<size_t>(m0 + m) > plan->aicas_w8a8.weight_scale.size()) {
+                if (error) {
+                    *error = "AICAS W8A8 weight_scale 越界";
+                }
+                return -1;
+            }
+            packed.scales.assign(
+                plan->aicas_w8a8.weight_scale.begin() + m0,
+                plan->aicas_w8a8.weight_scale.begin() + m0 + m);
+        }
         if (!npu_pack_weight_tile_prequant_i8_transposed(
                     plan->src0,
                     m0,
@@ -749,19 +779,16 @@ static int32_t npu_find_or_create_bias_pack(
     packed.values.assign(static_cast<size_t>(exec_tile.m), 0);
 
     const float act_scale = plan->activation_quant.scale;
-    const int32_t act_zp = plan->activation_quant.zero_point;
 
     for (int64_t m = 0; m < exec_tile.m; ++m) {
         const int64_t global_m = exec_tile.m0 + m;
         const float bias_f32 = npu_read_bias_value_f32_plan(plan->bias, global_m, exec_tile.n0);
-        const float denom = act_scale * wpack.scales[static_cast<size_t>(m)];
+        const float w_scale = wpack.scales.size() == 1
+            ? wpack.scales[0]
+            : wpack.scales[static_cast<size_t>(m)];
+        const float denom = act_scale * w_scale;
         const float inv = denom != 0.0f ? (bias_f32 / denom) : 0.0f;
-        int32_t sum_qw = 0;
-        if (global_m >= 0 && static_cast<size_t>(global_m) < plan->weight_column_sum_q.size()) {
-            sum_qw = plan->weight_column_sum_q[static_cast<size_t>(global_m)];
-        }
-        packed.values[static_cast<size_t>(m)] =
-            static_cast<int32_t>(std::lrint(inv)) - act_zp * sum_qw;
+        packed.values[static_cast<size_t>(m)] = static_cast<int32_t>(std::lrint(inv));
     }
 
     plan->bias_packs.push_back(std::move(packed));
@@ -787,6 +814,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     plan.src0 = compute_root->src[0];
     plan.src1 = compute_root->src[1];
     plan.bias = bias;
+    plan.bias_mode = npu_bias_mode::auto_select;
     plan.dst = op;
     plan.m = op->ne[0];
     plan.n = op->ne[1];
@@ -795,7 +823,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         npu_aicas_w8a8_config cfg;
         if (npu_lookup_aicas_w8a8(plan.src0, &cfg) &&
             cfg.valid &&
-            cfg.weight_scale.size() == static_cast<size_t>(plan.m) &&
+            npu_weight_scale_len_compatible(cfg.weight_scale.size(), static_cast<size_t>(plan.m)) &&
             cfg.sum_w.size() == static_cast<size_t>(plan.m)) {
             plan.aicas_w8a8 = std::move(cfg);
             plan.activation_quant.dynamic = false;
@@ -803,6 +831,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
             plan.activation_quant.symmetric = false;
             plan.activation_quant.valid = true;
             plan.activation_quant.scale = plan.aicas_w8a8.act_scale;
+            plan.activation_quant.zero_point_u8 = plan.aicas_w8a8.act_zero_point_u8;
             plan.activation_quant.zero_point = plan.aicas_w8a8.act_zero_point_i8;
         }
     }
@@ -903,7 +932,11 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
 
     npu_build_weight_column_sum_q(&plan);
 
-    if (plan.bias != nullptr && plan.activation_quant.valid) {
+    const bool should_pack_bias =
+        plan.activation_quant.valid &&
+        plan.bias != nullptr &&
+        !plan.aicas_w8a8.valid;
+    if (should_pack_bias) {
         for (npu_exec_tile & exec_tile : plan.exec_tiles) {
             if (!exec_tile.needs_bias) {
                 continue;

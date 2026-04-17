@@ -1,0 +1,532 @@
+{
+  "layers": [
+    {
+      "layer_id": 0,
+      "onnx_node_name": "node_16",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 1,
+      "onnx_node_name": "node_19",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 2,
+      "onnx_node_name": "node_22",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 3,
+      "onnx_node_name": "node_40",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 4,
+      "onnx_node_name": "node_49",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 5,
+      "onnx_node_name": "node_52",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 6,
+      "onnx_node_name": "node_55",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 7,
+      "onnx_node_name": "node_73",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 8,
+      "onnx_node_name": "node_82",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 9,
+      "onnx_node_name": "node_85",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 10,
+      "onnx_node_name": "node_88",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 11,
+      "onnx_node_name": "node_106",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 12,
+      "onnx_node_name": "node_115",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 13,
+      "onnx_node_name": "node_118",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 14,
+      "onnx_node_name": "node_121",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 15,
+      "onnx_node_name": "node_139",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 16,
+      "onnx_node_name": "node_148",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 17,
+      "onnx_node_name": "node_151",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 18,
+      "onnx_node_name": "node_154",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 19,
+      "onnx_node_name": "node_172",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 20,
+      "onnx_node_name": "node_181",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 21,
+      "onnx_node_name": "node_184",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 22,
+      "onnx_node_name": "node_187",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 23,
+      "onnx_node_name": "node_205",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 24,
+      "onnx_node_name": "node_214",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 25,
+      "onnx_node_name": "node_217",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 26,
+      "onnx_node_name": "node_220",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 27,
+      "onnx_node_name": "node_238",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 28,
+      "onnx_node_name": "node_247",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 29,
+      "onnx_node_name": "node_250",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 30,
+      "onnx_node_name": "node_253",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 31,
+      "onnx_node_name": "node_271",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 32,
+      "onnx_node_name": "node_280",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 33,
+      "onnx_node_name": "node_283",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 34,
+      "onnx_node_name": "node_286",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 35,
+      "onnx_node_name": "node_304",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 36,
+      "onnx_node_name": "node_313",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 37,
+      "onnx_node_name": "node_316",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 38,
+      "onnx_node_name": "node_319",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 39,
+      "onnx_node_name": "node_337",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 40,
+      "onnx_node_name": "node_346",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 41,
+      "onnx_node_name": "node_349",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 42,
+      "onnx_node_name": "node_352",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 43,
+      "onnx_node_name": "node_370",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 44,
+      "onnx_node_name": "node_379",
+      "origin_op_type": "attn_q",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 45,
+      "onnx_node_name": "node_382",
+      "origin_op_type": "attn_k",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 46,
+      "onnx_node_name": "node_385",
+      "origin_op_type": "attn_v",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    },
+    {
+      "layer_id": 47,
+      "onnx_node_name": "node_403",
+      "origin_op_type": "ffn_down",
+      "device": "npu",
+      "fused_ops": [
+        "MUL_MAT",
+        "ADD"
+      ],
+      "fallback_reason": null
+    }
+  ]
+}

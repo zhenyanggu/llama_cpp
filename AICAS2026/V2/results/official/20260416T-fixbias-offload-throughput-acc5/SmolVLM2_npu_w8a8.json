@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene of a person sitting on a bed, wearing a white shirt and a black jacket. The person is holding a book in their hands, which appears to be a novel or a book of some sort. The person is also holding a pen, which is likely used for writing or drawing.\n\nThe background of the image is a cozy bedroom setting, with a bed, a nightstand, and a lamp visible. The bed is made with white sheets and a white blanket,",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene from a movie or TV show. Let's break it down step by step:\n\n1. **Objects in the Image**:\n   - There are two people in the image.\n   - One person is wearing a white shirt and black pants.\n   - The other person is wearing a black shirt and black pants.\n\n2. **Setting**:\n   - The setting appears to be a room or a studio.\n   - The room has a white wall with a window.\n\n3",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene from a movie or TV show. Let's break it down step by step:\n\n1. **Objects in the Image**:\n   - There is a person in the image.\n   - The person is wearing a white shirt.\n   - The person is standing in front of a television.\n   - The television is displaying a scene from the movie.\n\n2. **Television**:\n   - The television is black and has a screen.\n   - The screen is showing a scene",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene from a movie or TV show. The main characters are a man and a woman, both dressed in formal attire. The man is wearing a suit and tie, while the woman is wearing a dress. They are standing in front of a building, which is likely a hotel or a similar establishment.\n\nThe man is holding a phone, which is a common accessory for people who work or are involved in a profession that requires frequent communication. The woman is holding a book,",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene of a person sitting on a bed, wearing a white shirt and a black jacket. The person is holding a book in their hands, which appears to be a novel or a book of some sort. The person is also holding a pen, which is likely used for writing or drawing.\n\nThe background of the image is a cozy bedroom setting, with a bed, a nightstand, and a lamp visible. The bed is made with white sheets and a white blanket,",
+        "result": 0
+    }
+]

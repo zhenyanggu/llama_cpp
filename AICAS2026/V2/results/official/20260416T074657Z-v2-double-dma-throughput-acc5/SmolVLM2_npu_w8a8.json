@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads: \"The most important thing is to be happy.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads: \"The most important thing is to be happy.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The best way to get a job is to get a job.\" This statement is likely a motivational or advice-based message. The text is written in a clear and easy-to-read font, making it accessible to a wide audience. The message is straightforward and straightforward, with no additional elements or decorations. The overall tone of the text is positive and encouraging, suggesting that getting a job is a good way to achieve success and happiness.",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads: \"The most important thing is to be happy.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains a text that reads \"The Great Gatsby\" by F. Scott Fitzgerald. This text is likely referring to the novel by the author, which is a classic American novel that explores themes of love, class, and social status in the 1920s. The novel is widely regarded as one of the greatest works of American literature and has been translated into numerous languages and adapted into various forms of media, including films and stage productions.",
+        "result": 0
+    }
+]

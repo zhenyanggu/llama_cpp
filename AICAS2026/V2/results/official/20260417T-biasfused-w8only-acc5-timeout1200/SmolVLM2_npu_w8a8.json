@@ -1,0 +1,52 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "atweq. That Wearer.a. We Statement. We Statement. Wex. Wex. Wei. We D. D. D. D. D. D. We We Wei. We D. We D. We D. We D. We D. We Are We That We Are. That We Are. That We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Who",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 652,
+        "image_path": "IIIT5K/test/2174_5.png",
+        "question": "what is written in the image?",
+        "answers": "SWAD",
+        "type": "Regular Text Recognition",
+        "predict": "You both the from theFocus of your image, the Rider (the Rider (the Rider (s to the two hands (Rider (s (s thes (Rider (s (R-Rider (s (s (R-Rider (s)s (R-s (R-s (R-s (L-Rider (s)s (L-Rider (s (e (A-R-s (e) or (",
+        "result": 0
+    },
+    {
+        "dataset_name": "IC13_857",
+        "id": 228,
+        "image_path": "IC13_857/imgs/000000229.jpg",
+        "question": "what is written in the image?",
+        "answers": "students",
+        "type": "Regular Text Recognition",
+        "predict": "you are not.\n\n-\n.\n\n.\n\n.\n\n\n.",
+        "result": 0
+    },
+    {
+        "dataset_name": "svt",
+        "id": 45,
+        "image_path": "svt/image/img_0046.jpg",
+        "question": "what is written in the image?",
+        "answers": "center",
+        "type": "Regular Text Recognition",
+        "predict": "Rote and the Rooting, Rote, Rote, Rote, and the rijettoerekreislam (Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote, Rote,",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "at.Andaquero.iAnda.i M.Anda.atwar.at.Bat.at.Bat.at.Anda.at.Anda.at.Anda.at.Anda.at.Anda.at.Anda.at.Anda.at.Anda.at.That.at.Anda.at.Anda.at.Anda.at.Anda.at.Anda.at",
+        "result": 0
+    }
+]

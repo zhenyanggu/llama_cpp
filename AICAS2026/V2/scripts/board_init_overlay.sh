@@ -11,7 +11,7 @@ Initialize KV260 overlay + NPU driver for V2 flow.
 Options:
   --host <host>              KV260 host (default: 192.168.0.10)
   --user <user>              KV260 user (default: ubuntu)
-  --app <name>               xmutil app name (default: INT32_dequant_overlayapp)
+  --app <name>               xmutil app name (default: double_dma_overlayapp)
   --remote-root <path>       Remote root (default: /home/ubuntu/aicas)
   --sudo-password <pass>     Board sudo password (default: env BOARD_SUDO_PASSWORD)
   -h, --help                 Show this help
@@ -20,7 +20,7 @@ EOF
 
 HOST="192.168.0.10"
 USER_NAME="ubuntu"
-APP_NAME="INT32_dequant_overlayapp"
+APP_NAME="double_dma_overlayapp"
 REMOTE_ROOT="/home/ubuntu/aicas"
 SUDO_PASS="${BOARD_SUDO_PASSWORD:-}"
 

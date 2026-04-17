@@ -1,0 +1,33 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": ". Plud. Towardy We They. We They. We Themb.Q.Y That We GY M. D.Y.Y.Y. AY. A.Y. A.Y. AY. AY. AY. We Hap. We G AY. We G. We G Q. Had. We G. From. From. \" M. Q. D. AY. A. A. A. H M. \"Q. We M. \"That We J. Wemb. We M. We. From. We. We. From. From. From. Wepowres. Weoneq. We. From. We One That We. Wepowed. We M. We To The A. We To The A. We. We The M. We The A. \" That We Are We We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We \" That We We. \" That We. \" That We To We. That We To We. That We We. That We We. That We That We That We. That"
+      }
+    }
+  ],
+  "created": 1740284095,
+  "model": "smolvlm2-gguf-npu",
+  "system_fingerprint": "b6830-20be41e5f",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 256,
+    "prompt_tokens": 93,
+    "total_tokens": 349
+  },
+  "id": "chatcmpl-YZ6CJ4A2Yne2L3wFShNP2TmDvvY5L1pJ",
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 93,
+    "prompt_ms": 55831.696,
+    "prompt_per_token_ms": 600.3408172043011,
+    "prompt_per_second": 1.6657204896659414,
+    "predicted_n": 256,
+    "predicted_ms": 30176.888,
+    "predicted_per_token_ms": 117.87846875,
+    "predicted_per_second": 8.483313454985815
+  }
+}

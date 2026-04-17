@@ -1,0 +1,33 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": " We Dapper That Weiqad. We D. Wei And We Weiq. D. We D. D. We D. D. We D. We D. D. We D. M. D. We D.Y. D. We D. D. We We To M. We D. We D. We D. We D. We D. We D. We D. We D. We D. \"We D. We D. \"That We We D. \"That We Are We Are We We Are We Are We We Are We Are We Are We Are We Are We Are We Are We Mention We Are We Mention We Are We Are We Move. We Are We Are We Move. We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are We Are"
+      }
+    }
+  ],
+  "created": 1740282905,
+  "model": "smolvlm2-gguf-npu",
+  "system_fingerprint": "b6830-20be41e5f",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 256,
+    "prompt_tokens": 87,
+    "total_tokens": 343
+  },
+  "id": "chatcmpl-zHzqqmKjbQS3EJyzSi27fRyYmgBkhUjl",
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 87,
+    "prompt_ms": 47081.846,
+    "prompt_per_token_ms": 541.1706436781609,
+    "prompt_per_second": 1.8478459829293865,
+    "predicted_n": 256,
+    "predicted_ms": 30447.434,
+    "predicted_per_token_ms": 118.9352890625,
+    "predicted_per_second": 8.407933489567625
+  }
+}

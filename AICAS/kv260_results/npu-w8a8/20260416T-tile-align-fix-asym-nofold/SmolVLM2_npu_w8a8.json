@@ -1,0 +1,12 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1631,
+        "image_path": "IIIT5K/test/40_4.png",
+        "question": "what is written in the image?",
+        "answers": "NOSTANDING",
+        "type": "Regular Text Recognition",
+        "predict": "The image shows a scene from a movie or TV show. The main characters are a man and a woman, both dressed in formal attire. The man is wearing a suit and tie, while the woman is wearing a dress. They are standing in front of a large window, which allows a view of the outside world.\n\nThe man is holding a small object, which appears to be a piece of paper or a card. He is also holding a pen, which is used to write or draw",
+        "result": 0
+    }
+]
