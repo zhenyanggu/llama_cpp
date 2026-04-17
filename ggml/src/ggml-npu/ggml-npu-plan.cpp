@@ -1,9 +1,11 @@
 #include "ggml-npu-plan.h"
 #include "ggml-npu-quant.h"
+#include "npu_runtime.h"
 
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -33,6 +35,26 @@ struct npu_aicas_w8a8_table {
     std::unordered_map<std::string, npu_aicas_w8a8_config> entries;
 };
 
+struct npu_preloaded_weight_pack_entry {
+    int64_t m0 = 0;
+    int64_t m = 0;
+    int64_t k0 = 0;
+    int64_t k = 0;
+    size_t offset = 0;
+    size_t bytes = 0;
+};
+
+struct npu_preloaded_weight_tensor_entry {
+    void * cma_base = nullptr;
+    size_t total_bytes = 0;
+    std::vector<npu_preloaded_weight_pack_entry> packs;
+};
+
+struct npu_preloaded_weight_cache {
+    std::mutex mutex;
+    std::unordered_map<std::string, npu_preloaded_weight_tensor_entry> entries;
+};
+
 static npu_static_quant_table & npu_get_static_quant_table() {
     static npu_static_quant_table table;
     return table;
@@ -41,6 +63,11 @@ static npu_static_quant_table & npu_get_static_quant_table() {
 static npu_aicas_w8a8_table & npu_get_aicas_w8a8_table() {
     static npu_aicas_w8a8_table table;
     return table;
+}
+
+static npu_preloaded_weight_cache & npu_get_preloaded_weight_cache() {
+    static npu_preloaded_weight_cache cache;
+    return cache;
 }
 
 static int32_t npu_float_to_q8_24(float scale) {
@@ -63,7 +90,7 @@ void npu_clear_aicas_w8a8_table(void) {
 bool npu_register_aicas_w8a8(
         const char * weight_name,
         float act_scale,
-    int32_t act_scale_q8_24,
+        int32_t act_scale_q8_24,
         int32_t act_zero_point_u8,
         const float * weight_scale,
         size_t weight_scale_len,
@@ -106,8 +133,178 @@ bool npu_register_aicas_w8a8(
     return true;
 }
 
+static bool npu_lookup_preloaded_weight_pack(
+        const struct ggml_tensor * src0,
+        int64_t m0,
+        int64_t m,
+        int64_t k0,
+        int64_t k,
+        void ** cma_ptr,
+        size_t * bytes);
+
+static bool npu_store_preloaded_weight_pack(
+        const struct ggml_tensor * src0,
+        const std::vector<npu_preloaded_weight_pack_entry> & packs,
+        const std::vector<std::vector<int8_t>> & packed_bytes,
+        std::string * error);
+
+static bool npu_lookup_aicas_w8a8(
+        const struct ggml_tensor * src0,
+        npu_aicas_w8a8_config * out);
+
+void npu_clear_preloaded_weight_cache(void) {
+    npu_preloaded_weight_cache & cache = npu_get_preloaded_weight_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    for (auto & kv : cache.entries) {
+        if (kv.second.cma_base != nullptr) {
+            npu_mem_free(kv.second.cma_base);
+            kv.second.cma_base = nullptr;
+            kv.second.total_bytes = 0;
+        }
+        kv.second.packs.clear();
+    }
+    cache.entries.clear();
+}
+
+bool npu_preload_aicas_w8a8_tensor(const struct ggml_tensor * src0, std::string * error) {
+    if (src0 == nullptr || src0->name[0] == '\0') {
+        if (error) {
+            *error = "invalid weight tensor";
+        }
+        return false;
+    }
+    if (src0->type != GGML_TYPE_I8) {
+        if (error) {
+            *error = "preload only supports I8 weights";
+        }
+        return false;
+    }
+
+    npu_aicas_w8a8_config cfg;
+    if (!npu_lookup_aicas_w8a8(src0, &cfg) || !cfg.valid) {
+        if (error) {
+            *error = "AICAS W8A8 config not found";
+        }
+        return false;
+    }
+
+    const npu_tiling_config config = npu_default_tiling_config();
+    const int64_t m_total = src0->ne[1];
+    const int64_t k_total = src0->ne[0];
+    std::vector<npu_preloaded_weight_pack_entry> packs;
+    std::vector<std::vector<int8_t>> packed_bytes;
+
+    for (int64_t m0 = 0; m0 < m_total; m0 += config.sa_cols) {
+        const int64_t m = std::min<int64_t>(config.sa_cols, m_total - m0);
+        for (int64_t k0 = 0; k0 < k_total; k0 += config.stage2_k_block) {
+            const int64_t k = std::min<int64_t>(config.stage2_k_block, k_total - k0);
+            if (npu_lookup_preloaded_weight_pack(src0, m0, m, k0, k, nullptr, nullptr)) {
+                continue;
+            }
+
+            std::vector<int8_t> packed;
+            if (!npu_pack_weight_tile_prequant_i8_transposed(
+                        src0,
+                        m0,
+                        m,
+                        k0,
+                        k,
+                        &packed,
+                        error)) {
+                return false;
+            }
+
+            const size_t offset = packs.empty() ? 0 : packs.back().offset + packs.back().bytes;
+            packs.push_back({m0, m, k0, k, offset, packed.size()});
+            packed_bytes.push_back(std::move(packed));
+        }
+    }
+
+    return npu_store_preloaded_weight_pack(src0, packs, packed_bytes, error);
+}
+
 static bool npu_weight_scale_len_compatible(size_t scale_len, size_t out_channels) {
     return scale_len == out_channels || scale_len == 1;
+}
+
+static bool npu_lookup_preloaded_weight_pack(
+        const struct ggml_tensor * src0,
+        int64_t m0,
+        int64_t m,
+        int64_t k0,
+        int64_t k,
+        void ** cma_ptr,
+        size_t * bytes) {
+    if (src0 == nullptr || src0->name[0] == '\0') {
+        return false;
+    }
+
+    npu_preloaded_weight_cache & cache = npu_get_preloaded_weight_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    auto it = cache.entries.find(src0->name);
+    if (it == cache.entries.end()) {
+        return false;
+    }
+
+    for (const npu_preloaded_weight_pack_entry & entry : it->second.packs) {
+        if (entry.m0 == m0 && entry.m == m && entry.k0 == k0 && entry.k == k) {
+            if (cma_ptr != nullptr) {
+                *cma_ptr = static_cast<char *>(it->second.cma_base) + entry.offset;
+            }
+            if (bytes != nullptr) {
+                *bytes = entry.bytes;
+            }
+            return it->second.cma_base != nullptr;
+        }
+    }
+
+    return false;
+}
+
+static bool npu_store_preloaded_weight_pack(
+        const struct ggml_tensor * src0,
+        const std::vector<npu_preloaded_weight_pack_entry> & packs,
+        const std::vector<std::vector<int8_t>> & packed_bytes,
+        std::string * error) {
+    if (src0 == nullptr || src0->name[0] == '\0') {
+        if (error) {
+            *error = "weight tensor name is empty";
+        }
+        return false;
+    }
+
+    npu_preloaded_weight_cache & cache = npu_get_preloaded_weight_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (cache.entries.find(src0->name) != cache.entries.end()) {
+        return true;
+    }
+
+    size_t total_bytes = 0;
+    for (const npu_preloaded_weight_pack_entry & entry : packs) {
+        total_bytes = std::max(total_bytes, entry.offset + entry.bytes);
+    }
+
+    void * cma_base = npu_mem_alloc(total_bytes);
+    if (cma_base == nullptr) {
+        if (error) {
+            *error = "npu_mem_alloc() 失败";
+        }
+        return false;
+    }
+
+    for (size_t i = 0; i < packs.size(); ++i) {
+        std::memcpy(
+            static_cast<char *>(cma_base) + packs[i].offset,
+            packed_bytes[i].data(),
+            packed_bytes[i].size());
+    }
+
+    npu_preloaded_weight_tensor_entry tensor_entry;
+    tensor_entry.cma_base = cma_base;
+    tensor_entry.total_bytes = total_bytes;
+    tensor_entry.packs = packs;
+    cache.entries[src0->name] = std::move(tensor_entry);
+    return true;
 }
 
 static bool npu_can_fold_output_reconstruction(const npu_node_plan & plan) {
@@ -702,6 +899,16 @@ static int32_t npu_find_or_create_weight_pack(
             return -1;
         }
     }
+
+    npu_lookup_preloaded_weight_pack(
+        plan->src0,
+        m0,
+        m,
+        k0,
+        k,
+        &packed.cma_packed,
+        &packed.cma_bytes);
+    packed.cma_persistent = packed.cma_packed != nullptr;
 
     plan->weight_packs.push_back(std::move(packed));
     return static_cast<int32_t>(plan->weight_packs.size() - 1);

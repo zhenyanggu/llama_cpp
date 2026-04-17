@@ -1,6 +1,7 @@
 # Extensions
 mmproj*.json
 AICAS/output
+AICAS2026/V2/results
 artifacts
 *.a
 *.bat

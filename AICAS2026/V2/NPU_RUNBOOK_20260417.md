@@ -94,6 +94,16 @@ DMA1 MVIN is busy
 cmake --build build-kv260-npu-current --target llama-server -j$(nproc)
 ```
 
+### 1.1 Board sudo password
+
+Current lab board password:
+
+```bash
+export BOARD_SUDO_PASSWORD=123456
+```
+
+Use it with overlay/driver init scripts that require sudo on `ubuntu@192.168.0.10`.
+
 ### 2. Throughput-only
 
 ```bash

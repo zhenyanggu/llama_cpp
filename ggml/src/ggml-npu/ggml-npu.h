@@ -71,6 +71,8 @@ GGML_BACKEND_API bool ggml_backend_npu_w8a8_register(
         size_t weight_scale_len,
         const int32_t * sum_w,
         size_t sum_w_len);
+GGML_BACKEND_API bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor);
+GGML_BACKEND_API void ggml_backend_npu_w8a8_preload_clear(void);
 
 #ifdef __cplusplus
 }

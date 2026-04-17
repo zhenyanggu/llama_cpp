@@ -26,6 +26,7 @@ Options:
   --build-dir <path>         Cross-build directory (default: build-kv260-npu-current).
   --run-id <id>              Override run id.
   --throughput-image <path>  Image used for throughput_eval.py.
+  --no-server-release-mode   Do not add throughput-oriented server flags.
   --throughput-only          Run throughput_eval only (skip acc_eval).
   --skip-build               Reuse existing build output.
   --skip-readiness-probe     Skip the non-root readiness probe.
@@ -78,6 +79,7 @@ SKIP_READINESS_PROBE=0
 BUILD_ONLY=0
 FORCE_SYNC_SHARED=0
 THROUGHPUT_ONLY=0
+SERVER_RELEASE_MODE=1
 MODEL_ALIAS="smolvlm2-gguf-npu"
 SAVE_NAME="SmolVLM2_npu_w8a8"
 
@@ -195,6 +197,10 @@ while [ $# -gt 0 ]; do
       ;;
     --throughput-only)
       THROUGHPUT_ONLY=1
+      shift
+      ;;
+    --no-server-release-mode)
+      SERVER_RELEASE_MODE=0
       shift
       ;;
     --skip-build)
@@ -594,6 +600,7 @@ write_run_meta() {
   RUN_META_THREADS="$THREADS" \
   RUN_META_PORT="$PORT" \
   RUN_META_MODEL_ALIAS="$MODEL_ALIAS" \
+  RUN_META_SERVER_RELEASE_MODE="$SERVER_RELEASE_MODE" \
   RUN_META_HOST="$HOST" \
   RUN_META_USER="$USER_NAME" \
   RUN_META_REMOTE_ROOT="$REMOTE_ROOT" \
@@ -671,6 +678,12 @@ payload = {
     "threads": int(os.environ["RUN_META_THREADS"]),
     "port": int(os.environ["RUN_META_PORT"]),
     "model_alias": os.environ["RUN_META_MODEL_ALIAS"],
+    "server_release_mode": os.environ["RUN_META_SERVER_RELEASE_MODE"] == "1",
+    "server_args": (
+        ["--log-disable", "--no-warmup"]
+        if os.environ["RUN_META_SERVER_RELEASE_MODE"] == "1"
+        else []
+    ),
     "remote_host": os.environ["RUN_META_HOST"],
     "remote_user": os.environ["RUN_META_USER"],
     "remote_root": os.environ["RUN_META_REMOTE_ROOT"],
@@ -743,6 +756,7 @@ GGML_NPU_TILE_ALIGN_MAX_LOGS='$NPU_TILE_ALIGN_MAX_LOGS'
 GGML_NPU_TILE_ALIGN_ABS_TOL='$NPU_TILE_ALIGN_ABS_TOL'
 GGML_NPU_AICAS_BIAS_MODE='$NPU_AICAS_BIAS_MODE'
 GGML_NPU_DISABLE_FOLD_OUTPUT='$NPU_DISABLE_FOLD_OUTPUT'
+SERVER_RELEASE_MODE='$SERVER_RELEASE_MODE'
 
 cleanup() {
   if [ -n "\${SERVER_PID:-}" ]; then
@@ -778,6 +792,7 @@ env \
   -m "\$REMOTE_MODEL" \
   --mmproj "\$REMOTE_MMPROJ" \
   -t "\$THREADS" \
+  \$( [ "\$SERVER_RELEASE_MODE" = "1" ] && printf '%s ' --log-disable --no-warmup ) \
   > server.log 2>&1 &
 SERVER_PID=\$!
 

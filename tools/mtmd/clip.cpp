@@ -1655,6 +1655,11 @@ struct clip_ctx {
 #endif
     }
 
+    bool should_preload_aicas_w8a8_for_npu() const {
+        const char * v = std::getenv("GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD");
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    }
+
     bool register_aicas_w8a8_for_npu() const {
 #ifdef GGML_USE_NPU
         if (!backend_is_npu() || !model.aicas_w8a8_enabled) {
@@ -1703,6 +1708,41 @@ struct clip_ctx {
         }
 
         LOG_INF("%s: registered %d AICAS W8A8 tensors for NPU (%d failed)\n", __func__, registered, failed);
+        return failed == 0;
+#else
+        return false;
+#endif
+    }
+
+    bool preload_aicas_w8a8_for_npu() const {
+#ifdef GGML_USE_NPU
+        if (!backend_is_npu() || !model.aicas_w8a8_enabled || ctx_data == nullptr) {
+            return true;
+        }
+
+        int preloaded = 0;
+        int failed = 0;
+        for (const auto & kv : model.aicas_w8a8_tensors) {
+            const std::string & tensor_name = kv.first;
+            const auto & cfg = kv.second;
+            if (!cfg.enabled || cfg.policy != "W8A8" || !cfg.is_npu_compatible(-1)) {
+                continue;
+            }
+
+            ggml_tensor * weight = ggml_get_tensor(ctx_data.get(), tensor_name.c_str());
+            if (weight == nullptr) {
+                ++failed;
+                continue;
+            }
+
+            if (ggml_backend_npu_w8a8_preload(weight)) {
+                ++preloaded;
+            } else {
+                ++failed;
+            }
+        }
+
+        LOG_INF("%s: preloaded %d AICAS W8A8 tensors into NPU CMA (%d failed)\n", __func__, preloaded, failed);
         return failed == 0;
 #else
         return false;
@@ -4620,6 +4660,11 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
                 }
             }
             loader.load_tensors(*ctx_vision);
+            if (ctx_vision->backend_is_npu() &&
+                ctx_vision->model.aicas_w8a8_enabled &&
+                ctx_vision->should_preload_aicas_w8a8_for_npu()) {
+                ctx_vision->preload_aicas_w8a8_for_npu();
+            }
             loader.alloc_compute_meta(*ctx_vision);
         }
 
@@ -4633,6 +4678,11 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
                 }
             }
             loader.load_tensors(*ctx_audio);
+            if (ctx_audio->backend_is_npu() &&
+                ctx_audio->model.aicas_w8a8_enabled &&
+                ctx_audio->should_preload_aicas_w8a8_for_npu()) {
+                ctx_audio->preload_aicas_w8a8_for_npu();
+            }
             loader.alloc_compute_meta(*ctx_audio);
         }
 

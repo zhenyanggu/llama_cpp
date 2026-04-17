@@ -1,0 +1,8 @@
+/manifests/*
+!/manifests/.gitkeep
+/payload/*
+!/payload/.gitkeep
+/results/official/*
+!/results/official/.gitkeep
+/source_state/*
+!/source_state/.gitkeep

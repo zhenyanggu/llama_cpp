@@ -122,6 +122,9 @@ struct npu_prepacked_weight {
     int64_t k = 0;
     std::vector<float> scales;
     std::vector<int8_t> packed;
+    mutable void * cma_packed = nullptr;
+    mutable size_t cma_bytes = 0;
+    mutable bool cma_persistent = false;
 };
 
 struct npu_prepacked_bias {

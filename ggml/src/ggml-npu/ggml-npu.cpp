@@ -6,6 +6,7 @@
 
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include "npu_runtime.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -263,7 +264,20 @@ static ggml_backend_graph_plan_t npu_backend_graph_plan_create(
 
 static void npu_backend_graph_plan_free(ggml_backend_t backend, ggml_backend_graph_plan_t plan_ptr) {
     GGML_UNUSED(backend);
-    delete static_cast<npu_graph_plan *>(plan_ptr);
+    npu_graph_plan * graph_plan = static_cast<npu_graph_plan *>(plan_ptr);
+    if (graph_plan != nullptr) {
+        for (npu_node_plan & node_plan : graph_plan->nodes) {
+            for (npu_prepacked_weight & weight_pack : node_plan.weight_packs) {
+                if (weight_pack.cma_packed != nullptr && !weight_pack.cma_persistent) {
+                    npu_mem_free(weight_pack.cma_packed);
+                    weight_pack.cma_packed = nullptr;
+                    weight_pack.cma_bytes = 0;
+                    weight_pack.cma_persistent = false;
+                }
+            }
+        }
+    }
+    delete graph_plan;
 }
 
 static enum ggml_status npu_backend_graph_plan_compute(
@@ -498,6 +512,12 @@ static void * npu_reg_get_proc_address(ggml_backend_reg_t reg, const char * name
     if (std::strcmp(name, "ggml_backend_npu_w8a8_register") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_w8a8_register);
     }
+    if (std::strcmp(name, "ggml_backend_npu_w8a8_preload") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_w8a8_preload);
+    }
+    if (std::strcmp(name, "ggml_backend_npu_w8a8_preload_clear") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_w8a8_preload_clear);
+    }
     if (std::strcmp(name, "ggml_backend_npu_w8a8_clear") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_w8a8_clear);
     }
@@ -590,6 +610,22 @@ bool ggml_backend_npu_w8a8_register(
         weight_scale_len,
         sum_w,
         sum_w_len);
+}
+
+bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor) {
+    std::string error;
+    const bool ok = ggml_npu::npu_preload_aicas_w8a8_tensor(weight_tensor, &error);
+    if (!ok && ggml_npu::npu_debug_log_enabled()) {
+        GGML_LOG_WARN("%s: preload failed for %s: %s\n",
+                __func__,
+                weight_tensor && weight_tensor->name[0] ? weight_tensor->name : "(unnamed)",
+                error.c_str());
+    }
+    return ok;
+}
+
+void ggml_backend_npu_w8a8_preload_clear(void) {
+    ggml_npu::npu_clear_preloaded_weight_cache();
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_npu_reg)

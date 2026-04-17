@@ -75,6 +75,74 @@ static float npu_read_bias_value_f32_exec(
     }
 }
 
+static bool npu_dst_is_dense_f32(const struct ggml_tensor * dst) {
+    return dst != nullptr &&
+        dst->type == GGML_TYPE_F32 &&
+        dst->nb[0] == static_cast<int64_t>(sizeof(float));
+}
+
+static void npu_prepare_bias_tile_f32_exec(
+        const struct ggml_tensor * bias,
+        int64_t m0,
+        int64_t n0,
+        int64_t m_count,
+        int64_t n_count,
+        std::vector<float> & bias_tile) {
+    bias_tile.clear();
+    if (bias == nullptr || m_count <= 0 || n_count <= 0) {
+        return;
+    }
+
+    const size_t tile_elems = static_cast<size_t>(m_count * n_count);
+    bias_tile.resize(tile_elems);
+
+    if (bias->type == GGML_TYPE_F32 && bias->nb[0] == static_cast<int64_t>(sizeof(float))) {
+        if (bias->ne[1] == 1) {
+            const int64_t src_m0 = bias->ne[0] == 1 ? 0 : m0;
+            const float * src = reinterpret_cast<const float *>(static_cast<const char *>(bias->data) + src_m0 * bias->nb[0]);
+            for (int64_t n = 0; n < n_count; ++n) {
+                std::memcpy(
+                    bias_tile.data() + static_cast<size_t>(n * m_count),
+                    src,
+                    static_cast<size_t>(m_count * sizeof(float)));
+            }
+            return;
+        }
+
+        if (bias->ne[0] == 1) {
+            for (int64_t n = 0; n < n_count; ++n) {
+                const float value = *reinterpret_cast<const float *>(static_cast<const char *>(bias->data) + (bias->ne[1] == 1 ? 0 : (n0 + n) * bias->nb[1]));
+                std::fill_n(
+                    bias_tile.data() + static_cast<size_t>(n * m_count),
+                    static_cast<size_t>(m_count),
+                    value);
+            }
+            return;
+        }
+
+        if (bias->nb[1] == bias->ne[0] * bias->nb[0]) {
+            for (int64_t n = 0; n < n_count; ++n) {
+                const float * src = reinterpret_cast<const float *>(
+                    static_cast<const char *>(bias->data) +
+                    (n0 + n) * bias->nb[1] +
+                    m0 * bias->nb[0]);
+                std::memcpy(
+                    bias_tile.data() + static_cast<size_t>(n * m_count),
+                    src,
+                    static_cast<size_t>(m_count * sizeof(float)));
+            }
+            return;
+        }
+    }
+
+    for (int64_t n = 0; n < n_count; ++n) {
+        for (int64_t m = 0; m < m_count; ++m) {
+            bias_tile[static_cast<size_t>(n * m_count + m)] =
+                npu_read_bias_value_f32_exec(bias, m0 + m, n0 + n);
+        }
+    }
+}
+
 static int32_t npu_effective_activation_q(const npu_node_plan & plan, int8_t raw) {
     if (plan.activation_quant.valid && !plan.activation_quant.symmetric) {
         return static_cast<int32_t>(static_cast<uint8_t>(raw)) - 128;
@@ -209,6 +277,43 @@ static bool npu_allocate_runtime_buffer(size_t bytes, void ** ptr, std::string *
         *error = "npu_mem_alloc() 失败";
     }
     return false;
+}
+
+static bool npu_ensure_weight_pack_cma(
+        const npu_prepacked_weight & packed_weight,
+        std::string * error,
+        bool * copied_now) {
+    if (copied_now != nullptr) {
+        *copied_now = false;
+    }
+
+    if (packed_weight.packed.empty()) {
+        if (error) {
+            *error = "packed weight is empty";
+        }
+        return false;
+    }
+
+    if (packed_weight.cma_packed != nullptr) {
+        return true;
+    }
+
+    void * cma_ptr = npu_mem_alloc(packed_weight.packed.size());
+    if (cma_ptr == nullptr) {
+        if (error) {
+            *error = "npu_mem_alloc() 失败";
+        }
+        return false;
+    }
+
+    std::memcpy(cma_ptr, packed_weight.packed.data(), packed_weight.packed.size());
+    packed_weight.cma_packed = cma_ptr;
+    packed_weight.cma_bytes = packed_weight.packed.size();
+    packed_weight.cma_persistent = false;
+    if (copied_now != nullptr) {
+        *copied_now = true;
+    }
+    return true;
 }
 
 struct npu_activation_tile_key {
@@ -347,15 +452,13 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     const int64_t max_k = std::min<int64_t>(plan.config.k_block, plan.config.stage2_k_block);
 
     void * activation_buf = nullptr;
-    void * weight_buf = nullptr;
     void * acc_buf = nullptr;
     void * bias_buf = nullptr;
 
     if (!npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_k), &activation_buf, error) ||
-        !npu_allocate_runtime_buffer(static_cast<size_t>(max_k * max_m), &weight_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_m * sizeof(int32_t)), &acc_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_m * sizeof(int32_t)), &bias_buf, error)) {
-        cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+        cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
         return finalize_status(GGML_STATUS_ALLOC_FAILED);
     }
 
@@ -373,13 +476,15 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     const float mvout_scale_f32 = activation_scale * per_tensor_weight_scale;
     const uint32_t mvout_f32_scale = npu_float_to_q8_24_u32(mvout_scale_f32);
     std::vector<float> acc_scaled_values;
+    std::vector<int32_t> acc_raw_values_host;
+    std::vector<float> bias_tile_values;
     std::vector<int32_t> bias_values;
 
     if (use_aicas_w8a8 && !plan.bias_packs.empty()) {
         if (error) {
             *error = "AICAS W8A8 must not consume int32 bias packs; use F32 postprocess bias path only";
         }
-        cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+        cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
         return finalize_status(GGML_STATUS_FAILED);
     }
 
@@ -404,7 +509,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             if (collect_detailed_profile) {
                 profile_record.tiles.push_back(std::move(tile_record));
             }
-            cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+            cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
             return finalize_status(GGML_STATUS_FAILED);
         }
         const int64_t tile_start_us = collect_detailed_profile ? ggml_time_us() : 0;
@@ -467,7 +572,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
                     profile_record.tiles.push_back(std::move(tile_record));
                 }
-                cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+                cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
             const auto inserted = activation_tile_cache.emplace(activation_key, packed_activation);
@@ -494,7 +599,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             if (collect_detailed_profile) {
                 profile_record.tiles.push_back(std::move(tile_record));
             }
-            cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+            cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
             return finalize_status(GGML_STATUS_FAILED);
         }
 
@@ -514,9 +619,16 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             }
         }
 
+        bool weight_copied_now = false;
         const int64_t weight_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
-        std::memcpy(weight_buf, packed_weight.packed.data(), packed_weight.packed.size());
-        if (collect_stage_profile) {
+        if (!npu_ensure_weight_pack_cma(packed_weight, error, &weight_copied_now)) {
+            if (collect_detailed_profile) {
+                profile_record.tiles.push_back(std::move(tile_record));
+            }
+            cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
+            return finalize_status(GGML_STATUS_FAILED);
+        }
+        if (collect_stage_profile && weight_copied_now) {
             const int64_t weight_copy_us = ggml_time_us() - weight_copy_start_us;
             exec_summary.delta.host_copy_weight_calls += 1;
             exec_summary.delta.host_copy_weight_us_total += weight_copy_us;
@@ -524,6 +636,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             if (collect_detailed_profile) {
                 tile_record.host_copy_weight_us = static_cast<double>(weight_copy_us);
             }
+        } else if (collect_detailed_profile) {
+            tile_record.host_copy_weight_us = 0.0;
         }
 
         const MvinConfig activation_mvin_cfg {
@@ -544,7 +658,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         };
 
         const MvinConfig weight_mvin_cfg {
-            weight_buf,
+            packed_weight.cma_packed,
             plan.config.layout.weight.offset,
             static_cast<uint32_t>(exec_tile.m - 1),
             static_cast<uint32_t>(exec_tile.k - 1),
@@ -604,7 +718,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 if (collect_detailed_profile) {
                     profile_record.tiles.push_back(std::move(tile_record));
                 }
-                cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+                cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
             const npu_prepacked_bias & bias_pack =
@@ -616,7 +730,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 if (collect_detailed_profile) {
                     profile_record.tiles.push_back(std::move(tile_record));
                 }
-                cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+                cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
 
@@ -758,30 +872,91 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
 
             if (fold_output_reconstruction) {
                 const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
-                const int32_t * acc_raw = reinterpret_cast<const int32_t *>(acc_buf);
-                const float * acc_f32 = reinterpret_cast<const float *>(acc_buf);
-                for (int64_t n = 0; n < exec_tile.n; ++n) {
-                    for (int64_t m = 0; m < exec_tile.m; ++m) {
-                        const size_t idx = static_cast<size_t>(n * exec_tile.m + m);
-                        const int64_t global_m = exec_tile.m0 + m;
-                        float value = raw_acc_mvout
-                            ? static_cast<float>(acc_raw[idx]) * mvout_scale_f32
-                            : acc_f32[idx];
-                        if (apply_compensation &&
-                            global_m >= 0 &&
-                            static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
-                            value -= static_cast<float>(
-                                plan.activation_quant.zero_point *
-                                plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
-                                mvout_scale_f32;
-                        }
-                        if (use_aicas_w8a8 && plan.bias != nullptr) {
-                            value += npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0 + n);
-                        }
-                        char * dst_ptr = static_cast<char *>(plan.dst->data) +
+                const size_t tile_elems = static_cast<size_t>(exec_tile.n * exec_tile.m);
+                if (raw_acc_mvout) {
+                    acc_raw_values_host.resize(tile_elems);
+                    std::memcpy(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
+                } else {
+                    acc_scaled_values.resize(tile_elems);
+                    std::memcpy(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
+                }
+                npu_prepare_bias_tile_f32_exec(
+                    use_aicas_w8a8 ? plan.bias : nullptr,
+                    exec_tile.m0,
+                    exec_tile.n0,
+                    exec_tile.m,
+                    exec_tile.n,
+                    bias_tile_values);
+
+                if (npu_dst_is_dense_f32(plan.dst)) {
+                    for (int64_t n = 0; n < exec_tile.n; ++n) {
+                        float * dst_row = reinterpret_cast<float *>(
+                            static_cast<char *>(plan.dst->data) +
                             (exec_tile.n0 + n) * plan.dst->nb[1] +
-                            (exec_tile.m0 + m) * plan.dst->nb[0];
-                        *reinterpret_cast<float *>(dst_ptr) = value;
+                            exec_tile.m0 * sizeof(float));
+                        const float * acc_row = raw_acc_mvout
+                            ? nullptr
+                            : acc_scaled_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        const int32_t * acc_raw_row = raw_acc_mvout
+                            ? acc_raw_values_host.data() + static_cast<size_t>(n * exec_tile.m)
+                            : nullptr;
+                        const float * bias_row = bias_tile_values.empty()
+                            ? nullptr
+                            : bias_tile_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        for (int64_t m = 0; m < exec_tile.m; ++m) {
+                            const size_t idx = static_cast<size_t>(m);
+                            float value = raw_acc_mvout
+                                ? static_cast<float>(acc_raw_row[idx]) * mvout_scale_f32
+                                : acc_row[idx];
+                            if (apply_compensation) {
+                                const int64_t global_m = exec_tile.m0 + m;
+                                if (global_m >= 0 &&
+                                    static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
+                                    value -= static_cast<float>(
+                                        plan.activation_quant.zero_point *
+                                        plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
+                                        mvout_scale_f32;
+                                }
+                            }
+                            if (bias_row != nullptr) {
+                                value += bias_row[idx];
+                            }
+                            dst_row[idx] = value;
+                        }
+                    }
+                } else {
+                    for (int64_t n = 0; n < exec_tile.n; ++n) {
+                        const float * acc_row = raw_acc_mvout
+                            ? nullptr
+                            : acc_scaled_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        const int32_t * acc_raw_row = raw_acc_mvout
+                            ? acc_raw_values_host.data() + static_cast<size_t>(n * exec_tile.m)
+                            : nullptr;
+                        const float * bias_row = bias_tile_values.empty()
+                            ? nullptr
+                            : bias_tile_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        char * dst_row = static_cast<char *>(plan.dst->data) +
+                            (exec_tile.n0 + n) * plan.dst->nb[1] +
+                            exec_tile.m0 * plan.dst->nb[0];
+                        for (int64_t m = 0; m < exec_tile.m; ++m) {
+                            float value = raw_acc_mvout
+                                ? static_cast<float>(acc_raw_row[static_cast<size_t>(m)]) * mvout_scale_f32
+                                : acc_row[static_cast<size_t>(m)];
+                            if (apply_compensation) {
+                                const int64_t global_m = exec_tile.m0 + m;
+                                if (global_m >= 0 &&
+                                    static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
+                                    value -= static_cast<float>(
+                                        plan.activation_quant.zero_point *
+                                        plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
+                                        mvout_scale_f32;
+                                }
+                            }
+                            if (bias_row != nullptr) {
+                                value += bias_row[static_cast<size_t>(m)];
+                            }
+                            *reinterpret_cast<float *>(dst_row + m * plan.dst->nb[0]) = value;
+                        }
                     }
                 }
                 if (collect_stage_profile) {
@@ -800,39 +975,94 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 }
             } else {
                 const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
-                const int32_t * acc_raw_values = reinterpret_cast<const int32_t *>(acc_buf);
-                if (!raw_acc_mvout) {
-                    std::memcpy(
-                        acc_scaled_values.data(),
-                        acc_buf,
-                        static_cast<size_t>(exec_tile.n * exec_tile.m * sizeof(float)));
+                const size_t tile_elems = static_cast<size_t>(exec_tile.n * exec_tile.m);
+                if (raw_acc_mvout) {
+                    acc_raw_values_host.resize(tile_elems);
+                    std::memcpy(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
+                } else {
+                    acc_scaled_values.resize(tile_elems);
+                    std::memcpy(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
                 }
+                npu_prepare_bias_tile_f32_exec(
+                    use_aicas_w8a8 ? plan.bias : nullptr,
+                    exec_tile.m0,
+                    exec_tile.n0,
+                    exec_tile.m,
+                    exec_tile.n,
+                    bias_tile_values);
 
-                for (int64_t n = 0; n < exec_tile.n; ++n) {
-                    for (int64_t m = 0; m < exec_tile.m; ++m) {
-                        const float wgt_scale = packed_weight.scales[static_cast<size_t>(m)];
-                        const size_t idx = static_cast<size_t>(n * exec_tile.m + m);
-                        const float acc_scaled = raw_acc_mvout
-                            ? static_cast<float>(acc_raw_values[idx]) * activation_scale
-                            : acc_scaled_values[idx];
-                        const int64_t global_m = exec_tile.m0 + m;
-
-                        float value = acc_scaled * wgt_scale;
-                        if (apply_compensation &&
-                            global_m >= 0 &&
-                            static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
-                            value -= static_cast<float>(
-                                plan.activation_quant.zero_point *
-                                plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
-                                activation_scale * wgt_scale;
-                        }
-                        if (use_aicas_w8a8 && plan.bias != nullptr) {
-                            value += npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0 + n);
-                        }
-                        char * dst_ptr = static_cast<char *>(plan.dst->data) +
+                if (npu_dst_is_dense_f32(plan.dst)) {
+                    for (int64_t n = 0; n < exec_tile.n; ++n) {
+                        float * dst_row = reinterpret_cast<float *>(
+                            static_cast<char *>(plan.dst->data) +
                             (exec_tile.n0 + n) * plan.dst->nb[1] +
-                            (exec_tile.m0 + m) * plan.dst->nb[0];
-                        *reinterpret_cast<float *>(dst_ptr) = value;
+                            exec_tile.m0 * sizeof(float));
+                        const float * acc_row = raw_acc_mvout
+                            ? nullptr
+                            : acc_scaled_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        const int32_t * acc_raw_row = raw_acc_mvout
+                            ? acc_raw_values_host.data() + static_cast<size_t>(n * exec_tile.m)
+                            : nullptr;
+                        const float * bias_row = bias_tile_values.empty()
+                            ? nullptr
+                            : bias_tile_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        for (int64_t m = 0; m < exec_tile.m; ++m) {
+                            const size_t idx = static_cast<size_t>(m);
+                            const float wgt_scale = packed_weight.scales[idx];
+                            const int64_t global_m = exec_tile.m0 + m;
+                            const float acc_scaled = raw_acc_mvout
+                                ? static_cast<float>(acc_raw_row[idx]) * activation_scale
+                                : acc_row[idx];
+                            float value = acc_scaled * wgt_scale;
+                            if (apply_compensation &&
+                                global_m >= 0 &&
+                                static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
+                                value -= static_cast<float>(
+                                    plan.activation_quant.zero_point *
+                                    plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
+                                    activation_scale * wgt_scale;
+                            }
+                            if (bias_row != nullptr) {
+                                value += bias_row[idx];
+                            }
+                            dst_row[idx] = value;
+                        }
+                    }
+                } else {
+                    for (int64_t n = 0; n < exec_tile.n; ++n) {
+                        const float * acc_row = raw_acc_mvout
+                            ? nullptr
+                            : acc_scaled_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        const int32_t * acc_raw_row = raw_acc_mvout
+                            ? acc_raw_values_host.data() + static_cast<size_t>(n * exec_tile.m)
+                            : nullptr;
+                        const float * bias_row = bias_tile_values.empty()
+                            ? nullptr
+                            : bias_tile_values.data() + static_cast<size_t>(n * exec_tile.m);
+                        char * dst_row = static_cast<char *>(plan.dst->data) +
+                            (exec_tile.n0 + n) * plan.dst->nb[1] +
+                            exec_tile.m0 * plan.dst->nb[0];
+                        for (int64_t m = 0; m < exec_tile.m; ++m) {
+                            const size_t idx = static_cast<size_t>(m);
+                            const float wgt_scale = packed_weight.scales[idx];
+                            const int64_t global_m = exec_tile.m0 + m;
+                            const float acc_scaled = raw_acc_mvout
+                                ? static_cast<float>(acc_raw_row[idx]) * activation_scale
+                                : acc_row[idx];
+                            float value = acc_scaled * wgt_scale;
+                            if (apply_compensation &&
+                                global_m >= 0 &&
+                                static_cast<size_t>(global_m) < plan.weight_column_sum_q.size()) {
+                                value -= static_cast<float>(
+                                    plan.activation_quant.zero_point *
+                                    plan.weight_column_sum_q[static_cast<size_t>(global_m)]) *
+                                    activation_scale * wgt_scale;
+                            }
+                            if (bias_row != nullptr) {
+                                value += bias_row[idx];
+                            }
+                            *reinterpret_cast<float *>(dst_row + m * plan.dst->nb[0]) = value;
+                        }
                     }
                 }
                 if (collect_stage_profile) {
@@ -949,7 +1179,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
     }
 
-    cleanup_buffers(activation_buf, weight_buf, acc_buf, bias_buf);
+    cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf);
     if (npu_debug_log_enabled()) {
         const char * root_name = plan.root && plan.root->name[0] != '\0' ? plan.root->name : "(unnamed)";
         GGML_LOG_INFO("%s: leave root=%s bias_mode=%s\n",
