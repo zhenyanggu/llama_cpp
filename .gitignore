@@ -162,3 +162,23 @@ poetry.toml
 *.code-workspace
 .windsurf/
 kv260-profile-results/
+
+# Local AICAS artifacts
+/llama_mtmd_profile.json
+*.tar.gz
+*.tar
+*.Zone.Identifier
+
+# AICAS generated results and profiling data
+/AICAS/artifacts/**/*.json
+/AICAS/output/
+/AICAS/kv260_results/
+/AICAS/**/*.log
+/AICAS/**/__pycache__/
+/AICAS/.venv-acc-eval/
+
+# AICAS2026 generated results and profiling data
+/AICAS2026/**/*.log
+/AICAS2026/**/*.tar.gz
+/AICAS2026/V1_412/*.json
+/AICAS2026/V1_412/*.log
