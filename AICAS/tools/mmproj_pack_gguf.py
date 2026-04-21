@@ -21,6 +21,12 @@ class LayerPolicy:
     act_scale: float
     act_zero_point: int
     act_quant_mode: str
+    smooth_enabled: bool
+    smooth_scale: np.ndarray
+    alpha: float
+    eps: float
+    reason: str
+    clip_mode: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,6 +63,12 @@ def load_manifest(path: str, default_scale: float, default_zp: int) -> list[Laye
                 act_scale=float(layer.get("act_scale", default_scale)),
                 act_zero_point=int(layer.get("act_zero_point", default_zp)),
                 act_quant_mode=str(layer.get("act_quant_mode", "asymmetric_u8")),
+                smooth_enabled=bool(layer.get("smooth_enabled", False)),
+                smooth_scale=np.asarray(layer.get("smooth_scale", []), dtype=np.float32),
+                alpha=float(layer.get("alpha", 0.0)),
+                eps=float(layer.get("eps", 0.0)),
+                reason=str(layer.get("reason", "")),
+                clip_mode=str(layer.get("clip_mode", "minmax")),
             )
         )
     return out
@@ -86,6 +98,12 @@ def overlay_quant_params(layers: list[LayerPolicy], quant_params_path: str) -> l
                 act_scale=float(item.get("act_scale", layer.act_scale)),
                 act_zero_point=int(item.get("act_zero_point", layer.act_zero_point)),
                 act_quant_mode=str(item.get("act_quant_mode", default_act_quant_mode)),
+                smooth_enabled=bool(item.get("smooth_enabled", layer.smooth_enabled)),
+                smooth_scale=np.asarray(item.get("smooth_scale", layer.smooth_scale), dtype=np.float32),
+                alpha=float(item.get("alpha", layer.alpha)),
+                eps=float(item.get("eps", layer.eps)),
+                reason=str(item.get("reason", layer.reason)),
+                clip_mode=str(item.get("clip_mode", layer.clip_mode)),
             )
         )
 
@@ -123,6 +141,20 @@ def maybe_build_sum_w(q: np.ndarray, act_quant_mode: str, act_zero_point: int) -
         return None
 
     return q.astype(np.int32).sum(axis=1).astype(np.int32)
+
+
+def apply_smoothquant_to_weight(weight: np.ndarray, layer: LayerPolicy) -> np.ndarray:
+    if not layer.smooth_enabled:
+        return np.asarray(weight, dtype=np.float32)
+
+    w = np.asarray(weight, dtype=np.float32)
+    if w.ndim != 2:
+        raise ValueError(f"SmoothQuant only supports 2D weights, got ndim={w.ndim}")
+    if layer.smooth_scale.size != w.shape[1]:
+        raise ValueError(
+            f"{layer.tensor_name}: smooth_scale len {layer.smooth_scale.size} does not match input channels {w.shape[1]}"
+        )
+    return np.asarray(w * layer.smooth_scale[np.newaxis, :], dtype=np.float32)
 
 
 def float_to_q8_24(scale: float) -> int:
@@ -215,10 +247,11 @@ def main() -> int:
                     raise ValueError(
                         f"{name}: symmetric_u8 requires act_zero_point=128, got {layer.act_zero_point}"
                     )
+                float_weight = apply_smoothquant_to_weight(np_data, layer)
                 if args.weight_granularity == "per_tensor":
-                    q, scale = quantize_per_tensor_i8(np_data)
+                    q, scale = quantize_per_tensor_i8(float_weight)
                 else:
-                    q, scale = quantize_per_channel_i8(np_data)
+                    q, scale = quantize_per_channel_i8(float_weight)
                 sum_w = maybe_build_sum_w(q, layer.act_quant_mode, layer.act_zero_point)
                 out_data = np.ascontiguousarray(q)
                 out_raw_dtype = None
@@ -247,6 +280,11 @@ def main() -> int:
                 writer.add_string(prefix + "weight_scale_mode", args.weight_granularity)
                 writer.add_array(prefix + "weight_scale", scale.tolist())
                 writer.add_array(prefix + "dequant_scale_q8_24", dequant_scale_q8_24.tolist())
+                writer.add_bool(prefix + "smooth_enabled", layer.smooth_enabled)
+                writer.add_float32(prefix + "smooth_alpha", layer.alpha)
+                writer.add_float32(prefix + "smooth_eps", layer.eps)
+                if layer.smooth_enabled:
+                    writer.add_array(prefix + "smooth_scale", layer.smooth_scale.astype(np.float32).tolist())
                 if sum_w is not None:
                     writer.add_array(prefix + "sum_w", sum_w.tolist())
 
@@ -259,6 +297,12 @@ def main() -> int:
                     "act_scale_q8_24": float_to_q8_24(layer.act_scale) if scale is not None else 0,
                     "act_zero_point": layer.act_zero_point,
                     "act_quant_mode": layer.act_quant_mode,
+                    "smooth_enabled": layer.smooth_enabled,
+                    "smooth_alpha": layer.alpha,
+                    "smooth_eps": layer.eps,
+                    "smooth_scale_len": int(layer.smooth_scale.size),
+                    "clip_mode": layer.clip_mode,
+                    "reason": layer.reason,
                     "weight_scale_mode": args.weight_granularity if scale is not None else "",
                     "weight_scale_len": int(len(scale)) if scale is not None else 0,
                     "dequant_scale_q8_24_len": int(len(scale)) if scale is not None else 0,

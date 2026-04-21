@@ -32,19 +32,52 @@ def _merge_tensor_stats(dst: dict, src: dict, max_samples: int, rng: random.Rand
     dst["count"] = int(dst.get("count", 0)) + int(src.get("count", 0))
     dst["min"] = min(float(dst.get("min", float("inf"))), float(src.get("min", float("inf"))))
     dst["max"] = max(float(dst.get("max", float("-inf"))), float(src.get("max", float("-inf"))))
+    src_in_channels = int(src.get("in_channels", 0) or 0)
+    if src_in_channels > 0:
+        if int(dst.get("in_channels", 0) or 0) in (0, src_in_channels):
+            dst["in_channels"] = src_in_channels
+        else:
+            raise RuntimeError(
+                f"in_channels mismatch for {dst.get('tensor_name')}: "
+                f"{dst.get('in_channels')} vs {src_in_channels}"
+            )
+
+    for key, reducer in (
+        ("per_channel_min", min),
+        ("per_channel_max", max),
+        ("per_channel_absmax", max),
+    ):
+        src_values = src.get(key, [])
+        if not src_values:
+            continue
+        if key not in dst or not dst[key]:
+            dst[key] = [float(v) for v in src_values]
+            continue
+        if len(dst[key]) != len(src_values):
+            raise RuntimeError(
+                f"{key} length mismatch for {dst.get('tensor_name')}: "
+                f"{len(dst[key])} vs {len(src_values)}"
+            )
+        dst[key] = [float(reducer(a, float(b))) for a, b in zip(dst[key], src_values)]
 
     samples = list(dst.get("samples", []))
+    sample_channels = list(dst.get("sample_channels", []))
     seen = int(dst.get("sample_seen", len(samples)))
-    for value in src.get("samples", []):
+    src_channels = list(src.get("sample_channels", []))
+    for idx, value in enumerate(src.get("samples", [])):
+        channel = int(src_channels[idx]) if idx < len(src_channels) else 0
         seen += 1
         if len(samples) < max_samples:
             samples.append(float(value))
+            sample_channels.append(channel)
             continue
         idx = rng.randrange(seen)
         if idx < max_samples:
             samples[idx] = float(value)
+            sample_channels[idx] = channel
 
     dst["samples"] = samples
+    dst["sample_channels"] = sample_channels
     dst["sample_seen"] = seen
 
 
@@ -118,7 +151,12 @@ def main() -> int:
                         "count": 0,
                         "min": float("inf"),
                         "max": float("-inf"),
+                        "in_channels": int(item.get("in_channels", 0) or 0),
+                        "per_channel_min": [],
+                        "per_channel_max": [],
+                        "per_channel_absmax": [],
                         "samples": [],
+                        "sample_channels": [],
                         "sample_seen": 0,
                     },
                 )

@@ -4,19 +4,17 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  run_v3_submission.sh [options]
+  run_submission.sh [options]
 
 Options:
   --host <host>
   --user <user>
   --remote-root <path>
-  --sdk-env <path>
-  --build-dir <path>
   --run-id <id>
   --threads <n>
   --port <port>
-  --skip-build
   --skip-board-init
+  --skip-validate
   --sample-json <path>
   --sample-images-root <path>
   --throughput-image-rel <relpath>
@@ -24,26 +22,25 @@ Options:
 USAGE
 }
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-V3_DIR="$ROOT_DIR/AICAS2026/V3"
-PAYLOAD_DIR="$V3_DIR/payload"
-RESULTS_ROOT="$V3_DIR/results/official"
-PREPARE_SCRIPT="$V3_DIR/scripts/prepare_v3_bundle.sh"
-BOARD_INIT_SCRIPT="$V3_DIR/scripts/board_init_overlay.sh"
-SUMMARY_SCRIPT="$V3_DIR/scripts/summarize_results.py"
-REPLAY_SCRIPT="$V3_DIR/scripts/run_layer_gemm_replay.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PAYLOAD_DIR="$BUNDLE_DIR/payload"
+RESULTS_ROOT="$BUNDLE_DIR/results/official"
+VALIDATE_SCRIPT="$SCRIPT_DIR/validate_bundle.sh"
+BOARD_INIT_SCRIPT="$SCRIPT_DIR/board_init_overlay.sh"
+SUMMARY_SCRIPT="$SCRIPT_DIR/summarize_results.py"
+REPLAY_SCRIPT="$SCRIPT_DIR/run_layer_gemm_replay.sh"
+SOURCE_STATE_DIR="$BUNDLE_DIR/source_state"
 
 HOST="192.168.0.10"
 USER_NAME="ubuntu"
 REMOTE_ROOT="/home/ubuntu/aicas"
-SDK_ENV="/home/gugugu/petalinux/sdk/kv260-2025.1/environment-setup-cortexa72-cortexa53-amd-linux"
-BUILD_DIR="$ROOT_DIR/build-kv260-npu-current"
 RUN_ID=""
 THREADS="4"
 PORT="8081"
-SKIP_BUILD=0
 SKIP_BOARD_INIT=0
-MODEL_ALIAS="smolvlm2-gguf-npu-v3"
+SKIP_VALIDATE=0
+MODEL_ALIAS="smolvlm2-gguf-npu-versavlm"
 SAMPLE_JSON="$PAYLOAD_DIR/data/sampled_100.json"
 SAMPLE_IMAGES_ROOT="$PAYLOAD_DIR/data/images"
 THROUGHPUT_IMAGE_REL="IIIT5K/test/2543_2.png"
@@ -67,13 +64,11 @@ while [ $# -gt 0 ]; do
     --host) HOST="$2"; shift 2 ;;
     --user) USER_NAME="$2"; shift 2 ;;
     --remote-root) REMOTE_ROOT="$2"; shift 2 ;;
-    --sdk-env) SDK_ENV="$2"; shift 2 ;;
-    --build-dir) BUILD_DIR="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --threads) THREADS="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
     --skip-board-init) SKIP_BOARD_INIT=1; shift ;;
+    --skip-validate) SKIP_VALIDATE=1; shift ;;
     --sample-json) SAMPLE_JSON="$2"; shift 2 ;;
     --sample-images-root) SAMPLE_IMAGES_ROOT="$2"; shift 2 ;;
     --throughput-image-rel) THROUGHPUT_IMAGE_REL="$2"; shift 2 ;;
@@ -95,7 +90,7 @@ REMOTE_BOARD_DRIVER_DIR="$REMOTE_BOARD_SUPPORT_DIR/driver"
 REMOTE_BOARD_QSPI_DIR="$REMOTE_BOARD_SUPPORT_DIR/qspi"
 REMOTE_BOARD_TESTS_DIR="$REMOTE_BOARD_SUPPORT_DIR/tests"
 REMOTE_SCRIPTS_DIR="$REMOTE_ROOT/scripts"
-REMOTE_RUNS_DIR="$REMOTE_ROOT/runs/submission-v3"
+REMOTE_RUNS_DIR="$REMOTE_ROOT/runs/submission-versavlm"
 
 remote_file_size() {
   ssh "${SSH_OPTS[@]}" "$TARGET" "stat -c %s '$1' 2>/dev/null || true"
@@ -137,7 +132,7 @@ for item in items:
         continue
     src = (images_root / rel).resolve()
     if not src.exists():
-        raise SystemExit(f"Missing sampled image: {src}")
+        raise SystemExit(f'Missing sampled image: {src}')
     seen.add(rel)
     paths.append(rel)
 manifest.write_text(''.join(f"{p}\n" for p in sorted(paths)), encoding='utf-8')
@@ -168,6 +163,13 @@ ls /sys/bus/platform/devices 2>/dev/null | grep -Ei 'npu|a0000000' || true
 PROBE
 }
 
+read_optional_file() {
+  local path="$1"
+  if [ -f "$path" ]; then
+    cat "$path"
+  fi
+}
+
 write_run_meta() {
   local local_run_dir="$1"
   local remote_run_dir="$2"
@@ -175,13 +177,16 @@ write_run_meta() {
   local remote_exit_code="$4"
   local board_init_log="$5"
   local readiness_log="$6"
+  local git_head git_status
+  git_head="$(read_optional_file "$SOURCE_STATE_DIR/git_head.txt" | tr -d '\n')"
+  git_status="$(read_optional_file "$SOURCE_STATE_DIR/git_status.txt")"
   RUN_META_RUN_ID="$RUN_ID" \
   RUN_META_STATUS="$status" \
   RUN_META_REMOTE_EXIT_CODE="$remote_exit_code" \
-  RUN_META_BUILD_DIR="$BUILD_DIR" \
-  RUN_META_SDK_ENV="$SDK_ENV" \
-  RUN_META_MODEL="$PAYLOAD_DIR/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf" \
-  RUN_META_MMPROJ="$PAYLOAD_DIR/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf" \
+  RUN_META_GIT_HEAD="$git_head" \
+  RUN_META_GIT_STATUS="$git_status" \
+  RUN_META_MODEL="payload/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf" \
+  RUN_META_MMPROJ="payload/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf" \
   RUN_META_HOST="$HOST" \
   RUN_META_USER="$USER_NAME" \
   RUN_META_REMOTE_ROOT="$REMOTE_ROOT" \
@@ -189,33 +194,27 @@ write_run_meta() {
   RUN_META_THREADS="$THREADS" \
   RUN_META_PORT="$PORT" \
   RUN_META_MODEL_ALIAS="$MODEL_ALIAS" \
-  RUN_META_SAMPLE_JSON="$SAMPLE_JSON" \
-  RUN_META_SAMPLE_IMAGES_ROOT="$SAMPLE_IMAGES_ROOT" \
+  RUN_META_SAMPLE_JSON="$(realpath --relative-to="$BUNDLE_DIR" "$SAMPLE_JSON")" \
+  RUN_META_SAMPLE_IMAGES_ROOT="$(realpath --relative-to="$BUNDLE_DIR" "$SAMPLE_IMAGES_ROOT")" \
   RUN_META_THROUGHPUT_IMAGE_REL="$THROUGHPUT_IMAGE_REL" \
-  RUN_META_BOARD_INIT_LOG="$board_init_log" \
-  RUN_META_READINESS_LOG="$readiness_log" \
+  RUN_META_BOARD_INIT_LOG="$(realpath --relative-to="$BUNDLE_DIR" "$board_init_log")" \
+  RUN_META_READINESS_LOG="$(realpath --relative-to="$BUNDLE_DIR" "$readiness_log")" \
   RUN_META_NPU_SPM_BYTES="$NPU_SPM_BYTES" \
   RUN_META_NPU_ACC_BYTES="$NPU_ACC_BYTES" \
   RUN_META_NPU_GUARD_BYTES="$NPU_GUARD_BYTES" \
   RUN_META_NPU_STAGE2_K_BYTES="$NPU_STAGE2_K_BYTES" \
   RUN_META_NPU_CMA_BYTES="$NPU_CMA_BYTES" \
-  python3 - "$local_run_dir/run_meta.json" "$ROOT_DIR" <<'PY'
+  python3 - "$local_run_dir/run_meta.json" <<'PY'
 import json
 import os
-import subprocess
 import sys
-repo_root = sys.argv[2]
-git_head = subprocess.check_output(['git', '-C', repo_root, 'rev-parse', 'HEAD'], text=True).strip()
-git_status = subprocess.check_output(['git', '-C', repo_root, 'status', '--short'], text=True).splitlines()
 payload = {
     'run_id': os.environ['RUN_META_RUN_ID'],
-    'run_type': 'submission-v3-fallback-search',
+    'run_type': 'submission-versavlm',
     'run_status': os.environ['RUN_META_STATUS'],
     'remote_exit_code': int(os.environ['RUN_META_REMOTE_EXIT_CODE']) if os.environ['RUN_META_REMOTE_EXIT_CODE'] else None,
-    'git_head': git_head,
-    'git_status_short': git_status,
-    'sdk_env': os.environ['RUN_META_SDK_ENV'],
-    'build_dir': os.environ['RUN_META_BUILD_DIR'],
+    'git_head': os.environ.get('RUN_META_GIT_HEAD') or None,
+    'git_status_short': [line for line in os.environ.get('RUN_META_GIT_STATUS', '').splitlines() if line],
     'model': os.environ['RUN_META_MODEL'],
     'mmproj': os.environ['RUN_META_MMPROJ'],
     'remote_host': os.environ['RUN_META_HOST'],
@@ -298,7 +297,7 @@ env \
 SERVER_PID=\$!
 READY=0
 for _ in \$(seq 1 90); do
-  if python3 - <<'PY'
+  if python3 - <<PY
 import json
 import urllib.request
 with urllib.request.urlopen('http://127.0.0.1:$PORT/v1/models', timeout=5) as resp:
@@ -333,17 +332,15 @@ python3 "\$REMOTE_EVAL_DIR/acc_eval.py" \
 EOF_RUN
 }
 
-prepare_args=(--sdk-env "$SDK_ENV" --build-dir "$BUILD_DIR")
-if [ "$SKIP_BUILD" -eq 1 ]; then
-  prepare_args+=(--skip-build)
+if [ "$SKIP_VALIDATE" -ne 1 ]; then
+  bash "$VALIDATE_SCRIPT"
 fi
-bash "$PREPARE_SCRIPT" "${prepare_args[@]}"
 
 SAMPLE_JSON="$(realpath "$SAMPLE_JSON")"
 SAMPLE_IMAGES_ROOT="$(realpath "$SAMPLE_IMAGES_ROOT")"
 
 if [ -z "$RUN_ID" ]; then
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-v3-release"
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-versavlm-release"
 fi
 
 LOCAL_RUN_DIR="$RESULTS_ROOT/$RUN_ID"
@@ -376,7 +373,7 @@ for test_file in "$PAYLOAD_DIR/board_support/tests/bin"/* "$PAYLOAD_DIR/board_su
 done
 sync_file_if_needed "$PAYLOAD_DIR/bin/llama-server-kv260-npu" "$REMOTE_RUN_DIR/llama-server" "llama-server"
 sync_file_if_needed "$BOARD_INIT_SCRIPT" "$REMOTE_SCRIPTS_DIR/board_init_overlay.sh" "board_init_overlay.sh"
-sync_file_if_needed "$V3_DIR/scripts/install_xmutil_app.sh" "$REMOTE_SCRIPTS_DIR/install_xmutil_app.sh" "install_xmutil_app.sh"
+sync_file_if_needed "$SCRIPT_DIR/install_xmutil_app.sh" "$REMOTE_SCRIPTS_DIR/install_xmutil_app.sh" "install_xmutil_app.sh"
 sync_file_if_needed "$REPLAY_SCRIPT" "$REMOTE_SCRIPTS_DIR/run_layer_gemm_replay.sh" "run_layer_gemm_replay.sh"
 for lib in "$PAYLOAD_DIR"/runtime_libs/*; do
   [ -e "$lib" ] || continue
@@ -422,7 +419,7 @@ if [ -f "$LOCAL_RUN_DIR/throughput_metrics.json" ] && [ -f "$LOCAL_RUN_DIR/acc_1
     --output-en "$LOCAL_RUN_DIR/RESULTS.en.md"
 fi
 
-bash "$PREPARE_SCRIPT" --skip-build --sdk-env "$SDK_ENV" --build-dir "$BUILD_DIR"
+bash "$VALIDATE_SCRIPT" --update-manifests
 
 echo "Local results directory: $LOCAL_RUN_DIR"
 echo "Remote run directory: $REMOTE_RUN_DIR"

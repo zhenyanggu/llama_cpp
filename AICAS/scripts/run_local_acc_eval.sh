@@ -23,6 +23,9 @@ Options:
   --threads <n>            llama-server thread count.
   --python <python>        Python interpreter for venv creation.
   --venv-dir <path>        Venv dir (default: AICAS/.venv-acc-eval).
+  --request-timeout <sec>  acc_eval.py 单请求超时，默认 300。
+  --request-retries <n>    acc_eval.py 请求重试次数，默认 2。
+  --retry-delay <sec>      acc_eval.py 重试间隔，默认 2。
   --skip-venv              Use current Python directly.
   --no-install             Accepted for backward compatibility and ignored.
   -h, --help               Show this help.
@@ -49,6 +52,9 @@ THREADS="$(nproc 2>/dev/null || echo 4)"
 PYTHON_BIN="python3"
 VENV_DIR="$AICAS_DIR/.venv-acc-eval"
 MODEL_ALIAS="smolvlm2-gguf"
+REQUEST_TIMEOUT="300"
+REQUEST_RETRIES="2"
+RETRY_DELAY="2"
 
 SKIP_VENV=0
 NO_INSTALL=0
@@ -117,6 +123,18 @@ while [ $# -gt 0 ]; do
       ;;
     --venv-dir)
       VENV_DIR="$2"
+      shift 2
+      ;;
+    --request-timeout)
+      REQUEST_TIMEOUT="$2"
+      shift 2
+      ;;
+    --request-retries)
+      REQUEST_RETRIES="$2"
+      shift 2
+      ;;
+    --retry-delay)
+      RETRY_DELAY="$2"
       shift 2
       ;;
     --skip-venv)
@@ -302,7 +320,10 @@ fi
   --OCRBench_file "$OCRBENCH_FILE" \
   --output_folder "$OUTPUT_FOLDER" \
   --save_name "$SAVE_NAME" \
-  --base-url "$BASE_URL"
+  --base-url "$BASE_URL" \
+  --request-timeout "$REQUEST_TIMEOUT" \
+  --request-retries "$REQUEST_RETRIES" \
+  --retry-delay "$RETRY_DELAY"
 
 echo
 echo "Accuracy evaluation finished."

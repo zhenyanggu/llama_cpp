@@ -513,6 +513,11 @@ struct clip_aicas_w8a8_tensor {
     std::string weight_scale_mode = "per_channel";
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;
+    std::vector<float> smooth_scale;
+    float smooth_alpha = 0.0f;
+    float smooth_eps = 0.0f;
+    bool smooth_enabled = false;
+    bool bias_compensated = false;
 
     bool uses_symmetric_u8() const {
         return act_quant_mode == "symmetric_u8";
@@ -533,7 +538,19 @@ struct clip_aicas_w8a8_tensor {
         return sum_w.size() == static_cast<size_t>(out_channels);
     }
 
+    bool has_valid_smooth_config(int64_t in_channels) const {
+        if (!smooth_enabled) {
+            return smooth_scale.empty();
+        }
+
+        return in_channels >= 0 &&
+            smooth_scale.size() == static_cast<size_t>(in_channels);
+    }
+
     bool is_npu_compatible(int64_t out_channels) const {
+        if (smooth_enabled) {
+            return false;
+        }
         if (out_channels < 0) {
             if (uses_per_tensor_weight_scale()) {
                 return weight_scale.size() == 1 && !sum_w.empty();
@@ -1208,36 +1225,67 @@ struct clip_aicas_activation_stats {
     uint64_t count = 0;
     float min = std::numeric_limits<float>::infinity();
     float max = -std::numeric_limits<float>::infinity();
+    int64_t in_channels = 0;
     uint64_t seen_for_reservoir = 0;
     uint64_t reservoir_state = 0x9e3779b97f4a7c15ULL;
     size_t sample_limit = 0;
     std::vector<float> samples;
+    std::vector<uint32_t> sample_channels;
+    std::vector<float> per_channel_min;
+    std::vector<float> per_channel_max;
+    std::vector<float> per_channel_absmax;
 
-    void update(const float * data, size_t n) {
-        if (data == nullptr || n == 0) {
+    void ensure_channel_buffers(size_t channels) {
+        if (channels == 0) {
+            return;
+        }
+        if (in_channels == 0) {
+            in_channels = static_cast<int64_t>(channels);
+        }
+        GGML_ASSERT(in_channels == static_cast<int64_t>(channels));
+        if (per_channel_min.empty()) {
+            per_channel_min.assign(channels, std::numeric_limits<float>::infinity());
+            per_channel_max.assign(channels, -std::numeric_limits<float>::infinity());
+            per_channel_absmax.assign(channels, 0.0f);
+        }
+    }
+
+    void update(const float * data, size_t channels, size_t cols) {
+        if (data == nullptr || channels == 0 || cols == 0) {
             return;
         }
 
+        ensure_channel_buffers(channels);
+
+        const size_t n = channels * cols;
         count += n;
-        for (size_t i = 0; i < n; ++i) {
-            const float v = data[i];
-            min = std::min(min, v);
-            max = std::max(max, v);
+        for (size_t col = 0; col < cols; ++col) {
+            const float * col_ptr = data + col * channels;
+            for (size_t ch = 0; ch < channels; ++ch) {
+                const float v = col_ptr[ch];
+                min = std::min(min, v);
+                max = std::max(max, v);
+                per_channel_min[ch] = std::min(per_channel_min[ch], v);
+                per_channel_max[ch] = std::max(per_channel_max[ch], v);
+                per_channel_absmax[ch] = std::max(per_channel_absmax[ch], std::fabs(v));
 
-            if (sample_limit == 0) {
-                continue;
-            }
+                if (sample_limit == 0) {
+                    continue;
+                }
 
-            ++seen_for_reservoir;
-            if (samples.size() < sample_limit) {
-                samples.push_back(v);
-                continue;
-            }
+                ++seen_for_reservoir;
+                if (samples.size() < sample_limit) {
+                    samples.push_back(v);
+                    sample_channels.push_back(static_cast<uint32_t>(ch));
+                    continue;
+                }
 
-            reservoir_state = reservoir_state * 6364136223846793005ULL + 1;
-            const uint64_t slot = reservoir_state % seen_for_reservoir;
-            if (slot < sample_limit) {
-                samples[(size_t) slot] = v;
+                reservoir_state = reservoir_state * 6364136223846793005ULL + 1;
+                const uint64_t slot = reservoir_state % seen_for_reservoir;
+                if (slot < sample_limit) {
+                    samples[(size_t) slot] = v;
+                    sample_channels[(size_t) slot] = static_cast<uint32_t>(ch);
+                }
             }
         }
     }
@@ -1487,6 +1535,7 @@ static void clip_compute_w8a8_mul_mat(
     GGML_ASSERT(dst->ne[1] == n_cols);
     GGML_ASSERT(cfg->weight_scale.size() == cfg->expected_weight_scale_len(out_channels));
     GGML_ASSERT(cfg->has_valid_compensation_config(out_channels));
+    GGML_ASSERT(cfg->has_valid_smooth_config(k));
     GGML_ASSERT(cfg->act_scale > 0.0f);
 
     const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
@@ -1506,7 +1555,11 @@ static void clip_compute_w8a8_mul_mat(
         float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
 
         for (int64_t i = 0; i < k; ++i) {
-            int32_t q = (int32_t) lrintf(act_col[i] / sa) + za;
+            const float smooth_scale = cfg->smooth_enabled
+                ? cfg->smooth_scale[static_cast<size_t>(i)]
+                : 1.0f;
+            const float act_value = act_col[i] / smooth_scale;
+            int32_t q = (int32_t) lrintf(act_value / sa) + za;
             q = std::max(0, std::min(255, q));
             act_i8[i] = (int8_t) (q - 128);
         }
@@ -1520,8 +1573,11 @@ static void clip_compute_w8a8_mul_mat(
             const float weight_scale = cfg->uses_per_tensor_weight_scale()
                 ? cfg->weight_scale[0]
                 : cfg->weight_scale[j];
+            const int32_t correction = (!cfg->sum_w.empty() && !cfg->bias_compensated)
+                ? (cfg->act_zero_point - 128) * cfg->sum_w[static_cast<size_t>(j)]
+                : 0;
             const float dequant_scale = sa * weight_scale;
-            const clip_aicas_dequant_result dequant_result = clip_dequantize_i32_aicas(acc, dequant_scale, dequant_sim_mode);
+            const clip_aicas_dequant_result dequant_result = clip_dequantize_i32_aicas(acc - correction, dequant_scale, dequant_sim_mode);
             clip_record_aicas_dequant_result(kernel_userdata->stats, dequant_result);
             out_col[j] = dequant_result.value;
         }
@@ -1814,7 +1870,11 @@ struct clip_ctx {
         return &obs_it->second;
     }
 
-    void record_aicas_activation(const std::string & tensor_name, const float * data, size_t n) {
+    void record_aicas_activation(
+            const std::string & tensor_name,
+            const float * data,
+            size_t channels,
+            size_t cols) {
         if (aicas_act_stats_path.empty()) {
             return;
         }
@@ -1824,7 +1884,7 @@ struct clip_ctx {
         if (stats.sample_limit == 0) {
             stats.sample_limit = aicas_act_stats_samples_per_tensor;
         }
-        stats.update(data, n);
+        stats.update(data, channels, cols);
     }
 
     void flush_aicas_activation_stats() const {
@@ -1858,7 +1918,12 @@ struct clip_ctx {
                     {"count", stats.count},
                     {"min", stats.min},
                     {"max", stats.max},
+                    {"in_channels", stats.in_channels},
+                    {"per_channel_min", stats.per_channel_min},
+                    {"per_channel_max", stats.per_channel_max},
+                    {"per_channel_absmax", stats.per_channel_absmax},
                     {"samples", stats.samples},
+                    {"sample_channels", stats.sample_channels},
                 });
             }
         }
@@ -1928,7 +1993,11 @@ static void clip_collect_activation_f32_passthrough(
     const size_t nbytes = ggml_nbytes(a);
     GGML_ASSERT(nbytes == ggml_nbytes(dst));
     memcpy(dst->data, a->data, nbytes);
-    observer->owner->record_aicas_activation(observer->tensor_name, (const float *) a->data, ggml_nelements(a));
+    observer->owner->record_aicas_activation(
+        observer->tensor_name,
+        (const float *) a->data,
+        (size_t) a->ne[0],
+        (size_t) ggml_nelements(a) / (size_t) a->ne[0]);
 }
 
 struct clip_graph {
@@ -3341,6 +3410,7 @@ private:
             weight->ne[2] == 1 && weight->ne[3] == 1 &&
             act->ne[2] == 1 && act->ne[3] == 1 &&
             act->ne[0] == weight->ne[0] &&
+            cfg.has_valid_smooth_config(weight->ne[0]) &&
             cfg.weight_scale.size() == cfg.expected_weight_scale_len(weight->ne[1]) &&
             cfg.has_valid_compensation_config(weight->ne[1]);
 
@@ -4418,14 +4488,12 @@ struct clip_model_loader {
                 ggml_tensor * bias = ggml_get_tensor(ctx_clip.ctx_data.get(), bias_name.c_str());
                 std::string fuse_error;
                 if (!clip_aicas_fuse_bias_compensation(bias, cfg, &fuse_error)) {
-                    cfg.enabled = false;
-                    cfg.policy = "F16_FALLBACK";
-                    ++disabled;
-                    LOG_WRN("%s: disable W8A8 for %s: %s\n",
+                    LOG_WRN("%s: keep W8A8 for %s without bias pre-fusion: %s\n",
                         __func__, weight_name.c_str(), fuse_error.c_str());
                     continue;
                 }
 
+                cfg.bias_compensated = true;
                 ++fused;
             }
 
@@ -4613,9 +4681,16 @@ struct clip_model_loader {
                 }
                 get_arr_f32(prefix + "weight_scale", cfg.weight_scale);
                 get_arr_i32(prefix + "sum_w", cfg.sum_w, false);
+                get_bool(prefix + "smooth_enabled", cfg.smooth_enabled, false);
+                get_f32(prefix + "smooth_alpha", cfg.smooth_alpha, false);
+                get_f32(prefix + "smooth_eps", cfg.smooth_eps, false);
+                get_arr_f32(prefix + "smooth_scale", cfg.smooth_scale, false);
 
                 if (cfg.uses_symmetric_u8() && cfg.act_zero_point != 128) {
                     throw std::runtime_error("symmetric_u8 AICAS W8A8 metadata requires act_zero_point=128");
+                }
+                if (cfg.smooth_enabled && cfg.smooth_scale.empty()) {
+                    throw std::runtime_error("AICAS W8A8 smoothquant metadata requires smooth_scale when smooth_enabled=true");
                 }
             }
 
