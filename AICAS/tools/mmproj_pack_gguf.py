@@ -32,6 +32,7 @@ class LayerPolicy:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Pack mmproj GGUF with AICAS W8A8 metadata and optional I8 tensors.")
     p.add_argument("--input-gguf", required=True, help="Input mmproj GGUF")
+    p.add_argument("--source-weights-gguf", default="", help="Optional GGUF used as floating-point source for repacked SQ weights")
     p.add_argument("--layer-manifest", required=True, help="Layer manifest JSON")
     p.add_argument("--quant-params", default="", help="Optional calibration params JSON that overrides manifest act params/policy")
     p.add_argument("--output-gguf", required=True, help="Output GGUF")
@@ -198,6 +199,8 @@ def main() -> int:
     layer_map = {x.tensor_name: x for x in layers}
 
     reader = gguf.GGUFReader(args.input_gguf, "r")
+    source_reader = gguf.GGUFReader(args.source_weights_gguf, "r") if args.source_weights_gguf else reader
+    source_tensor_map = {tensor.name: tensor for tensor in source_reader.tensors}
     arch = reader.get_field(gguf.Keys.General.ARCHITECTURE).contents()
     writer = gguf.GGUFWriter(args.output_gguf, arch=arch, endianess=reader.endianess)
 
@@ -214,6 +217,7 @@ def main() -> int:
     quant_params: dict[str, Any] = {
         "schema": args.schema,
         "source_gguf": os.path.abspath(args.input_gguf),
+        "source_weights_gguf": os.path.abspath(args.source_weights_gguf) if args.source_weights_gguf else os.path.abspath(args.input_gguf),
         "layer_manifest": os.path.abspath(args.layer_manifest),
         "quant_params_input": quant_params_input,
         "mode": args.mode,
@@ -239,15 +243,21 @@ def main() -> int:
         if layer is not None and layer.enabled and layer.policy == "W8A8":
             can_quantize = (
                 args.mode == "quantize"
-                and tensor.tensor_type in (gguf.GGMLQuantizationType.F16, gguf.GGMLQuantizationType.F32)
-                and np_data.ndim == 2
+                and name in source_tensor_map
             )
+            if can_quantize:
+                source_tensor = source_tensor_map[name]
+                source_np = np.asarray(source_tensor.data)
+                can_quantize = (
+                    source_tensor.tensor_type in (gguf.GGMLQuantizationType.F16, gguf.GGMLQuantizationType.F32)
+                    and source_np.ndim == 2
+                )
             if can_quantize:
                 if layer.act_quant_mode == "symmetric_u8" and layer.act_zero_point != 128:
                     raise ValueError(
                         f"{name}: symmetric_u8 requires act_zero_point=128, got {layer.act_zero_point}"
                     )
-                float_weight = apply_smoothquant_to_weight(np_data, layer)
+                float_weight = apply_smoothquant_to_weight(source_np, layer)
                 if args.weight_granularity == "per_tensor":
                     q, scale = quantize_per_tensor_i8(float_weight)
                 else:

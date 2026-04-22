@@ -477,6 +477,64 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     // get general kv
     ml.get_key(LLM_KV_GENERAL_NAME, name, false);
 
+    {
+        std::string schema;
+        if (ml.get_key("aicas.text_sq.schema", schema, false) && !schema.empty()) {
+            int32_t tensor_count = 0;
+            ml.get_key("aicas.text_sq.tensor_count", tensor_count, true);
+            if (tensor_count < 0) {
+                throw std::runtime_error("invalid aicas.text_sq.tensor_count");
+            }
+
+            aicas_text_sq_enabled = true;
+            aicas_text_sq_schema = schema;
+            aicas_text_sq_tensors.clear();
+            aicas_text_sq_tensors.reserve((size_t) tensor_count);
+
+            for (int32_t i = 0; i < tensor_count; ++i) {
+                const std::string prefix = "aicas.text_sq.tensor." + std::to_string(i) + ".";
+
+                std::string tensor_name;
+                ml.get_key(prefix + "name", tensor_name, true);
+                if (tensor_name.empty()) {
+                    throw std::runtime_error("empty tensor name in aicas.text_sq metadata");
+                }
+
+                llama_aicas_text_sq_tensor cfg;
+                ml.get_key(prefix + "enabled", cfg.enabled, false);
+                ml.get_key(prefix + "policy", cfg.policy, false);
+                ml.get_key(prefix + "act_scale", cfg.act_scale, false);
+                ml.get_key(prefix + "act_zero_point", cfg.act_zero_point, false);
+                ml.get_key(prefix + "act_quant_mode", cfg.act_quant_mode, false);
+                ml.get_key(prefix + "weight_scale_mode", cfg.weight_scale_mode, false);
+                ml.get_key(prefix + "smooth_alpha", cfg.smooth_alpha, false);
+                ml.get_key(prefix + "smooth_eps", cfg.smooth_eps, false);
+                ml.get_key(prefix + "quant_tensor_name", cfg.quant_tensor_name, false);
+                ml.get_arr(prefix + "weight_scale", cfg.weight_scale, false);
+                ml.get_arr(prefix + "sum_w", cfg.sum_w, false);
+                ml.get_arr(prefix + "smooth_scale", cfg.smooth_scale, false);
+
+                if (cfg.policy.empty()) {
+                    cfg.policy = "F16_FALLBACK";
+                }
+                if (cfg.act_quant_mode.empty()) {
+                    cfg.act_quant_mode = "asymmetric_u8";
+                }
+                if (cfg.weight_scale_mode.empty()) {
+                    cfg.weight_scale_mode = "per_channel";
+                }
+                if (cfg.quant_tensor_name.empty()) {
+                    cfg.quant_tensor_name = tensor_name + ".aicas_i8";
+                }
+
+                aicas_text_sq_tensors.emplace(tensor_name, std::move(cfg));
+            }
+
+            LLAMA_LOG_INFO("%s: AICAS text SmoothQuant enabled, schema=%s, tensors=%d\n",
+                    __func__, aicas_text_sq_schema.c_str(), tensor_count);
+        }
+    }
+
     // everything past this point is not vocab-related
     // for CLIP models, we only need to load tensors, no hparams
     if (hparams.vocab_only || ml.get_arch() == LLM_ARCH_CLIP) {
@@ -6132,6 +6190,28 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             LLAMA_LOG_DEBUG("%s: tensor '%s' (%s) (and %d others) cannot be used with preferred buffer type %s, using %s instead\n",
                 __func__, first_moved_tensor->name, ggml_type_name(first_moved_tensor->type), n_moved_tensors - 1,
                 ggml_backend_buft_name(first_moved_from_buft), ggml_backend_buft_name(first_moved_to_buft));
+        }
+
+        if (aicas_text_sq_enabled) {
+            ggml_backend_buffer_type_t cpu_buft = ggml_backend_dev_buffer_type(cpu_dev);
+            if (cpu_buft == nullptr) {
+                throw std::runtime_error("failed to get plain CPU buffer type for SmoothQuant tensors");
+            }
+            ggml_context * ctx_cpu = ctx_for_buft(cpu_buft);
+
+            for (auto & kv : aicas_text_sq_tensors) {
+                auto & cfg = kv.second;
+                const std::string & qname = cfg.quant_tensor_name;
+                const struct ggml_tensor * t_meta = ml.get_tensor_meta(qname.c_str());
+                if (t_meta == nullptr) {
+                    throw std::runtime_error(format("missing SmoothQuant quant tensor '%s'", qname.c_str()));
+                }
+
+                ggml_tensor * tensor = ggml_dup_tensor(ctx_cpu, t_meta);
+                ggml_set_name(tensor, ggml_get_name(t_meta));
+                cfg.quant_tensor = tensor;
+                ml.n_created++;
+            }
         }
     }
 

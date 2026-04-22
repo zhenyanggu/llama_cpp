@@ -400,6 +400,7 @@ class llm_graph_result;
 
 struct llm_graph_params {
     llm_arch arch = LLM_ARCH_UNKNOWN;
+    const struct llama_model * model = nullptr;
 
     llama_hparams hparams;
     llama_cparams cparams;
@@ -456,6 +457,7 @@ struct llm_graph_params {
         }
 
         return
+            model              == other.model              &&
             cparams.embeddings  == other.cparams.embeddings  &&
             cparams.causal_attn == other.cparams.causal_attn &&
             arch      == other.arch  &&
@@ -535,6 +537,7 @@ using llm_graph_result_ptr = std::unique_ptr<llm_graph_result>;
 using llm_graph_get_rows_fn = std::function<ggml_tensor * (ggml_context *, ggml_tensor * states, ggml_tensor * ids)>;
 
 struct llm_graph_context {
+    const struct llama_model & model;
     const llm_arch arch;
 
     const llama_hparams & hparams;

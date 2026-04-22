@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
+#include "llama-model.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -12,6 +13,354 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <cinttypes>
+#include <fstream>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+
+struct llama_text_activation_stats {
+    uint64_t count = 0;
+    int64_t in_channels = 0;
+    float min = std::numeric_limits<float>::infinity();
+    float max = -std::numeric_limits<float>::infinity();
+    uint64_t seen_for_reservoir = 0;
+    uint64_t reservoir_state = 0x9e3779b97f4a7c15ULL;
+    size_t sample_limit = 0;
+    std::vector<float> samples;
+    std::vector<uint32_t> sample_channels;
+    std::vector<float> per_channel_min;
+    std::vector<float> per_channel_max;
+    std::vector<float> per_channel_absmax;
+
+    void ensure_channel_buffers(size_t channels) {
+        if (channels == 0) {
+            return;
+        }
+        if (in_channels == 0) {
+            in_channels = static_cast<int64_t>(channels);
+        }
+        GGML_ASSERT(in_channels == static_cast<int64_t>(channels));
+        if (per_channel_absmax.empty()) {
+            per_channel_min.assign(channels, std::numeric_limits<float>::infinity());
+            per_channel_max.assign(channels, -std::numeric_limits<float>::infinity());
+            per_channel_absmax.assign(channels, 0.0f);
+        }
+    }
+
+    void update(const float * data, size_t channels, size_t cols) {
+        if (data == nullptr || channels == 0 || cols == 0) {
+            return;
+        }
+        ensure_channel_buffers(channels);
+        count += channels * cols;
+        for (size_t col = 0; col < cols; ++col) {
+            const float * col_ptr = data + col * channels;
+            for (size_t ch = 0; ch < channels; ++ch) {
+                const float v = col_ptr[ch];
+                min = std::min(min, v);
+                max = std::max(max, v);
+                per_channel_min[ch] = std::min(per_channel_min[ch], v);
+                per_channel_max[ch] = std::max(per_channel_max[ch], v);
+                per_channel_absmax[ch] = std::max(per_channel_absmax[ch], std::fabs(v));
+
+                if (sample_limit == 0) {
+                    continue;
+                }
+                ++seen_for_reservoir;
+                if (samples.size() < sample_limit) {
+                    samples.push_back(v);
+                    sample_channels.push_back(static_cast<uint32_t>(ch));
+                    continue;
+                }
+                reservoir_state = reservoir_state * 6364136223846793005ULL + 1;
+                const uint64_t slot = reservoir_state % seen_for_reservoir;
+                if (slot < sample_limit) {
+                    samples[(size_t) slot] = v;
+                    sample_channels[(size_t) slot] = static_cast<uint32_t>(ch);
+                }
+            }
+        }
+    }
+};
+
+struct llama_text_activation_observer {
+    std::string tensor_name;
+};
+
+static bool llama_text_sq_enable_decode_gemv() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_SQ_ENABLE_DECODE_GEMV");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static void llama_compute_text_w8a8_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+
+    const auto * cfg = static_cast<const llama_aicas_text_sq_tensor *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(c->type == GGML_TYPE_I8);
+
+    const int64_t k = c->ne[0];
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+    GGML_ASSERT(b->ne[0] == k);
+    GGML_ASSERT(cfg->smooth_scale.size() == static_cast<size_t>(k));
+    GGML_ASSERT(cfg->weight_scale.size() == cfg->expected_weight_scale_len(out_channels));
+
+    const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
+    const int64_t col_begin = ith * cols_per_thread;
+    const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
+    if (col_begin >= col_end) {
+        return;
+    }
+
+    const float sa = cfg->act_scale;
+    const int32_t za = cfg->act_zero_point;
+    std::vector<int8_t> act_i8(k);
+
+    for (int64_t col = col_begin; col < col_end; ++col) {
+        const float * act_col = (const float *) ((const char *) b->data + col * b->nb[1]);
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+
+        for (int64_t i = 0; i < k; ++i) {
+            const float act_value = act_col[i] / cfg->smooth_scale[static_cast<size_t>(i)];
+            int32_t q = (int32_t) lrintf(act_value / sa) + za;
+            q = std::max(0, std::min(255, q));
+            act_i8[i] = (int8_t) (q - 128);
+        }
+
+        for (int64_t j = 0; j < out_channels; ++j) {
+            const int8_t * w_row = (const int8_t *) ((const char *) c->data + j * c->nb[1]);
+            int32_t acc = 0;
+            for (int64_t i = 0; i < k; ++i) {
+                acc += (int32_t) act_i8[i] * (int32_t) w_row[i];
+            }
+            const int32_t correction = cfg->sum_w.empty()
+                ? 0
+                : (cfg->act_zero_point - 128) * cfg->sum_w[static_cast<size_t>(j)];
+            const float sw = cfg->uses_per_tensor_weight_scale()
+                ? cfg->weight_scale[0]
+                : cfg->weight_scale[static_cast<size_t>(j)];
+            out_col[j] = (float) (acc - correction) * (sa * sw);
+        }
+    }
+}
+
+struct llama_text_activation_registry {
+    std::string output_path;
+    size_t sample_limit = 0;
+    std::mutex mutex;
+    std::unordered_map<std::string, llama_text_activation_stats> stats;
+    std::unordered_map<std::string, llama_text_activation_observer> observers;
+
+    llama_text_activation_registry() {
+        const char * stats_path = std::getenv("AICAS_TEXT_ACT_STATS_FILE");
+        output_path = stats_path ? stats_path : "";
+        if (!output_path.empty()) {
+            sample_limit = 4096;
+            if (const char * samples_env = std::getenv("AICAS_TEXT_ACT_SAMPLES")) {
+                const long parsed = strtol(samples_env, nullptr, 10);
+                if (parsed > 0) {
+                    sample_limit = (size_t) parsed;
+                }
+            }
+        }
+    }
+
+    ~llama_text_activation_registry() {
+        flush();
+    }
+
+    bool enabled() const {
+        return !output_path.empty();
+    }
+
+    llama_text_activation_observer * get_observer(const std::string & tensor_name) {
+        if (!enabled()) {
+            return nullptr;
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        auto stats_it = stats.find(tensor_name);
+        if (stats_it == stats.end()) {
+            llama_text_activation_stats item;
+            item.sample_limit = sample_limit;
+            stats_it = stats.emplace(tensor_name, std::move(item)).first;
+        }
+        auto obs_it = observers.find(tensor_name);
+        if (obs_it == observers.end()) {
+            obs_it = observers.emplace(tensor_name, llama_text_activation_observer{tensor_name}).first;
+        }
+        GGML_UNUSED(stats_it);
+        return &obs_it->second;
+    }
+
+    void record(const std::string & tensor_name, const float * data, size_t channels, size_t cols) {
+        if (!enabled()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        auto & item = stats[tensor_name];
+        if (item.sample_limit == 0) {
+            item.sample_limit = sample_limit;
+        }
+        item.update(data, channels, cols);
+    }
+
+    void flush() {
+        if (!enabled()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<std::string> names;
+        names.reserve(stats.size());
+        for (const auto & kv : stats) {
+            names.push_back(kv.first);
+        }
+        std::sort(names.begin(), names.end());
+
+        std::ofstream fout(output_path, std::ios::binary);
+        if (!fout.is_open()) {
+            LLAMA_LOG_ERROR("%s: failed to open text activation stats file: %s\n", __func__, output_path.c_str());
+            return;
+        }
+
+        fout << "{\n";
+        fout << "  \"schema\": \"aicas.llama.text.act_stats.v1\",\n";
+        fout << "  \"samples_per_tensor\": " << sample_limit << ",\n";
+        fout << "  \"tensors\": [\n";
+
+        bool first_tensor = true;
+        for (const auto & name : names) {
+            const auto & item = stats.at(name);
+            if (item.count == 0) {
+                continue;
+            }
+
+            if (!first_tensor) {
+                fout << ",\n";
+            }
+            first_tensor = false;
+
+            auto write_float_array = [&](const std::vector<float> & values, int indent) {
+                fout << "[";
+                for (size_t i = 0; i < values.size(); ++i) {
+                    if (i > 0) {
+                        fout << ", ";
+                    }
+                    fout << values[i];
+                }
+                fout << "]";
+                GGML_UNUSED(indent);
+            };
+
+            auto write_u32_array = [&](const std::vector<uint32_t> & values) {
+                fout << "[";
+                for (size_t i = 0; i < values.size(); ++i) {
+                    if (i > 0) {
+                        fout << ", ";
+                    }
+                    fout << values[i];
+                }
+                fout << "]";
+            };
+
+            fout << "    {\n";
+            fout << "      \"tensor_name\": \"" << name << "\",\n";
+            fout << "      \"count\": " << item.count << ",\n";
+            fout << "      \"in_channels\": " << item.in_channels << ",\n";
+            fout << "      \"min\": " << item.min << ",\n";
+            fout << "      \"max\": " << item.max << ",\n";
+            fout << "      \"per_channel_min\": ";
+            write_float_array(item.per_channel_min, 6);
+            fout << ",\n";
+            fout << "      \"per_channel_max\": ";
+            write_float_array(item.per_channel_max, 6);
+            fout << ",\n";
+            fout << "      \"per_channel_absmax\": ";
+            write_float_array(item.per_channel_absmax, 6);
+            fout << ",\n";
+            fout << "      \"samples\": ";
+            write_float_array(item.samples, 6);
+            fout << ",\n";
+            fout << "      \"sample_channels\": ";
+            write_u32_array(item.sample_channels);
+            fout << "\n";
+            fout << "    }";
+        }
+
+        fout << "\n  ]\n";
+        fout << "}\n";
+    }
+};
+
+static llama_text_activation_registry & llama_get_text_activation_registry() {
+    static llama_text_activation_registry registry;
+    return registry;
+}
+
+static void llama_collect_text_activation_f32_passthrough(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(nth);
+    auto * observer = static_cast<llama_text_activation_observer *>(userdata);
+    GGML_ASSERT(observer != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const size_t nbytes = ggml_nbytes(a);
+    GGML_ASSERT(nbytes == ggml_nbytes(dst));
+    memcpy(dst->data, a->data, nbytes);
+    llama_get_text_activation_registry().record(
+        observer->tensor_name,
+        (const float *) a->data,
+        (size_t) a->ne[0],
+        (size_t) ggml_nelements(a) / (size_t) a->ne[0]);
+}
+
+static ggml_tensor * llama_maybe_observe_text_activation(
+        ggml_context * ctx0,
+        ggml_tensor * act,
+        const char * tensor_name,
+        bool is_prefill_gemm_only) {
+    if (act == nullptr || tensor_name == nullptr || tensor_name[0] == '\0') {
+        return act;
+    }
+    if (!is_prefill_gemm_only) {
+        return act;
+    }
+    auto * observer = llama_get_text_activation_registry().get_observer(tensor_name);
+    if (observer == nullptr) {
+        return act;
+    }
+    return ggml_map_custom1(ctx0, act, llama_collect_text_activation_f32_passthrough, 1, observer);
+}
+
+} // namespace
 
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
     if (ubatch->token) {
@@ -552,6 +901,7 @@ void llm_graph_result::set_params(const llm_graph_params & params) {
 //
 
 llm_graph_context::llm_graph_context(const llm_graph_params & params) :
+    model            (*params.model),
     arch             (params.arch),
     hparams          (params.hparams),
     cparams          (params.cparams),
@@ -609,7 +959,41 @@ ggml_tensor * llm_graph_context::build_cvec(
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur) const {
-    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+    cur = llama_maybe_observe_text_activation(ctx0, cur, w->name, cur->ne[1] > 1);
+    ggml_tensor * res = nullptr;
+
+    const bool is_prefill_gemm = cur->ne[1] > 1;
+    const bool use_decode_gemv_sq = !is_prefill_gemm && llama_text_sq_enable_decode_gemv();
+    const bool allow_text_sq = is_prefill_gemm || use_decode_gemv_sq;
+    auto it_sq = model.aicas_text_sq_tensors.find(w->name);
+    if (model.aicas_text_sq_enabled &&
+        allow_text_sq &&
+        it_sq != model.aicas_text_sq_tensors.end()) {
+        const auto & cfg = it_sq->second;
+        if (cfg.enabled &&
+            cfg.policy == "W8A8" &&
+            cfg.quant_tensor != nullptr &&
+            cfg.act_scale > 0.0f &&
+            cur->type == GGML_TYPE_F32 &&
+            cfg.quant_tensor->type == GGML_TYPE_I8 &&
+            cur->ne[0] == cfg.quant_tensor->ne[0] &&
+            cfg.smooth_scale.size() == static_cast<size_t>(cur->ne[0]) &&
+            cfg.weight_scale.size() == cfg.expected_weight_scale_len(cfg.quant_tensor->ne[1])) {
+            ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur->ne[1]);
+            res = ggml_map_custom3(
+                ctx0,
+                out_template,
+                cur,
+                cfg.quant_tensor,
+                llama_compute_text_w8a8_mul_mat,
+                GGML_N_TASKS_MAX,
+                const_cast<llama_aicas_text_sq_tensor *>(&cfg));
+        }
+    }
+
+    if (res == nullptr) {
+        res = ggml_mul_mat(ctx0, w, cur);
+    }
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);

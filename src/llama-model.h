@@ -17,6 +17,30 @@ struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
 
+struct llama_aicas_text_sq_tensor {
+    bool enabled = true;
+    std::string policy = "F16_FALLBACK";
+    float act_scale = 0.0f;
+    int32_t act_zero_point = 0;
+    std::string act_quant_mode = "asymmetric_u8";
+    std::string weight_scale_mode = "per_channel";
+    std::vector<float> weight_scale;
+    std::vector<int32_t> sum_w;
+    std::vector<float> smooth_scale;
+    float smooth_alpha = 0.0f;
+    float smooth_eps = 0.0f;
+    std::string quant_tensor_name;
+    struct ggml_tensor * quant_tensor = nullptr;
+
+    bool uses_per_tensor_weight_scale() const {
+        return weight_scale_mode == "per_tensor";
+    }
+
+    size_t expected_weight_scale_len(int64_t out_channels) const {
+        return uses_per_tensor_weight_scale() ? size_t(1) : static_cast<size_t>(out_channels);
+    }
+};
+
 // available models
 enum llm_type {
     LLM_TYPE_UNKNOWN,
@@ -451,6 +475,9 @@ struct llama_model {
 
     // gguf metadata
     std::unordered_map<std::string, std::string> gguf_kv;
+    bool aicas_text_sq_enabled = false;
+    std::string aicas_text_sq_schema;
+    std::unordered_map<std::string, llama_aicas_text_sq_tensor> aicas_text_sq_tensors;
 
     // list of devices used in this model
     std::vector<ggml_backend_dev_t> devices;
