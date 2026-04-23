@@ -205,6 +205,17 @@ static uint8_t llama_decode_awq_q4(
         : ((packed >> 4) & 0x0fu);
 }
 
+static inline float llama_tensor_read_scalar(
+        const struct ggml_tensor * t,
+        const char * row_ptr,
+        const int64_t idx) {
+    if (t->type == GGML_TYPE_F32) {
+        return ((const float *) row_ptr)[idx];
+    }
+    GGML_ASSERT(t->type == GGML_TYPE_F16);
+    return ggml_fp16_to_fp32(((const ggml_fp16_t *) row_ptr)[idx]);
+}
+
 static void llama_compute_text_decode_awq_mul_mat(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -218,10 +229,12 @@ static void llama_compute_text_decode_awq_mul_mat(
     const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
     GGML_ASSERT(cfg != nullptr);
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
     GGML_ASSERT(c->type == GGML_TYPE_I8);
     GGML_ASSERT(cfg->scale_tensor != nullptr);
     GGML_ASSERT(cfg->zero_tensor != nullptr);
+    GGML_ASSERT(cfg->scale_tensor->type == GGML_TYPE_F32 || cfg->scale_tensor->type == GGML_TYPE_F16);
+    GGML_ASSERT(cfg->zero_tensor->type == GGML_TYPE_F32 || cfg->zero_tensor->type == GGML_TYPE_F16);
 
     const int64_t k = cfg->in_features;
     const int64_t packed_k = cfg->packed_in_features();
@@ -234,9 +247,6 @@ static void llama_compute_text_decode_awq_mul_mat(
     GGML_ASSERT(cfg->has_valid_smooth_config());
     GGML_ASSERT(cfg->has_valid_group_params(out_channels));
 
-    const float * scale_data = (const float *) cfg->scale_tensor->data;
-    const float * zero_data = (const float *) cfg->zero_tensor->data;
-
     const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
     const int64_t col_begin = ith * cols_per_thread;
     const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
@@ -245,21 +255,23 @@ static void llama_compute_text_decode_awq_mul_mat(
     }
 
     for (int64_t col = col_begin; col < col_end; ++col) {
-        const float * act_col = (const float *) ((const char *) b->data + col * b->nb[1]);
+        const char * act_col = (const char *) b->data + col * b->nb[1];
         float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
 
         for (int64_t j = 0; j < out_channels; ++j) {
             const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
-            const float * scale_row = scale_data + j * cfg->scale_tensor->ne[0];
-            const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
+            const char * scale_row = (const char *) cfg->scale_tensor->data + j * cfg->scale_tensor->nb[1];
+            const char * zero_row  = (const char *) cfg->zero_tensor->data  + j * cfg->zero_tensor->nb[1];
 
             float acc = 0.0f;
             for (int64_t i = 0; i < k; ++i) {
                 const int64_t g = i / cfg->group_size;
-                const float act_value = act_col[i] / cfg->smooth_scale[static_cast<size_t>(i)];
+                // decode path: prefer FP16 activation (W4A16), but still accept F32 fallback input.
+                const float act_value = llama_tensor_read_scalar(b, act_col, i) / cfg->smooth_scale[static_cast<size_t>(i)];
                 const uint8_t packed = w_row[i / 2];
                 const float q = (float) llama_decode_awq_q4(packed, i);
-                const float w = (q - zero_row[g]) * scale_row[g];
+                const float w = (q - llama_tensor_read_scalar(cfg->zero_tensor, zero_row, g))
+                    * llama_tensor_read_scalar(cfg->scale_tensor, scale_row, g);
                 acc += act_value * w;
             }
             out_col[j] = acc;
@@ -1106,23 +1118,28 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         if (model.aicas_text_decode_awq_enabled &&
             it_awq != model.aicas_text_decode_awq_tensors.end()) {
             const auto & cfg = it_awq->second;
+            ggml_tensor * cur_awq = cur;
+            // For decode GEMV, quantize activation to FP16 before entering AWQ kernel when source is FP32.
+            if (cur_awq->type == GGML_TYPE_F32) {
+                cur_awq = ggml_cast(ctx0, cur_awq, GGML_TYPE_F16);
+            }
             if (cfg.enabled &&
                 cfg.policy == "Q4_AWQ" &&
                 cfg.quant_tensor != nullptr &&
                 cfg.scale_tensor != nullptr &&
                 cfg.zero_tensor != nullptr &&
-                cur->type == GGML_TYPE_F32 &&
+                (cur_awq->type == GGML_TYPE_F16 || cur_awq->type == GGML_TYPE_F32) &&
                 cfg.quant_tensor->type == GGML_TYPE_I8 &&
                 cfg.in_features > 0 &&
-                cur->ne[0] == cfg.in_features &&
+                cur_awq->ne[0] == cfg.in_features &&
                 cfg.packed_in_features() == cfg.quant_tensor->ne[0] &&
                 cfg.has_valid_smooth_config() &&
                 cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
-                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur->ne[1]);
+                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur_awq->ne[1]);
                 res = ggml_map_custom3(
                     ctx0,
                     out_template,
-                    cur,
+                    cur_awq,
                     cfg.quant_tensor,
                     llama_compute_text_decode_awq_mul_mat,
                     GGML_N_TASKS_MAX,
