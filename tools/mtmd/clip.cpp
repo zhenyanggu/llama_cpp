@@ -548,9 +548,6 @@ struct clip_aicas_w8a8_tensor {
     }
 
     bool is_npu_compatible(int64_t out_channels) const {
-        if (smooth_enabled) {
-            return false;
-        }
         if (out_channels < 0) {
             if (uses_per_tensor_weight_scale()) {
                 return weight_scale.size() == 1 && !sum_w.empty();
@@ -565,6 +562,10 @@ struct clip_aicas_w8a8_tensor {
             sum_w.size() == static_cast<size_t>(out_channels);
     }
 };
+
+static std::string clip_aicas_smooth_scale_tensor_name(const std::string & weight_name) {
+    return weight_name + ".aicas_smooth_scale";
+}
 
 static bool clip_aicas_fuse_bias_compensation(
         ggml_tensor * bias,
@@ -1496,6 +1497,7 @@ struct clip_model {
     bool aicas_w8a8_enabled = false;
     std::string aicas_w8a8_schema;
     std::unordered_map<std::string, clip_aicas_w8a8_tensor> aicas_w8a8_tensors;
+    std::unordered_map<std::string, ggml_tensor *> aicas_smooth_scale_tensors;
 
     bool audio_has_avgpool() const {
         return proj_type == PROJECTOR_TYPE_QWEN2A
@@ -1591,6 +1593,22 @@ static void clip_collect_activation_f32_passthrough(
         int nth,
         void * userdata);
 
+static int clip_get_max_nodes() {
+    constexpr int default_max_nodes = 32768;
+
+    if (const char * env = std::getenv("MTMD_MAX_NODES")) {
+        const long parsed = std::strtol(env, nullptr, 10);
+        if (parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+            return static_cast<int>(parsed);
+        }
+
+        LOG_WRN("%s: ignoring invalid MTMD_MAX_NODES=%s, using default=%d\n",
+                __func__, env, default_max_nodes);
+    }
+
+    return default_max_nodes;
+}
+
 struct clip_ctx {
     clip_model model;
 
@@ -1606,7 +1624,7 @@ struct clip_ctx {
     ggml_backend_t backend_cpu = nullptr;
     ggml_backend_buffer_ptr buf;
 
-    int max_nodes = 8192;
+    int max_nodes = clip_get_max_nodes();
     ggml_backend_sched_ptr sched;
 
     // for debugging
@@ -1690,7 +1708,7 @@ struct clip_ctx {
         backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
 
         sched.reset(
-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true)
         );
     }
 
@@ -1820,7 +1838,7 @@ struct clip_ctx {
         backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
 
         sched.reset(
-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true)
         );
     }
 
@@ -3395,8 +3413,32 @@ private:
         }
 
         if (ctx->backend_is_npu()) {
+            if (cfg.smooth_enabled) {
+                const auto smooth_it = model.aicas_smooth_scale_tensors.find(weight->name);
+                GGML_ASSERT(smooth_it != model.aicas_smooth_scale_tensors.end());
+                ggml_tensor * smooth_scale = smooth_it->second;
+                GGML_ASSERT(smooth_scale != nullptr);
+                GGML_ASSERT(smooth_scale->type == GGML_TYPE_F32);
+                GGML_ASSERT(smooth_scale->ne[0] == act->ne[0]);
+
+                ggml_tensor * smooth_scale_2d = ggml_repeat(ctx0, smooth_scale, act);
+                ggml_set_name(smooth_scale_2d, (std::string(weight->name) + "_smooth_scale").c_str());
+                act = ggml_div(ctx0, act, smooth_scale_2d);
+                ggml_set_name(act, (std::string(weight->name) + "_desmooth").c_str());
+            }
             if (!ggml_is_contiguous(act)) {
                 act = ggml_cont(ctx0, act);
+            }
+            if (ctx->aicas_w8a8_debug) {
+                LOG_DBG(
+                    "%s: route %s to NPU ggml_mul_mat (layer=%d, smooth_enabled=%d, weight_scale_mode=%s, scale_len=%zu, sumw_len=%zu)\n",
+                    __func__,
+                    weight->name,
+                    il,
+                    cfg.smooth_enabled ? 1 : 0,
+                    cfg.weight_scale_mode.c_str(),
+                    cfg.weight_scale.size(),
+                    cfg.sum_w.size());
             }
             ggml_tensor * out = ggml_mul_mat(ctx0, weight, act);
             ggml_set_name(out, weight->name);
@@ -4121,6 +4163,14 @@ struct clip_model_loader {
         auto & hparams = model.hparams;
         std::map<std::string, size_t> tensor_offset;
         std::vector<ggml_tensor *> tensors_to_load;
+        size_t extra_tensor_count = 0;
+
+        for (const auto & kv : model.aicas_w8a8_tensors) {
+            const auto & cfg = kv.second;
+            if (cfg.enabled && cfg.policy == "W8A8" && cfg.smooth_enabled && !cfg.smooth_scale.empty()) {
+                ++extra_tensor_count;
+            }
+        }
 
         // TODO @ngxson : support both audio and video in the future
         const char * prefix = model.modality == CLIP_MODALITY_AUDIO ? "a" : "v";
@@ -4133,7 +4183,7 @@ struct clip_model_loader {
 
         // create data context
         struct ggml_init_params params = {
-            /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(ctx_gguf.get()) + 1) * ggml_tensor_overhead(),
+            /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(ctx_gguf.get()) + extra_tensor_count + 1) * ggml_tensor_overhead(),
             /*.mem_buffer =*/ NULL,
             /*.no_alloc =*/ true,
         };
@@ -4416,6 +4466,24 @@ struct clip_model_loader {
                 GGML_ASSERT(false && "unknown projector type");
         }
 
+        model.aicas_smooth_scale_tensors.clear();
+        model.aicas_smooth_scale_tensors.reserve(extra_tensor_count);
+        for (const auto & kv : model.aicas_w8a8_tensors) {
+            const std::string & weight_name = kv.first;
+            const auto & cfg = kv.second;
+            if (!cfg.enabled || cfg.policy != "W8A8" || !cfg.smooth_enabled || cfg.smooth_scale.empty()) {
+                continue;
+            }
+
+            ggml_tensor * smooth_scale = ggml_new_tensor_1d(
+                ctx_clip.ctx_data.get(),
+                GGML_TYPE_F32,
+                static_cast<int64_t>(cfg.smooth_scale.size()));
+            GGML_ASSERT(smooth_scale != nullptr);
+            ggml_set_name(smooth_scale, clip_aicas_smooth_scale_tensor_name(weight_name).c_str());
+            model.aicas_smooth_scale_tensors.emplace(weight_name, smooth_scale);
+        }
+
         // load data
         {
             std::vector<uint8_t> read_buf;
@@ -4450,6 +4518,23 @@ struct clip_model_loader {
             fin.close();
 
             LOG_DBG("%s: loaded %zu tensors from %s\n", __func__, tensors_to_load.size(), fname.c_str());
+        }
+
+        for (const auto & kv : model.aicas_smooth_scale_tensors) {
+            const std::string & weight_name = kv.first;
+            ggml_tensor * smooth_scale = kv.second;
+            GGML_ASSERT(smooth_scale != nullptr);
+
+            const auto cfg_it = model.aicas_w8a8_tensors.find(weight_name);
+            GGML_ASSERT(cfg_it != model.aicas_w8a8_tensors.end());
+            const auto & cfg = cfg_it->second;
+            GGML_ASSERT(cfg.smooth_scale.size() == static_cast<size_t>(ggml_nelements(smooth_scale)));
+
+            ggml_backend_tensor_set(
+                smooth_scale,
+                cfg.smooth_scale.data(),
+                0,
+                ggml_nbytes(smooth_scale));
         }
 
         if (model.aicas_w8a8_enabled && clip_should_prefuse_aicas_bias_compensation()) {
@@ -4506,7 +4591,9 @@ struct clip_model_loader {
 
     void alloc_compute_meta(clip_ctx & ctx_clip) {
         const auto & hparams = ctx_clip.model.hparams;
-        ctx_clip.buf_compute_meta.resize(ctx_clip.max_nodes * ggml_tensor_overhead() + ggml_graph_overhead());
+        ctx_clip.buf_compute_meta.resize(
+                ctx_clip.max_nodes * ggml_tensor_overhead() +
+                ggml_graph_overhead_custom(ctx_clip.max_nodes, false));
 
         // create a fake batch
         clip_image_f32_batch batch;

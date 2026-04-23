@@ -90,9 +90,43 @@ struct llama_text_activation_observer {
     std::string tensor_name;
 };
 
+enum class llama_text_act_collect_mode {
+    prefill,
+    decode,
+    both,
+};
+
+static llama_text_act_collect_mode llama_text_act_collect_mode_from_env() {
+    static const llama_text_act_collect_mode mode = []() {
+        const char * value = std::getenv("AICAS_TEXT_ACT_COLLECT_MODE");
+        if (value == nullptr || value[0] == '\0') {
+            return llama_text_act_collect_mode::prefill;
+        }
+        if (std::strcmp(value, "decode") == 0) {
+            return llama_text_act_collect_mode::decode;
+        }
+        if (std::strcmp(value, "both") == 0) {
+            return llama_text_act_collect_mode::both;
+        }
+        return llama_text_act_collect_mode::prefill;
+    }();
+    return mode;
+}
+
 static bool llama_text_sq_enable_decode_gemv() {
     static const bool enabled = []() {
         const char * value = std::getenv("AICAS_TEXT_SQ_ENABLE_DECODE_GEMV");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_decode_awq_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ");
         if (value == nullptr || value[0] == '\0') {
             return false;
         }
@@ -159,6 +193,76 @@ static void llama_compute_text_w8a8_mul_mat(
                 ? cfg->weight_scale[0]
                 : cfg->weight_scale[static_cast<size_t>(j)];
             out_col[j] = (float) (acc - correction) * (sa * sw);
+        }
+    }
+}
+
+static uint8_t llama_decode_awq_q4(
+        const uint8_t packed,
+        const int64_t idx_in_row) {
+    return (idx_in_row & 1) == 0
+        ? (packed & 0x0fu)
+        : ((packed >> 4) & 0x0fu);
+}
+
+static void llama_compute_text_decode_awq_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+
+    const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(c->type == GGML_TYPE_I8);
+    GGML_ASSERT(cfg->scale_tensor != nullptr);
+    GGML_ASSERT(cfg->zero_tensor != nullptr);
+
+    const int64_t k = cfg->in_features;
+    const int64_t packed_k = cfg->packed_in_features();
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+
+    GGML_ASSERT(k > 0);
+    GGML_ASSERT(packed_k == c->ne[0]);
+    GGML_ASSERT(b->ne[0] == k);
+    GGML_ASSERT(cfg->has_valid_smooth_config());
+    GGML_ASSERT(cfg->has_valid_group_params(out_channels));
+
+    const float * scale_data = (const float *) cfg->scale_tensor->data;
+    const float * zero_data = (const float *) cfg->zero_tensor->data;
+
+    const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
+    const int64_t col_begin = ith * cols_per_thread;
+    const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
+    if (col_begin >= col_end) {
+        return;
+    }
+
+    for (int64_t col = col_begin; col < col_end; ++col) {
+        const float * act_col = (const float *) ((const char *) b->data + col * b->nb[1]);
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+
+        for (int64_t j = 0; j < out_channels; ++j) {
+            const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
+            const float * scale_row = scale_data + j * cfg->scale_tensor->ne[0];
+            const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
+
+            float acc = 0.0f;
+            for (int64_t i = 0; i < k; ++i) {
+                const int64_t g = i / cfg->group_size;
+                const float act_value = act_col[i] / cfg->smooth_scale[static_cast<size_t>(i)];
+                const uint8_t packed = w_row[i / 2];
+                const float q = (float) llama_decode_awq_q4(packed, i);
+                const float w = (q - zero_row[g]) * scale_row[g];
+                acc += act_value * w;
+            }
+            out_col[j] = acc;
         }
     }
 }
@@ -350,7 +454,11 @@ static ggml_tensor * llama_maybe_observe_text_activation(
     if (act == nullptr || tensor_name == nullptr || tensor_name[0] == '\0') {
         return act;
     }
-    if (!is_prefill_gemm_only) {
+    const llama_text_act_collect_mode mode = llama_text_act_collect_mode_from_env();
+    const bool should_collect = mode == llama_text_act_collect_mode::both ||
+        (mode == llama_text_act_collect_mode::prefill && is_prefill_gemm_only) ||
+        (mode == llama_text_act_collect_mode::decode && !is_prefill_gemm_only);
+    if (!should_collect) {
         return act;
     }
     auto * observer = llama_get_text_activation_registry().get_observer(tensor_name);
@@ -988,6 +1096,38 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 llama_compute_text_w8a8_mul_mat,
                 GGML_N_TASKS_MAX,
                 const_cast<llama_aicas_text_sq_tensor *>(&cfg));
+        }
+    }
+
+    if (res == nullptr &&
+        !is_prefill_gemm &&
+        llama_text_decode_awq_enabled()) {
+        auto it_awq = model.aicas_text_decode_awq_tensors.find(w->name);
+        if (model.aicas_text_decode_awq_enabled &&
+            it_awq != model.aicas_text_decode_awq_tensors.end()) {
+            const auto & cfg = it_awq->second;
+            if (cfg.enabled &&
+                cfg.policy == "Q4_AWQ" &&
+                cfg.quant_tensor != nullptr &&
+                cfg.scale_tensor != nullptr &&
+                cfg.zero_tensor != nullptr &&
+                cur->type == GGML_TYPE_F32 &&
+                cfg.quant_tensor->type == GGML_TYPE_I8 &&
+                cfg.in_features > 0 &&
+                cur->ne[0] == cfg.in_features &&
+                cfg.packed_in_features() == cfg.quant_tensor->ne[0] &&
+                cfg.has_valid_smooth_config() &&
+                cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
+                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur->ne[1]);
+                res = ggml_map_custom3(
+                    ctx0,
+                    out_template,
+                    cur,
+                    cfg.quant_tensor,
+                    llama_compute_text_decode_awq_mul_mat,
+                    GGML_N_TASKS_MAX,
+                    const_cast<llama_aicas_text_decode_awq_tensor *>(&cfg));
+            }
         }
     }
 

@@ -46,7 +46,7 @@ bash scripts/run_submission.sh \
 5. 加载 `npu_kv260.ko`
 6. 启动板端 `llama-server`
 7. 跑 throughput
-8. 跑 100 样本 acc eval
+8. 若未加 `--skip-acc`，则跑 100 样本 acc eval
 9. 拉回结果到 `results/official/<run_id>/`
 
 ## 常用变体
@@ -69,6 +69,17 @@ bash scripts/run_submission.sh \
   --user <board_user> \
   --remote-root <remote_root> \
   --skip-validate
+```
+
+如果想先只跑 throughput（跳过 acc）：
+
+```bash
+bash scripts/run_submission.sh \
+  --host <board_ip> \
+  --user <board_user> \
+  --remote-root <remote_root> \
+  --skip-board-init \
+  --skip-acc
 ```
 
 ## 更换测试样本

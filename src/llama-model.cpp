@@ -535,6 +535,66 @@ void llama_model::load_hparams(llama_model_loader & ml) {
         }
     }
 
+    {
+        std::string schema;
+        if (ml.get_key("aicas.text_decode_awq.schema", schema, false) && !schema.empty()) {
+            int32_t tensor_count = 0;
+            ml.get_key("aicas.text_decode_awq.tensor_count", tensor_count, true);
+            if (tensor_count < 0) {
+                throw std::runtime_error("invalid aicas.text_decode_awq.tensor_count");
+            }
+
+            aicas_text_decode_awq_enabled = true;
+            aicas_text_decode_awq_schema = schema;
+            aicas_text_decode_awq_tensors.clear();
+            aicas_text_decode_awq_tensors.reserve((size_t) tensor_count);
+
+            for (int32_t i = 0; i < tensor_count; ++i) {
+                const std::string prefix = "aicas.text_decode_awq.tensor." + std::to_string(i) + ".";
+
+                std::string tensor_name;
+                ml.get_key(prefix + "name", tensor_name, true);
+                if (tensor_name.empty()) {
+                    throw std::runtime_error("empty tensor name in aicas.text_decode_awq metadata");
+                }
+
+                llama_aicas_text_decode_awq_tensor cfg;
+                ml.get_key(prefix + "enabled", cfg.enabled, false);
+                ml.get_key(prefix + "policy", cfg.policy, false);
+                ml.get_key(prefix + "weight_bits", cfg.weight_bits, false);
+                ml.get_key(prefix + "group_size", cfg.group_size, false);
+                ml.get_key(prefix + "in_features", cfg.in_features, false);
+                ml.get_key(prefix + "smooth_alpha", cfg.smooth_alpha, false);
+                ml.get_key(prefix + "smooth_eps", cfg.smooth_eps, false);
+                ml.get_key(prefix + "quant_tensor_name", cfg.quant_tensor_name, false);
+                ml.get_key(prefix + "scale_tensor_name", cfg.scale_tensor_name, false);
+                ml.get_key(prefix + "zero_tensor_name", cfg.zero_tensor_name, false);
+                ml.get_arr(prefix + "smooth_scale", cfg.smooth_scale, false);
+
+                if (cfg.policy.empty()) {
+                    cfg.policy = "F16_FALLBACK";
+                }
+                if (cfg.quant_tensor_name.empty()) {
+                    cfg.quant_tensor_name = tensor_name + ".aicas_awq_q4";
+                }
+                if (cfg.scale_tensor_name.empty()) {
+                    cfg.scale_tensor_name = tensor_name + ".aicas_awq_scale";
+                }
+                if (cfg.zero_tensor_name.empty()) {
+                    cfg.zero_tensor_name = tensor_name + ".aicas_awq_zero";
+                }
+                if (cfg.weight_bits != 4) {
+                    throw std::runtime_error("aicas.text_decode_awq currently supports only 4-bit weights");
+                }
+
+                aicas_text_decode_awq_tensors.emplace(tensor_name, std::move(cfg));
+            }
+
+            LLAMA_LOG_INFO("%s: AICAS text decode AWQ enabled, schema=%s, tensors=%d\n",
+                    __func__, aicas_text_decode_awq_schema.c_str(), tensor_count);
+        }
+    }
+
     // everything past this point is not vocab-related
     // for CLIP models, we only need to load tensors, no hparams
     if (hparams.vocab_only || ml.get_arch() == LLM_ARCH_CLIP) {
@@ -6211,6 +6271,33 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 ggml_set_name(tensor, ggml_get_name(t_meta));
                 cfg.quant_tensor = tensor;
                 ml.n_created++;
+            }
+        }
+
+        if (aicas_text_decode_awq_enabled) {
+            ggml_backend_buffer_type_t cpu_buft = ggml_backend_dev_buffer_type(cpu_dev);
+            if (cpu_buft == nullptr) {
+                throw std::runtime_error("failed to get plain CPU buffer type for decode AWQ tensors");
+            }
+            ggml_context * ctx_cpu = ctx_for_buft(cpu_buft);
+
+            for (auto & kv : aicas_text_decode_awq_tensors) {
+                auto & cfg = kv.second;
+                for (const auto & name_and_dst : {
+                        std::pair<const std::string &, struct ggml_tensor * &>(cfg.quant_tensor_name, cfg.quant_tensor),
+                        std::pair<const std::string &, struct ggml_tensor * &>(cfg.scale_tensor_name, cfg.scale_tensor),
+                        std::pair<const std::string &, struct ggml_tensor * &>(cfg.zero_tensor_name, cfg.zero_tensor),
+                    }) {
+                    const struct ggml_tensor * t_meta = ml.get_tensor_meta(name_and_dst.first.c_str());
+                    if (t_meta == nullptr) {
+                        throw std::runtime_error(format("missing decode AWQ tensor '%s'", name_and_dst.first.c_str()));
+                    }
+
+                    ggml_tensor * tensor = ggml_dup_tensor(ctx_cpu, t_meta);
+                    ggml_set_name(tensor, ggml_get_name(t_meta));
+                    name_and_dst.second = tensor;
+                    ml.n_created++;
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 {
   "schema": "aicas.mmproj.mul_mat_manifest.v1",
-  "source_mmproj_gguf": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf",
+  "source_mmproj_gguf": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/VersaVLM/payload/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf",
   "model": {
     "architecture": "clip",
     "type": "clip-vision",

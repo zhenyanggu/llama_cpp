@@ -15,9 +15,19 @@ Options:
   --port <port>
   --skip-board-init
   --skip-validate
+  --skip-acc
+  --cache-type-k <t>
+  --cache-type-v <t>
+  --mmproj <path>
   --sample-json <path>
   --sample-images-root <path>
   --throughput-image-rel <relpath>
+  --probe-only
+  --probe-text <text>
+  --probe-max-tokens <n>
+  --probe-timeout <seconds>
+  --probe-poll-interval <seconds>
+  --probe-strace
   --sudo-password <pass>
 USAGE
 }
@@ -40,10 +50,20 @@ THREADS="4"
 PORT="8081"
 SKIP_BOARD_INIT=0
 SKIP_VALIDATE=0
+SKIP_ACC=0
 MODEL_ALIAS="smolvlm2-gguf-npu-versavlm"
+CACHE_TYPE_K=""
+CACHE_TYPE_V=""
+MMPROJ_FILE="$PAYLOAD_DIR/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf"
 SAMPLE_JSON="$PAYLOAD_DIR/data/sampled_100.json"
 SAMPLE_IMAGES_ROOT="$PAYLOAD_DIR/data/images"
 THROUGHPUT_IMAGE_REL="IIIT5K/test/2543_2.png"
+PROBE_ONLY=0
+PROBE_TEXT="Please OCR this image briefly and summarize the visible content in one short paragraph."
+PROBE_MAX_TOKENS="16"
+PROBE_TIMEOUT="120"
+PROBE_POLL_INTERVAL="5"
+PROBE_STRACE=0
 SUDO_PASSWORD="${BOARD_SUDO_PASSWORD:-}"
 
 NPU_SPM_BYTES="${GGML_NPU_SPM_BYTES:-524288}"
@@ -69,9 +89,19 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2 ;;
     --skip-board-init) SKIP_BOARD_INIT=1; shift ;;
     --skip-validate) SKIP_VALIDATE=1; shift ;;
+    --skip-acc) SKIP_ACC=1; shift ;;
+    --cache-type-k) CACHE_TYPE_K="$2"; shift 2 ;;
+    --cache-type-v) CACHE_TYPE_V="$2"; shift 2 ;;
+    --mmproj) MMPROJ_FILE="$2"; shift 2 ;;
     --sample-json) SAMPLE_JSON="$2"; shift 2 ;;
     --sample-images-root) SAMPLE_IMAGES_ROOT="$2"; shift 2 ;;
     --throughput-image-rel) THROUGHPUT_IMAGE_REL="$2"; shift 2 ;;
+    --probe-only) PROBE_ONLY=1; shift ;;
+    --probe-text) PROBE_TEXT="$2"; shift 2 ;;
+    --probe-max-tokens) PROBE_MAX_TOKENS="$2"; shift 2 ;;
+    --probe-timeout) PROBE_TIMEOUT="$2"; shift 2 ;;
+    --probe-poll-interval) PROBE_POLL_INTERVAL="$2"; shift 2 ;;
+    --probe-strace) PROBE_STRACE=1; shift ;;
     --sudo-password) SUDO_PASSWORD="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -186,7 +216,7 @@ write_run_meta() {
   RUN_META_GIT_HEAD="$git_head" \
   RUN_META_GIT_STATUS="$git_status" \
   RUN_META_MODEL="payload/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf" \
-  RUN_META_MMPROJ="payload/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf" \
+  RUN_META_MMPROJ="$(realpath --relative-to="$BUNDLE_DIR" "$MMPROJ_FILE")" \
   RUN_META_HOST="$HOST" \
   RUN_META_USER="$USER_NAME" \
   RUN_META_REMOTE_ROOT="$REMOTE_ROOT" \
@@ -197,6 +227,12 @@ write_run_meta() {
   RUN_META_SAMPLE_JSON="$(realpath --relative-to="$BUNDLE_DIR" "$SAMPLE_JSON")" \
   RUN_META_SAMPLE_IMAGES_ROOT="$(realpath --relative-to="$BUNDLE_DIR" "$SAMPLE_IMAGES_ROOT")" \
   RUN_META_THROUGHPUT_IMAGE_REL="$THROUGHPUT_IMAGE_REL" \
+  RUN_META_PROBE_ONLY="$PROBE_ONLY" \
+  RUN_META_PROBE_TEXT="$PROBE_TEXT" \
+  RUN_META_PROBE_MAX_TOKENS="$PROBE_MAX_TOKENS" \
+  RUN_META_PROBE_TIMEOUT="$PROBE_TIMEOUT" \
+  RUN_META_PROBE_POLL_INTERVAL="$PROBE_POLL_INTERVAL" \
+  RUN_META_PROBE_STRACE="$PROBE_STRACE" \
   RUN_META_BOARD_INIT_LOG="$(realpath --relative-to="$BUNDLE_DIR" "$board_init_log")" \
   RUN_META_READINESS_LOG="$(realpath --relative-to="$BUNDLE_DIR" "$readiness_log")" \
   RUN_META_NPU_SPM_BYTES="$NPU_SPM_BYTES" \
@@ -227,6 +263,12 @@ payload = {
     'sample_json': os.environ['RUN_META_SAMPLE_JSON'],
     'sample_images_root': os.environ['RUN_META_SAMPLE_IMAGES_ROOT'],
     'throughput_image_rel': os.environ['RUN_META_THROUGHPUT_IMAGE_REL'],
+    'probe_only': os.environ['RUN_META_PROBE_ONLY'] == '1',
+    'probe_text': os.environ['RUN_META_PROBE_TEXT'],
+    'probe_max_tokens': int(os.environ['RUN_META_PROBE_MAX_TOKENS']),
+    'probe_timeout_s': float(os.environ['RUN_META_PROBE_TIMEOUT']),
+    'probe_poll_interval_s': float(os.environ['RUN_META_PROBE_POLL_INTERVAL']),
+    'probe_strace': os.environ['RUN_META_PROBE_STRACE'] == '1',
     'board_init_log': os.environ['RUN_META_BOARD_INIT_LOG'],
     'readiness_log': os.environ['RUN_META_READINESS_LOG'],
     'server_args': ['--log-disable', '--no-warmup'],
@@ -249,11 +291,23 @@ run_remote_eval() {
   local remote_run_dir="$1"
   local remote_sample_json="$2"
   local remote_throughput_image="$3"
+  local skip_acc="$4"
+  local cache_type_k="$5"
+  local cache_type_v="$6"
+  local mmproj_file="$7"
+  local probe_only="$8"
+  local probe_text="$9"
+  local probe_max_tokens="${10}"
+  local probe_timeout="${11}"
+  local probe_poll_interval="${12}"
+  local probe_strace="${13}"
+  local mmproj_basename
+  mmproj_basename="$(basename "$mmproj_file")"
   ssh "${SSH_OPTS[@]}" "$TARGET" "bash -s" <<EOF_RUN
 set -euo pipefail
 RUN_DIR='$remote_run_dir'
 REMOTE_MODEL='$REMOTE_GGUF_DIR/SmolVLM2-500M-Video-Instruct-Q8_0.gguf'
-REMOTE_MMPROJ='$REMOTE_GGUF_DIR/mmproj-fallback-search-fb_attn_k-per-tensor.gguf'
+REMOTE_MMPROJ='$REMOTE_GGUF_DIR/$mmproj_basename'
 REMOTE_EVAL_DIR='$REMOTE_EVAL_DIR'
 REMOTE_DATA_DIR='$REMOTE_DATA_DIR'
 REMOTE_LIB_DIR='$REMOTE_LIB_DIR'
@@ -262,6 +316,14 @@ REMOTE_THROUGHPUT_IMAGE='$remote_throughput_image'
 PORT='$PORT'
 THREADS='$THREADS'
 MODEL_ALIAS='$MODEL_ALIAS'
+CACHE_TYPE_K='$cache_type_k'
+CACHE_TYPE_V='$cache_type_v'
+PROBE_ONLY='$probe_only'
+PROBE_TEXT='$probe_text'
+PROBE_MAX_TOKENS='$probe_max_tokens'
+PROBE_TIMEOUT='$probe_timeout'
+PROBE_POLL_INTERVAL='$probe_poll_interval'
+PROBE_STRACE='$probe_strace'
 NPU_SPM_BYTES='$NPU_SPM_BYTES'
 NPU_ACC_BYTES='$NPU_ACC_BYTES'
 NPU_GUARD_BYTES='$NPU_GUARD_BYTES'
@@ -274,9 +336,16 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+CACHE_ARGS=()
+if [ -n "\$CACHE_TYPE_K" ]; then
+  CACHE_ARGS+=( -ctk "\$CACHE_TYPE_K" )
+fi
+if [ -n "\$CACHE_TYPE_V" ]; then
+  CACHE_ARGS+=( -ctv "\$CACHE_TYPE_V" )
+fi
 cd "\$RUN_DIR"
-rm -f server.log throughput_metrics.json acc_100sample.json
-env \
+rm -f server.log throughput_metrics.json acc_100sample.json probe_result.json probe_slots.json dmesg_before.txt dmesg_after.txt
+ENV_ARGS=(
   LD_LIBRARY_PATH="\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}" \
   MTMD_BACKEND_DEVICE=NPU \
   GGML_NPU_SPM_BYTES="\$NPU_SPM_BYTES" \
@@ -284,6 +353,35 @@ env \
   GGML_NPU_GUARD_BYTES="\$NPU_GUARD_BYTES" \
   GGML_NPU_STAGE2_K_BYTES="\$NPU_STAGE2_K_BYTES" \
   NPU_CMA_SIZE="\$NPU_CMA_BYTES" \
+)
+if [ -n "\${GGML_NPU_DEBUG_LOG:-}" ]; then
+  ENV_ARGS+=( GGML_NPU_DEBUG_LOG="\${GGML_NPU_DEBUG_LOG:-}" )
+fi
+if [ -n "\${AICAS_MMPROJ_W8A8_DEBUG:-}" ]; then
+  ENV_ARGS+=( AICAS_MMPROJ_W8A8_DEBUG="\${AICAS_MMPROJ_W8A8_DEBUG:-}" )
+fi
+if [ -n "\${GGML_NPU_AICAS_BIAS_MODE:-}" ]; then
+  ENV_ARGS+=( GGML_NPU_AICAS_BIAS_MODE="\${GGML_NPU_AICAS_BIAS_MODE:-}" )
+fi
+if [ -n "\${MTMD_DEBUG_GRAPH:-}" ]; then
+  ENV_ARGS+=( MTMD_DEBUG_GRAPH="\${MTMD_DEBUG_GRAPH:-}" )
+fi
+if [ -n "\${MTMD_MAX_NODES:-}" ]; then
+  ENV_ARGS+=( MTMD_MAX_NODES="\${MTMD_MAX_NODES:-}" )
+fi
+if [ -n "\${MTMD_DUMP_DOT:-}" ]; then
+  ENV_ARGS+=( MTMD_DUMP_DOT="\${MTMD_DUMP_DOT:-}" )
+fi
+if [ -n "\${AICAS_MMPROJ_DEQUANT_STATS_FILE:-}" ]; then
+  ENV_ARGS+=( AICAS_MMPROJ_DEQUANT_STATS_FILE="\${AICAS_MMPROJ_DEQUANT_STATS_FILE:-}" )
+fi
+if [ -n "\${AICAS_MMPROJ_ACT_STATS_FILE:-}" ]; then
+  ENV_ARGS+=( AICAS_MMPROJ_ACT_STATS_FILE="\${AICAS_MMPROJ_ACT_STATS_FILE:-}" )
+fi
+if [ -n "\${AICAS_MMPROJ_ACT_SAMPLES:-}" ]; then
+  ENV_ARGS+=( AICAS_MMPROJ_ACT_SAMPLES="\${AICAS_MMPROJ_ACT_SAMPLES:-}" )
+fi
+SERVER_CMD=(
   ./llama-server \
     --log-disable \
     --no-warmup \
@@ -293,7 +391,13 @@ env \
     -m "\$REMOTE_MODEL" \
     --mmproj "\$REMOTE_MMPROJ" \
     -t "\$THREADS" \
-    > server.log 2>&1 &
+    "\${CACHE_ARGS[@]}"
+)
+if [ "\$PROBE_STRACE" -eq 1 ]; then
+  env "\${ENV_ARGS[@]}" strace -ff -tt -o strace "\${SERVER_CMD[@]}" > server.log 2>&1 &
+else
+  env "\${ENV_ARGS[@]}" "\${SERVER_CMD[@]}" > server.log 2>&1 &
+fi
 SERVER_PID=\$!
 READY=0
 for _ in \$(seq 1 90); do
@@ -315,20 +419,43 @@ if [ "\$READY" -ne 1 ]; then
   echo "llama-server did not become ready" >&2
   exit 1
 fi
-python3 "\$REMOTE_EVAL_DIR/throughput_eval.py" \
-  -i "\$REMOTE_THROUGHPUT_IMAGE" \
-  -o "\$RUN_DIR/throughput_metrics.json" \
-  --base-url "http://127.0.0.1:\$PORT/v1" \
-  --model "\$MODEL_ALIAS"
-python3 "\$REMOTE_EVAL_DIR/acc_eval.py" \
-  --image_folder "\$REMOTE_DATA_DIR" \
-  --OCRBench_file "\$REMOTE_SAMPLE_JSON" \
-  --output_folder "\$RUN_DIR" \
-  --save_name acc_100sample \
-  --base-url "http://127.0.0.1:\$PORT/v1" \
-  --model "\$MODEL_ALIAS" \
-  --request-timeout 600 \
-  --progress-every 10
+if command -v dmesg >/dev/null 2>&1; then
+  dmesg | tail -n 200 > "\$RUN_DIR/dmesg_before.txt" 2>/dev/null || true
+fi
+if [ "\$PROBE_ONLY" -eq 1 ]; then
+  python3 "\$REMOTE_EVAL_DIR/mmproj_probe.py" \
+    --image "\$REMOTE_THROUGHPUT_IMAGE" \
+    --output "\$RUN_DIR/probe_result.json" \
+    --slots-output "\$RUN_DIR/probe_slots.json" \
+    --base-url "http://127.0.0.1:\$PORT/v1" \
+    --model "\$MODEL_ALIAS" \
+    --prompt "\$PROBE_TEXT" \
+    --max-tokens "\$PROBE_MAX_TOKENS" \
+    --request-timeout "\$PROBE_TIMEOUT" \
+    --poll-interval "\$PROBE_POLL_INTERVAL"
+else
+  python3 "\$REMOTE_EVAL_DIR/throughput_eval.py" \
+    -i "\$REMOTE_THROUGHPUT_IMAGE" \
+    -o "\$RUN_DIR/throughput_metrics.json" \
+    --base-url "http://127.0.0.1:\$PORT/v1" \
+    --model "\$MODEL_ALIAS"
+  if [ "$skip_acc" -eq 1 ]; then
+    echo "[run_submission] skipped acc_eval by request"
+  else
+  python3 "\$REMOTE_EVAL_DIR/acc_eval.py" \
+    --image_folder "\$REMOTE_DATA_DIR" \
+    --OCRBench_file "\$REMOTE_SAMPLE_JSON" \
+    --output_folder "\$RUN_DIR" \
+    --save_name acc_100sample \
+    --base-url "http://127.0.0.1:\$PORT/v1" \
+    --model "\$MODEL_ALIAS" \
+    --request-timeout 600 \
+    --progress-every 10
+  fi
+fi
+if command -v dmesg >/dev/null 2>&1; then
+  dmesg | tail -n 200 > "\$RUN_DIR/dmesg_after.txt" 2>/dev/null || true
+fi
 EOF_RUN
 }
 
@@ -353,10 +480,11 @@ build_custom_manifest "$SAMPLE_JSON" "$SAMPLE_IMAGES_ROOT" "$LOCAL_MANIFEST"
 ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p '$REMOTE_ROOT' '$REMOTE_SHARED_DIR' '$REMOTE_GGUF_DIR' '$REMOTE_EVAL_DIR' '$REMOTE_DATA_DIR' '$REMOTE_LIB_DIR' '$REMOTE_BOARD_OVERLAY_DIR' '$REMOTE_BOARD_DRIVER_DIR' '$REMOTE_BOARD_QSPI_DIR' '$REMOTE_BOARD_TESTS_DIR/bin' '$REMOTE_BOARD_TESTS_DIR/src' '$REMOTE_SCRIPTS_DIR' '$REMOTE_RUN_DIR'"
 
 sync_file_if_needed "$PAYLOAD_DIR/gguf/SmolVLM2-500M-Video-Instruct-Q8_0.gguf" "$REMOTE_GGUF_DIR/SmolVLM2-500M-Video-Instruct-Q8_0.gguf" "Q8_0 model"
-sync_file_if_needed "$PAYLOAD_DIR/gguf/mmproj-fallback-search-fb_attn_k-per-tensor.gguf" "$REMOTE_GGUF_DIR/mmproj-fallback-search-fb_attn_k-per-tensor.gguf" "fallback-search mmproj"
+sync_file_if_needed "$MMPROJ_FILE" "$REMOTE_GGUF_DIR/$(basename "$MMPROJ_FILE")" "mmproj $(basename "$MMPROJ_FILE")"
 sync_file_if_needed "$PAYLOAD_DIR/eval/throughput_eval.py" "$REMOTE_EVAL_DIR/throughput_eval.py" "throughput_eval.py"
 sync_file_if_needed "$PAYLOAD_DIR/eval/acc_eval.py" "$REMOTE_EVAL_DIR/acc_eval.py" "acc_eval.py"
 sync_file_if_needed "$PAYLOAD_DIR/eval/llama_server_client.py" "$REMOTE_EVAL_DIR/llama_server_client.py" "llama_server_client.py"
+sync_file_if_needed "$PAYLOAD_DIR/eval/mmproj_probe.py" "$REMOTE_EVAL_DIR/mmproj_probe.py" "mmproj_probe.py"
 sync_file_if_needed "$PAYLOAD_DIR/board_support/driver/npu_kv260.ko" "$REMOTE_BOARD_DRIVER_DIR/npu_kv260.ko" "npu_kv260.ko"
 for overlay_file in "$PAYLOAD_DIR/board_support/overlay/double_dma_overlayapp"/*; do
   [ -e "$overlay_file" ] || continue
@@ -392,15 +520,16 @@ fi
 
 probe_remote_ready > "$LOCAL_RUN_DIR/readiness_probe.txt"
 REMOTE_RC=0
-if run_remote_eval "$REMOTE_RUN_DIR" "$REMOTE_SAMPLE_JSON" "$REMOTE_DATA_DIR/$THROUGHPUT_IMAGE_REL"; then
+  if run_remote_eval "$REMOTE_RUN_DIR" "$REMOTE_SAMPLE_JSON" "$REMOTE_DATA_DIR/$THROUGHPUT_IMAGE_REL" "$SKIP_ACC" "$CACHE_TYPE_K" "$CACHE_TYPE_V" "$MMPROJ_FILE" "$PROBE_ONLY" "$PROBE_TEXT" "$PROBE_MAX_TOKENS" "$PROBE_TIMEOUT" "$PROBE_POLL_INTERVAL" "$PROBE_STRACE"; then
   REMOTE_RC=0
 else
   REMOTE_RC=$?
 fi
 
-for artifact in throughput_metrics.json acc_100sample.json server.log board_init.log run_meta.json; do
+for artifact in throughput_metrics.json acc_100sample.json server.log board_init.log run_meta.json probe_result.json probe_slots.json dmesg_before.txt dmesg_after.txt; do
   scp "${SSH_OPTS[@]}" "$TARGET:$REMOTE_RUN_DIR/$artifact" "$LOCAL_RUN_DIR/" >/dev/null 2>&1 || true
 done
+scp "${SSH_OPTS[@]}" "$TARGET:$REMOTE_RUN_DIR/strace*" "$LOCAL_RUN_DIR/" >/dev/null 2>&1 || true
 
 run_status="completed"
 if [ "$REMOTE_RC" -ne 0 ]; then
@@ -408,6 +537,22 @@ if [ "$REMOTE_RC" -ne 0 ]; then
 fi
 write_run_meta "$LOCAL_RUN_DIR" "$REMOTE_RUN_DIR" "$run_status" "$REMOTE_RC" "$LOCAL_RUN_DIR/board_init.log" "$LOCAL_RUN_DIR/readiness_probe.txt"
 scp "${SSH_OPTS[@]}" "$LOCAL_RUN_DIR/run_meta.json" "$TARGET:$REMOTE_RUN_DIR/run_meta.json" >/dev/null 2>&1 || true
+
+if [ -f "$LOCAL_RUN_DIR/probe_result.json" ]; then
+  echo "[probe_result.json]"
+  cat "$LOCAL_RUN_DIR/probe_result.json"
+fi
+
+if [ -f "$LOCAL_RUN_DIR/throughput_metrics.json" ]; then
+  echo "[throughput_metrics.json]"
+  cat "$LOCAL_RUN_DIR/throughput_metrics.json"
+fi
+
+if [ "$PROBE_ONLY" -eq 1 ]; then
+  echo "[mode] probe-only"
+elif [ "$SKIP_ACC" -eq 1 ] && [ ! -f "$LOCAL_RUN_DIR/acc_100sample.json" ]; then
+  echo "[acc] skipped by --skip-acc"
+fi
 
 if [ -f "$LOCAL_RUN_DIR/throughput_metrics.json" ] && [ -f "$LOCAL_RUN_DIR/acc_100sample.json" ]; then
   python3 "$SUMMARY_SCRIPT" \

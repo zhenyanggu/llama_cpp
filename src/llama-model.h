@@ -41,6 +41,48 @@ struct llama_aicas_text_sq_tensor {
     }
 };
 
+struct llama_aicas_text_decode_awq_tensor {
+    bool enabled = true;
+    std::string policy = "F16_FALLBACK";
+    int32_t weight_bits = 4;
+    int32_t group_size = 128;
+    int32_t in_features = 0;
+    float smooth_alpha = 0.0f;
+    float smooth_eps = 0.0f;
+    std::vector<float> smooth_scale;
+    std::string quant_tensor_name;
+    std::string scale_tensor_name;
+    std::string zero_tensor_name;
+    struct ggml_tensor * quant_tensor = nullptr;
+    struct ggml_tensor * scale_tensor = nullptr;
+    struct ggml_tensor * zero_tensor  = nullptr;
+
+    int64_t packed_in_features() const {
+        return (static_cast<int64_t>(in_features) + 1) / 2;
+    }
+
+    int64_t group_count() const {
+        if (group_size <= 0 || in_features <= 0) {
+            return 0;
+        }
+        return (static_cast<int64_t>(in_features) + group_size - 1) / group_size;
+    }
+
+    bool has_valid_smooth_config() const {
+        return !smooth_scale.empty() && smooth_scale.size() == static_cast<size_t>(in_features);
+    }
+
+    bool has_valid_group_params(int64_t out_channels) const {
+        const int64_t groups = group_count();
+        if (groups <= 0) {
+            return false;
+        }
+        return scale_tensor != nullptr && zero_tensor != nullptr &&
+               scale_tensor->ne[0] == groups && scale_tensor->ne[1] == out_channels &&
+               zero_tensor->ne[0] == groups && zero_tensor->ne[1] == out_channels;
+    }
+};
+
 // available models
 enum llm_type {
     LLM_TYPE_UNKNOWN,
@@ -478,6 +520,9 @@ struct llama_model {
     bool aicas_text_sq_enabled = false;
     std::string aicas_text_sq_schema;
     std::unordered_map<std::string, llama_aicas_text_sq_tensor> aicas_text_sq_tensors;
+    bool aicas_text_decode_awq_enabled = false;
+    std::string aicas_text_decode_awq_schema;
+    std::unordered_map<std::string, llama_aicas_text_decode_awq_tensor> aicas_text_decode_awq_tensors;
 
     // list of devices used in this model
     std::vector<ggml_backend_dev_t> devices;

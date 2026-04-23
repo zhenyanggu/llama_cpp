@@ -46,7 +46,7 @@ This performs the following steps:
 5. loads `npu_kv260.ko`
 6. starts `llama-server` on the board
 7. runs throughput evaluation
-8. runs the 100-sample accuracy evaluation
+8. runs the 100-sample accuracy evaluation unless `--skip-acc` is set
 9. pulls the results back into `results/official/<run_id>/`
 
 ## Common Variants
@@ -69,6 +69,17 @@ bash scripts/run_submission.sh \
   --user <board_user> \
   --remote-root <remote_root> \
   --skip-validate
+```
+
+To run throughput only first (skip acc):
+
+```bash
+bash scripts/run_submission.sh \
+  --host <board_ip> \
+  --user <board_user> \
+  --remote-root <remote_root> \
+  --skip-board-init \
+  --skip-acc
 ```
 
 ## Replacing the Sample Set
