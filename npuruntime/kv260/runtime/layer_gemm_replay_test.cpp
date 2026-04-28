@@ -10,8 +10,8 @@
 #include <vector>
 
 struct Config {
-    int m = 32;   // output channels (tile width in profile)
-    int n = 32;   // token rows (tile height in profile)
+    int m = 16;   // output channels (tile width in profile)
+    int n = 16;   // token rows (tile height in profile)
     int k = 768;  // reduction dim
     int loops = 1;
     uint32_t sram_act = 0x00000000;
@@ -64,8 +64,8 @@ static int parse_i32(const char * s, int fallback) {
 static void print_usage(const char * prog) {
     std::printf(
         "Usage: %s [options]\n"
-        "  --m <int>             GEMM output channels (default: 32)\n"
-        "  --n <int>             GEMM output rows/tokens (default: 32)\n"
+        "  --m <int>             GEMM output channels (default: 16)\n"
+        "  --n <int>             GEMM output rows/tokens (default: 16)\n"
         "  --k <int>             GEMM reduction dim (default: 768)\n"
         "  --loops <int>         Repeat loops (default: 1)\n"
         "  --sram-act <hex/int>  Activation SPM addr (default: 0x0)\n"

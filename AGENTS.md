@@ -27,3 +27,6 @@ Add or extend the nearest `tests/test-*.cpp` or `tests/*.sh` coverage for every 
 
 ## Commit & Pull Request Guidelines
 Recent history favors module-first, imperative subjects such as `CUDA: fix bug in topk-moe softmax (#16711)`. `CONTRIBUTING.md` asks maintainers to squash using `<module> : <title> (#<issue>)`; matching that style in commits helps review. Keep PRs narrowly scoped, list the build/test commands you ran, link the issue or discussion, and include screenshots for `tools/server/webui` changes. Avoid mixing unrelated fixes or generated files in one PR.
+
+## Local KV260 Credentials
+- KV260 sudo password: `123456`

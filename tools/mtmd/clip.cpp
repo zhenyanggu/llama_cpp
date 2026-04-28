@@ -23,6 +23,7 @@
 #include <fstream>
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <unordered_map>
@@ -154,6 +155,72 @@ static json clip_node_json(const clip_profile_node_timing & node, double total_u
         {"duration_ms", node.duration_us / 1000.0},
         {"share_of_total_time_pct", clip_pct(node.duration_us, total_us)},
     };
+}
+
+struct clip_mul_mat_split_stats {
+    int64_t npu_node_count = 0;
+    double npu_duration_us = 0.0;
+    int64_t cpu_node_count = 0;
+    double cpu_duration_us = 0.0;
+    int64_t unmatched_node_count = 0;
+    double unmatched_duration_us = 0.0;
+};
+
+static std::optional<clip_mul_mat_split_stats> clip_load_npu_mul_mat_split(
+    double mul_mat_total_us, int64_t mul_mat_total_node_count) {
+    const char * npu_trace_path = std::getenv("GGML_NPU_PROFILE_JSON");
+    if (npu_trace_path == nullptr || npu_trace_path[0] == '\0') {
+        return std::nullopt;
+    }
+
+    std::ifstream in(npu_trace_path);
+    if (!in.is_open()) {
+        return std::nullopt;
+    }
+
+    json doc;
+    try {
+        in >> doc;
+    } catch (...) {
+        return std::nullopt;
+    }
+
+    const auto it_nodes = doc.find("nodes");
+    if (it_nodes == doc.end() || !it_nodes->is_array()) {
+        return std::nullopt;
+    }
+
+    clip_mul_mat_split_stats s;
+    for (const auto & node : *it_nodes) {
+        if (!node.is_object()) {
+            continue;
+        }
+        if (node.value("compute_op_name", std::string()) != "MUL_MAT") {
+            continue;
+        }
+        s.npu_node_count += 1;
+        s.npu_duration_us += node.value("total_node_us", 0.0);
+    }
+
+    if (s.npu_duration_us > mul_mat_total_us) {
+        s.unmatched_duration_us = s.npu_duration_us - mul_mat_total_us;
+        s.npu_duration_us = mul_mat_total_us;
+    }
+    if (s.npu_node_count > mul_mat_total_node_count) {
+        s.unmatched_node_count = s.npu_node_count - mul_mat_total_node_count;
+        s.npu_node_count = mul_mat_total_node_count;
+    }
+
+    s.cpu_duration_us = mul_mat_total_us - s.npu_duration_us;
+    if (s.cpu_duration_us < 0.0) {
+        s.cpu_duration_us = 0.0;
+    }
+    s.cpu_node_count = mul_mat_total_node_count - s.npu_node_count;
+    if (s.cpu_node_count < 0) {
+        s.cpu_node_count = 0;
+    }
+
+    return s;
 }
 
 struct clip_profiler {
@@ -300,8 +367,10 @@ struct clip_profiler {
 
         json mul_mat_signatures = json::array();
         double mul_mat_total_us = 0.0;
+        int64_t mul_mat_total_node_count = 0;
         for (const auto & [_, sig] : sorted_matmuls) {
             mul_mat_total_us += sig.duration_us;
+            mul_mat_total_node_count += sig.node_count;
             mul_mat_signatures.push_back({
                 {"src0", clip_tensor_json(sig.src0)},
                 {"src1", clip_tensor_json(sig.src1)},
@@ -312,6 +381,29 @@ struct clip_profiler {
                 {"node_event_count", sig.node_count},
                 {"example_node_names", sig.example_node_names},
             });
+        }
+
+        json mul_mat_split = nullptr;
+        if (const auto split = clip_load_npu_mul_mat_split(mul_mat_total_us, mul_mat_total_node_count); split.has_value()) {
+            const auto & s = split.value();
+            mul_mat_split = {
+                {"manifest_available", true},
+                {"npu", {
+                    {"node_event_count", s.npu_node_count},
+                    {"duration_us", s.npu_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.npu_duration_us, total_us)},
+                }},
+                {"cpu", {
+                    {"node_event_count", s.cpu_node_count},
+                    {"duration_us", s.cpu_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.cpu_duration_us, total_us)},
+                }},
+                {"unmatched", {
+                    {"node_event_count", s.unmatched_node_count},
+                    {"duration_us", s.unmatched_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.unmatched_duration_us, total_us)},
+                }},
+            };
         }
 
         json node_name_summary = json::array();
@@ -347,6 +439,7 @@ struct clip_profiler {
             {"mul_mat_total_us", mul_mat_total_us},
             {"mul_mat_total_ms", mul_mat_total_us / 1000.0},
             {"mul_mat_share_of_total_time_pct", clip_pct(mul_mat_total_us, total_us)},
+            {"mul_mat_split", mul_mat_split},
             {"operators", operators},
             {"mul_mat_signatures", mul_mat_signatures},
             {"node_name_summary", node_name_summary},
