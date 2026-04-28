@@ -211,13 +211,20 @@ static std::optional<clip_mul_mat_split_stats> clip_load_npu_mul_mat_split(
         s.npu_node_count = mul_mat_total_node_count;
     }
 
-    s.cpu_duration_us = mul_mat_total_us - s.npu_duration_us;
-    if (s.cpu_duration_us < 0.0) {
-        s.cpu_duration_us = 0.0;
-    }
     s.cpu_node_count = mul_mat_total_node_count - s.npu_node_count;
     if (s.cpu_node_count < 0) {
+        s.unmatched_node_count += -s.cpu_node_count;
         s.cpu_node_count = 0;
+    }
+
+    const double remaining_us = mul_mat_total_us - s.npu_duration_us;
+    if (s.cpu_node_count == 0 && remaining_us > 0.0) {
+        // The NPU trace and ggml callback streams are not one-to-one. Do not
+        // report the uncorrelated remainder as CPU time.
+        s.unmatched_duration_us += remaining_us;
+        s.cpu_duration_us = 0.0;
+    } else {
+        s.cpu_duration_us = std::max(0.0, remaining_us);
     }
 
     return s;
@@ -403,6 +410,8 @@ struct clip_profiler {
                     {"duration_us", s.unmatched_duration_us},
                     {"share_of_total_time_pct", clip_pct(s.unmatched_duration_us, total_us)},
                 }},
+                {"correlation_quality", (s.unmatched_node_count == 0 && s.unmatched_duration_us == 0.0) ? "usable" : "partial"},
+                {"note", "Only matched NPU node time is attributed to NPU. Remainder is unmatched unless callback and NPU trace counts prove a CPU split."},
             };
         }
 

@@ -27,6 +27,7 @@ typedef struct ggml_npu_profile_summary {
     int64_t dma_in_activation_calls;
     int64_t dma_in_weight_calls;
     int64_t dma_in_bias_calls;
+    int64_t dma_in_pair_calls;
     int64_t gemm_calls;
     int64_t dma_out_calls;
     int64_t postprocess_calls;
@@ -43,14 +44,17 @@ typedef struct ggml_npu_profile_summary {
     int64_t dma_in_activation_us_total;
     int64_t dma_in_weight_us_total;
     int64_t dma_in_bias_us_total;
+    int64_t dma_in_pair_us_total;
     int64_t gemm_us_total;
     int64_t dma_out_us_total;
     int64_t postprocess_us_total;
     int64_t runtime_total_us;
     int64_t runtime_dma_in_us;
     int64_t runtime_compute_us;
+    int64_t runtime_compute_exclusive_us;
     int64_t runtime_dma_out_us;
     int64_t runtime_layout_us;
+    int64_t runtime_layout_exclusive_us;
     int64_t runtime_wait_irq_us;
     int64_t runtime_mvin_calls;
     int64_t runtime_compute_calls;

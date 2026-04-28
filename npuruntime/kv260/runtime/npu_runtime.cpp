@@ -716,8 +716,10 @@ static void dumpProfilerReport(const char* pathOverride) {
         const std::string device =
             metadata && !metadata->device.empty() ? metadata->device
                                                  : (isNpuLayer ? "npu" : "cpu");
+        const uint64_t computeExclusiveNs = record.computeNs > record.waitIrqNs ? record.computeNs - record.waitIrqNs : 0;
+        const uint64_t layoutExclusiveNs = record.layoutNs > record.waitIrqNs ? record.layoutNs - record.waitIrqNs : 0;
         const uint64_t stagedNs =
-            record.dmaInNs + record.computeNs + record.dmaOutNs + record.layoutNs;
+            record.dmaInNs + computeExclusiveNs + record.dmaOutNs + layoutExclusiveNs + record.waitIrqNs;
         const uint64_t otherNs =
             record.totalNs > stagedNs ? record.totalNs - stagedNs
                                       : (isNpuLayer ? 0 : record.totalNs);
@@ -774,8 +776,10 @@ static void dumpProfilerReport(const char* pathOverride) {
             << ",\n";
         out << "      \"dma_in_ns\": " << record.dmaInNs << ",\n";
         out << "      \"compute_ns\": " << record.computeNs << ",\n";
+        out << "      \"compute_exclusive_ns\": " << computeExclusiveNs << ",\n";
         out << "      \"dma_out_ns\": " << record.dmaOutNs << ",\n";
         out << "      \"layout_ns\": " << record.layoutNs << ",\n";
+        out << "      \"layout_exclusive_ns\": " << layoutExclusiveNs << ",\n";
         out << "      \"wait_irq_ns\": " << record.waitIrqNs << ",\n";
         out << "      \"other_ns\": " << otherNs << ",\n";
         out << "      \"mvin_calls\": " << record.mvinCalls << ",\n";
