@@ -15,8 +15,8 @@ struct Config {
     int k = 768;  // reduction dimension
     int loops = 1;
 
-    int tile_m = 32;
-    int tile_n = 32;
+    int tile_m = 16;
+    int tile_n = 16;
     int tile_k = 768;
 
     uint32_t sram_act = 0x00000000;
@@ -72,8 +72,8 @@ static void print_usage(const char * prog) {
         "  --n <int>             Token rows (default: 73)\n"
         "  --k <int>             Reduction dimension (default: 768)\n"
         "  --loops <int>         Repeat loops (default: 1)\n"
-        "  --tile-m <int>        Tile output channels, <=32 (default: 32)\n"
-        "  --tile-n <int>        Tile token rows, <=32 (default: 32)\n"
+        "  --tile-m <int>        Tile output channels, <=16 for SA16 (default: 16)\n"
+        "  --tile-n <int>        Tile token rows, <=16 for SA16 (default: 16)\n"
         "  --tile-k <int>        Tile K (default: 768)\n"
         "  --sram-act <hex/int>  Activation SPM base (default: 0x0)\n"
         "  --sram-wgt <hex/int>  Weight SPM base (default: 0x20000)\n"
@@ -162,8 +162,8 @@ static Config parse_args(int argc, char ** argv) {
         std::fprintf(stderr, "Invalid tiles: tile_m=%d tile_n=%d tile_k=%d\n", cfg.tile_m, cfg.tile_n, cfg.tile_k);
         std::exit(2);
     }
-    if (cfg.tile_m > 32 || cfg.tile_n > 32) {
-        std::fprintf(stderr, "tile_m and tile_n must be <= 32 (NPU output tile limit).\n");
+    if (cfg.tile_m > 16 || cfg.tile_n > 16) {
+        std::fprintf(stderr, "tile_m and tile_n must be <= 16 for SA16.\n");
         std::exit(2);
     }
     if (cfg.loops <= 0) {
@@ -439,10 +439,10 @@ int main(int argc, char ** argv) {
                     const MvinConfig act_mvin_cfg {
                         tile_act,
                         cfg.sram_act,
-                        static_cast<uint32_t>(tk - 1),
-                        static_cast<uint32_t>(tn - 1),
-                        static_cast<uint16_t>(tk),
-                        static_cast<uint32_t>(tk),
+                        static_cast<uint32_t>(tn * tk - 1),
+                        0,
+                        0,
+                        0,
                         1,
                         0,
                         false,
@@ -455,10 +455,10 @@ int main(int argc, char ** argv) {
                     const MvinConfig wgt_mvin_cfg {
                         tile_wgt,
                         cfg.sram_wgt,
-                        static_cast<uint32_t>(tm - 1),
-                        static_cast<uint32_t>(tk - 1),
-                        static_cast<uint16_t>(tm),
-                        static_cast<uint32_t>(tm),
+                        static_cast<uint32_t>(tk * tm - 1),
+                        0,
+                        0,
+                        0,
                         1,
                         1,
                         false,

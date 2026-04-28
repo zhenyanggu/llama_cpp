@@ -9,7 +9,7 @@
 
 namespace ggml_npu {
 
-constexpr int64_t NPU_SA_TILE = 32;
+constexpr int64_t NPU_SA_TILE = 16;
 constexpr int64_t NPU_STAGE2_K_TILE = 2048;
 constexpr int64_t NPU_Q8_BLOCK = 32;
 // TODO: Replace these placeholder capacities with the real platform values.
