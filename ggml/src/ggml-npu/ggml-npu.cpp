@@ -600,7 +600,9 @@ bool ggml_backend_npu_w8a8_register(
         const float * weight_scale,
         size_t weight_scale_len,
         const int32_t * sum_w,
-        size_t sum_w_len) {
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len) {
     return ggml_npu::npu_register_aicas_w8a8(
         weight_name,
         act_scale,
@@ -609,7 +611,9 @@ bool ggml_backend_npu_w8a8_register(
         weight_scale,
         weight_scale_len,
         sum_w,
-        sum_w_len);
+        sum_w_len,
+        smooth_scale,
+        smooth_scale_len);
 }
 
 bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor) {

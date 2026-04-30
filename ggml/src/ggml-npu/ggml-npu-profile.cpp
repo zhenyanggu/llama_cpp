@@ -475,10 +475,14 @@ void npu_profile_flush() {
     double total_host_copy_activation_us = 0.0;
     double total_host_copy_weight_us = 0.0;
     double total_bias_prepare_us = 0.0;
-    double total_dma_in_us = 0.0;
+    double total_dma_in_pair_us = 0.0;
+    double total_dma_in_bias_us = 0.0;
     double total_gemm_us = 0.0;
     double total_dma_out_us = 0.0;
     double total_postprocess_us = 0.0;
+    int64_t total_bias_prepare_calls = 0;
+    int64_t total_dma_in_pair_calls = 0;
+    int64_t total_dma_in_bias_calls = 0;
 
     std::sort(snapshot.begin(), snapshot.end(), [](const auto & lhs, const auto & rhs) {
         return lhs.layer_id < rhs.layer_id;
@@ -490,10 +494,14 @@ void npu_profile_flush() {
         total_host_copy_activation_us += node.host_copy_activation_us_total;
         total_host_copy_weight_us += node.host_copy_weight_us_total;
         total_bias_prepare_us += node.bias_prepare_us_total;
-        total_dma_in_us += node.dma_in_pair_us_total + node.dma_in_bias_us_total;
+        total_dma_in_pair_us += node.dma_in_pair_us_total;
+        total_dma_in_bias_us += node.dma_in_bias_us_total;
         total_gemm_us += node.gemm_us_total;
         total_dma_out_us += node.dma_out_us_total;
         total_postprocess_us += node.postprocess_us_total;
+        total_bias_prepare_calls += node.bias_prepare_calls;
+        total_dma_in_pair_calls += node.dma_in_pair_calls;
+        total_dma_in_bias_calls += node.dma_in_bias_calls;
     }
 
     std::vector<npu_profile_node_record> hot_nodes = snapshot;
@@ -552,8 +560,14 @@ void npu_profile_flush() {
             {"total_host_copy_activation_us", total_host_copy_activation_us},
             {"total_host_copy_weight_us", total_host_copy_weight_us},
             {"total_bias_prepare_us", total_bias_prepare_us},
-            {"total_dma_in_us", total_dma_in_us},
-            {"total_dma_in_pair_us", total_dma_in_us},
+            {"total_bias_prepare_calls", total_bias_prepare_calls},
+            {"total_dma_in_us", total_dma_in_pair_us + total_dma_in_bias_us},
+            {"total_dma_in_pair_us", total_dma_in_pair_us},
+            {"total_dma_in_pair_calls", total_dma_in_pair_calls},
+            {"total_dma_in_bias_us", total_dma_in_bias_us},
+            {"total_dma_in_bias_calls", total_dma_in_bias_calls},
+            {"total_mvinbias_us", total_dma_in_bias_us},
+            {"total_mvinbias_calls", total_dma_in_bias_calls},
             {"total_gemm_us", total_gemm_us},
             {"total_dma_out_us", total_dma_out_us},
             {"total_postprocess_us", total_postprocess_us},

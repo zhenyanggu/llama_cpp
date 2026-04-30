@@ -113,6 +113,8 @@ struct npu_aicas_w8a8_config {
     int32_t act_zero_point_u8 = 128;
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;
+    // Per-K fused activation multiplier: 1 / (act_scale * smooth_scale[k]).
+    std::vector<float> smooth_scale;
 };
 
 struct npu_prepacked_weight {

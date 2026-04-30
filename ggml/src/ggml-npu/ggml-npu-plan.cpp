@@ -95,7 +95,9 @@ bool npu_register_aicas_w8a8(
         const float * weight_scale,
         size_t weight_scale_len,
         const int32_t * sum_w,
-        size_t sum_w_len) {
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len) {
     if (weight_name == nullptr || weight_name[0] == '\0') {
         return false;
     }
@@ -126,6 +128,17 @@ bool npu_register_aicas_w8a8(
     cfg.act_zero_point_i8 = act_zero_point_u8 - 128;
     cfg.weight_scale.assign(weight_scale, weight_scale + weight_scale_len);
     cfg.sum_w.assign(sum_w, sum_w + sum_w_len);
+    if (smooth_scale_len > 0) {
+        if (smooth_scale == nullptr) {
+            return false;
+        }
+        cfg.smooth_scale.resize(smooth_scale_len);
+        const float inv_act_scale = act_scale > 0.0f ? (1.0f / act_scale) : 0.0f;
+        for (size_t i = 0; i < smooth_scale_len; ++i) {
+            const float s = smooth_scale[i];
+            cfg.smooth_scale[i] = (s != 0.0f && std::isfinite(s)) ? (inv_act_scale / s) : inv_act_scale;
+        }
+    }
 
     npu_aicas_w8a8_table & table = npu_get_aicas_w8a8_table();
     std::lock_guard<std::mutex> lock(table.mutex);
@@ -693,6 +706,12 @@ bool npu_can_handle_mul_mat(const struct ggml_tensor * op, std::string * reason)
         }
         return false;
     }
+    if (!cfg.smooth_scale.empty() && cfg.smooth_scale.size() != static_cast<size_t>(src0->ne[0])) {
+        if (reason) {
+            *reason = "AICAS W8A8 SmoothQuant scale 长度与 K 维不匹配";
+        }
+        return false;
+    }
 
     return true;
 }
@@ -1141,8 +1160,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
 
     const bool should_pack_bias =
         plan.activation_quant.valid &&
-        plan.bias != nullptr &&
-        !plan.aicas_w8a8.valid;
+        plan.bias != nullptr;
     if (should_pack_bias) {
         for (npu_exec_tile & exec_tile : plan.exec_tiles) {
             if (!exec_tile.needs_bias) {

@@ -294,7 +294,6 @@ if [ "$PROFILE" = "full" ]; then
   require_executable "$BIN_DIR/kv260_mvin_problem_case_test" "MVIN problem case test"
   require_executable "$BIN_DIR/kv260_dma_double_mvin_async_test" "double MVIN async test"
   require_executable "$BIN_DIR/kv260_layer_gemm_replay_test" "GEMM replay test"
-  require_executable "$BIN_DIR/kv260_mmproj_layer_asym_w8a8_test" "MMProj asym W8A8 test"
 fi
 
 cat > "$META_JSON" <<META
@@ -323,10 +322,11 @@ if [ "$PROFILE" = "full" ]; then
   run_case mvin_problem_case "$BIN_DIR/kv260_mvin_problem_case_test" --loops 100 || FAIL=$?
   run_case dma_2d_submatrix "$BIN_DIR/kv260_mvin_problem_case_test" --loops 20 --col 15 --row 15 --sram-stride 16 --dram-stride 64 || FAIL=$?
   run_case dma_acc_int32_fp32 "$BIN_DIR/kv260_dma_acc_int32_fp32_test" --loops 5 || FAIL=$?
+  run_case dma_acc_fp32_perchannel "$BIN_DIR/kv260_dma_acc_int32_fp32_test" --loops 2 --col 31 --row 3 --sram-stride 32 --dram-stride 32 --scale 0.75 --zero-point 0 --per-channel || FAIL=$?
   run_case double_mvin_async "$BIN_DIR/kv260_dma_double_mvin_async_test" --loops 100 || FAIL=$?
   run_case gemm_basic "$BIN_DIR/kv260_layer_gemm_replay_test" --m 16 --n 16 --k 768 --loops 1 --no-double-mvin || FAIL=$?
   run_case gemm_double_dma "$BIN_DIR/kv260_layer_gemm_replay_test" --m 16 --n 16 --k 768 --loops 1 --double-mvin || FAIL=$?
-  run_case mmproj_asym_w8a8 "$BIN_DIR/kv260_mmproj_layer_asym_w8a8_test" --m 96 --n 73 --k 768 --loops 1 || FAIL=$?
+  run_case gemm_fp32_tensor "$BIN_DIR/kv260_layer_gemm_replay_test" --m 16 --n 16 --k 768 --loops 1 --double-mvin --mvout-fp32 --fp32-scale 0.03125 --fp32-zp 0 || FAIL=$?
 fi
 
 log "summary: $SUMMARY_TSV"

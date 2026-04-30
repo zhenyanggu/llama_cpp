@@ -22,12 +22,17 @@ struct Config {
     uint32_t sram_act = 0x00000000;
     uint32_t sram_wgt = 0x00020000;
     uint32_t acc_addr = 0x00000000;
+    uint32_t scale_addr = 0x00070000;
 
     uint32_t seed = 20260417u;
     uint8_t act_zp_u8 = 113;
     float act_scale = 0.0f; // <= 0 means auto from first loop activation.
     float tol = 5e-3f;
 };
+
+static constexpr uint32_t kSpmDmaAct = 0;
+static constexpr uint32_t kSpmDmaWgt = 1;
+static constexpr uint32_t kAccDma = 2;
 
 static uint32_t parse_u32(const char * s, uint32_t fallback) {
     if (!s || !*s) {
@@ -131,6 +136,10 @@ static Config parse_args(int argc, char ** argv) {
         }
         if (std::strcmp(argv[i], "--acc-addr") == 0 && i + 1 < argc) {
             cfg.acc_addr = parse_u32(argv[++i], cfg.acc_addr);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--scale-addr") == 0 && i + 1 < argc) {
+            cfg.scale_addr = parse_u32(argv[++i], cfg.scale_addr);
             continue;
         }
         if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
@@ -341,6 +350,21 @@ static void pack_weight_tile(
     }
 }
 
+static void pack_bias_tile_i32(
+        const std::vector<float> & bias_comp_f32,
+        const std::vector<float> & w_scale,
+        float act_scale,
+        int m0,
+        int tm,
+        int32_t * tile_buf) {
+    for (int col = 0; col < tm; ++col) {
+        const int global_col = m0 + col;
+        const float denom = act_scale * w_scale[static_cast<size_t>(global_col)];
+        tile_buf[col] = static_cast<int32_t>(std::lrint(
+            bias_comp_f32[static_cast<size_t>(global_col)] / denom));
+    }
+}
+
 int main(int argc, char ** argv) {
     const Config cfg = parse_args(argc, argv);
 
@@ -352,16 +376,21 @@ int main(int argc, char ** argv) {
 
     const size_t max_act_tile_bytes = static_cast<size_t>(cfg.tile_n * cfg.tile_k);
     const size_t max_wgt_tile_bytes = static_cast<size_t>(cfg.tile_k * cfg.tile_m);
+    const size_t max_bias_tile_elems = static_cast<size_t>(cfg.tile_m);
     const size_t max_out_tile_elems = static_cast<size_t>(cfg.tile_n * cfg.tile_m);
 
     auto * tile_act = static_cast<uint8_t *>(npu_mem_alloc(max_act_tile_bytes));
     auto * tile_wgt = static_cast<int8_t *>(npu_mem_alloc(max_wgt_tile_bytes));
+    auto * tile_bias_i32 = static_cast<int32_t *>(npu_mem_alloc(max_bias_tile_elems * sizeof(int32_t)));
     auto * tile_out_f32 = static_cast<float *>(npu_mem_alloc(max_out_tile_elems * sizeof(float)));
-    if (!tile_act || !tile_wgt || !tile_out_f32) {
+    auto * tile_scale = static_cast<uint32_t *>(npu_mem_alloc(max_bias_tile_elems * sizeof(uint32_t)));
+    if (!tile_act || !tile_wgt || !tile_bias_i32 || !tile_out_f32 || !tile_scale) {
         std::fprintf(stderr, "npu_mem_alloc failed for tile buffers\n");
         if (tile_act) npu_mem_free(tile_act);
         if (tile_wgt) npu_mem_free(tile_wgt);
+        if (tile_bias_i32) npu_mem_free(tile_bias_i32);
         if (tile_out_f32) npu_mem_free(tile_out_f32);
+        if (tile_scale) npu_mem_free(tile_scale);
         npu_destroy();
         return 2;
     }
@@ -394,7 +423,7 @@ int main(int argc, char ** argv) {
     float global_max_abs_diff = 0.0f;
 
     std::printf(
-        "kv260_mmproj_layer_asym_w8a8_test: m=%d n=%d k=%d loops=%d tile_m=%d tile_n=%d tile_k=%d seed=%u act_zp_u8=%u act_scale=%s tol=%.6f\n",
+        "kv260_mmproj_layer_asym_w8a8_test: m=%d n=%d k=%d loops=%d tile_m=%d tile_n=%d tile_k=%d seed=%u act_zp_u8=%u act_scale=%s bias=mvin act_quant=cpu_u8 weight_quant=per_channel_symmetric tol=%.6f\n",
         cfg.m, cfg.n, cfg.k, cfg.loops, cfg.tile_m, cfg.tile_n, cfg.tile_k, cfg.seed,
         static_cast<unsigned>(cfg.act_zp_u8),
         use_auto_scale ? "auto" : "fixed",
@@ -411,7 +440,9 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "Invalid activation scale: %.8g\n", act_scale);
             npu_mem_free(tile_act);
             npu_mem_free(tile_wgt);
+            npu_mem_free(tile_bias_i32);
             npu_mem_free(tile_out_f32);
+            npu_mem_free(tile_scale);
             npu_destroy();
             return 2;
         }
@@ -423,13 +454,33 @@ int main(int argc, char ** argv) {
         reference_mmproj_layer(act_q_u8, w_q_i8, w_scale, bias_comp_f32, cfg.n, cfg.m, cfg.k, act_scale, &ref);
         std::fill(out_npu.begin(), out_npu.end(), 0.0f);
 
-        const uint32_t mvout_f32_scale = pack_f32_scale(act_scale);
-
         for (int n0 = 0; n0 < cfg.n; n0 += cfg.tile_n) {
             const int tn = std::min(cfg.tile_n, cfg.n - n0);
             for (int m0 = 0; m0 < cfg.m; m0 += cfg.tile_m) {
                 const int tm = std::min(cfg.tile_m, cfg.m - m0);
                 bool first_k = true;
+                pack_bias_tile_i32(bias_comp_f32, w_scale, act_scale, m0, tm, tile_bias_i32);
+                for (int c = 0; c < tm; ++c) {
+                    tile_scale[c] = pack_f32_scale(act_scale * w_scale[static_cast<size_t>(m0 + c)]);
+                }
+                const MvinConfig bias_mvin_cfg {
+                    tile_bias_i32,
+                    cfg.acc_addr,
+                    static_cast<uint32_t>(tm - 1),
+                    0,
+                    0,
+                    0,
+                    1,
+                    2,
+                    true,
+                    true,
+                    false,
+                    0,
+                    0,
+                    0,
+                };
+                npu_dma_mvin_async(kAccDma, &bias_mvin_cfg);
+                npu_dma_wait_mvin(1u << kAccDma);
 
                 for (int k0 = 0; k0 < cfg.k; k0 += cfg.tile_k) {
                     const int tk = std::min(cfg.tile_k, cfg.k - k0);
@@ -469,9 +520,9 @@ int main(int argc, char ** argv) {
                         0,
                     };
 
-                    npu_dma_mvin_async(0, &act_mvin_cfg);
-                    npu_dma_mvin_async(1, &wgt_mvin_cfg);
-                    npu_dma_wait_mvin((1u << 0) | (1u << 1));
+                    npu_dma_mvin_async(kSpmDmaAct, &act_mvin_cfg);
+                    npu_dma_mvin_async(kSpmDmaWgt, &wgt_mvin_cfg);
+                    npu_dma_wait_mvin((1u << kSpmDmaAct) | (1u << kSpmDmaWgt));
 
                     npu_gemm_run(
                         /*dataflow=*/true,
@@ -489,10 +540,10 @@ int main(int argc, char ** argv) {
                         /*biaspsum_height=*/static_cast<uint8_t>(tn),
                         /*output_addr=*/cfg.acc_addr,
                         /*output_stride=*/static_cast<uint16_t>(tm),
-                        /*isaccu=*/!first_k,
+                        /*isaccu=*/true,
                         /*relu=*/false,
                         /*relu_type=*/0,
-                        /*is_bias=*/false,
+                        /*is_bias=*/first_k,
                         /*input_a_addr=*/cfg.sram_act,
                         /*input_a_col_num=*/static_cast<uint16_t>(tk - 1),
                         /*input_a_row_num=*/static_cast<uint8_t>(tn - 1),
@@ -506,28 +557,49 @@ int main(int argc, char ** argv) {
                 }
 
                 const uint32_t out_tile_elems = static_cast<uint32_t>(tn * tm);
-                npu_dma_mvout(
+                const MvinConfig scale_mvin_cfg {
+                    tile_scale,
+                    cfg.scale_addr,
+                    static_cast<uint32_t>(tm - 1),
+                    0,
+                    0,
+                    0,
+                    1,
+                    2,
+                    true,
+                    false,
+                    false,
+                    0,
+                    0,
+                    0,
+                };
+                npu_dma_mvin_async(kAccDma, &scale_mvin_cfg);
+                npu_dma_wait_mvin(1u << kAccDma);
+
+                const MvoutConfig acc_mvout_cfg {
                     tile_out_f32,
                     cfg.acc_addr,
                     out_tile_elems - 1,
                     0,
+                    static_cast<uint16_t>(out_tile_elems),
                     out_tile_elems,
-                    out_tile_elems,
-                    /*precision=*/3,
-                    /*output_type=*/1,
-                    /*source=*/true,
-                    /*is_quant=*/true,
-                    /*quant_zero=*/0,
-                    /*f32_scale=*/mvout_f32_scale);
+                    3,
+                    1,
+                    true,
+                    true,
+                    0,
+                    cfg.scale_addr,
+                    true,
+                };
+                npu_dma_mvout_async(kAccDma, &acc_mvout_cfg);
+                npu_dma_wait_mvout(1u << kAccDma);
 
                 for (int r = 0; r < tn; ++r) {
                     for (int c = 0; c < tm; ++c) {
                         const size_t local_idx = static_cast<size_t>(r * tm + c);
                         const int global_row = n0 + r;
                         const int global_col = m0 + c;
-                        const float v = tile_out_f32[local_idx] * w_scale[static_cast<size_t>(global_col)] +
-                            bias_comp_f32[static_cast<size_t>(global_col)];
-                        out_npu[static_cast<size_t>(global_row * cfg.m + global_col)] = v;
+                        out_npu[static_cast<size_t>(global_row * cfg.m + global_col)] = tile_out_f32[local_idx];
                     }
                 }
             }
@@ -560,7 +632,9 @@ int main(int argc, char ** argv) {
 
     npu_mem_free(tile_act);
     npu_mem_free(tile_wgt);
+    npu_mem_free(tile_bias_i32);
     npu_mem_free(tile_out_f32);
+    npu_mem_free(tile_scale);
     npu_destroy();
 
     std::printf(

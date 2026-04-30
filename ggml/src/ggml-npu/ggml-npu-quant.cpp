@@ -163,6 +163,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         int64_t k_cols,
         float scale,
         int32_t zero_point_u8,
+        const std::vector<float> * smooth_scale,
         std::vector<int8_t> * packed,
         std::string * error) {
     if (packed == nullptr) {
@@ -172,10 +173,34 @@ bool npu_pack_activation_tile_static_asym_i8(
         return false;
     }
     packed->assign(static_cast<size_t>(n_rows * k_cols), 0);
+    if (smooth_scale != nullptr && !smooth_scale->empty() &&
+            static_cast<size_t>(k0 + k_cols) > smooth_scale->size()) {
+        if (error) {
+            *error = "SmoothQuant scale length is smaller than activation K tile";
+        }
+        return false;
+    }
+    const float inv_scale = scale > 0.0f ? (1.0f / scale) : 0.0f;
+    const float zp = static_cast<float>(zero_point_u8);
+    if (smooth_scale != nullptr && !smooth_scale->empty()) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            for (int64_t k = 0; k < k_cols; ++k) {
+                const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
+                const float fused_multiplier = (*smooth_scale)[static_cast<size_t>(k0 + k)];
+                const float shifted = v * fused_multiplier + zp;
+                int32_t q = static_cast<int32_t>(std::lrint(shifted));
+                q = std::max(0, std::min(255, q));
+                // Keep raw uint8 payload in memory; GEMM asymmetric_activations
+                // path will apply the fixed -128 in hardware.
+                (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q);
+            }
+        }
+        return true;
+    }
     for (int64_t n = 0; n < n_rows; ++n) {
         for (int64_t k = 0; k < k_cols; ++k) {
             const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
-            const float shifted = v / scale + static_cast<float>(zero_point_u8);
+            const float shifted = v * inv_scale + zp;
             int32_t q = static_cast<int32_t>(std::lrint(shifted));
             q = std::max(0, std::min(255, q));
             // Keep raw uint8 payload in memory; GEMM asymmetric_activations

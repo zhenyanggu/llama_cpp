@@ -95,10 +95,13 @@ sudo chmod 660 /dev/npu_kv260
 - `mvin_problem_case`：MVIN/MVOUT 重复问题 case。
 - `dma_2d_submatrix`：DRAM stride 大于子矩阵宽度、SPM stride 等于子矩阵宽度的 2D DMA 子矩阵搬运。
 - `dma_acc_int32_fp32`：ACC int32/fp32 读回路径。
+- `dma_acc_fp32_perchannel`：ACC fp32 per-channel 读回路径，默认使用 `zero-point=0`。
 - `double_mvin_async`：双 DMA MVIN 异步路径。
 - `gemm_basic`：基础 GEMM replay。
 - `gemm_double_dma`：双 DMA GEMM replay。
-- `mmproj_asym_w8a8`：MMProj asymmetric W8A8 layer replay。
+- `gemm_fp32_tensor`：ACC fp32 per-tensor 读回路径，默认使用 `zero-point=0`。
+
+`mmproj_asym_w8a8` 目前不属于默认 `full` profile。它保留为单独的专项 case，用于验证“激活非对称、权重对称，并且激活从 FP32 到 INT8 的量化由 CPU 完成”的路径。
 
 ## 5. 结果目录
 

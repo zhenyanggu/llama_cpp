@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+namespace {
+constexpr uint32_t kAccDmaId = 2;
+}
+
 struct Config {
     int m = 16;   // output channels (tile width in profile)
     int n = 16;   // token rows (tile height in profile)
@@ -16,7 +20,8 @@ struct Config {
     int loops = 1;
     uint32_t sram_act = 0x00000000;
     uint32_t sram_wgt = 0x00010000;
-    uint32_t acc_addr = 0x00000000;
+    uint32_t bias_acc_addr = 0x00000000;
+    uint32_t out_acc_addr = 0x00004000;
     bool use_double_mvin = true;
     bool enable_bias = true;
     bool bias_via_psum = false;
@@ -70,7 +75,9 @@ static void print_usage(const char * prog) {
         "  --loops <int>         Repeat loops (default: 1)\n"
         "  --sram-act <hex/int>  Activation SPM addr (default: 0x0)\n"
         "  --sram-wgt <hex/int>  Weight SPM addr (default: 0x10000)\n"
-        "  --acc-addr <hex/int>  ACC base addr for bias/psum/output (default: 0x0)\n"
+        "  --acc-addr <hex/int>  Legacy shortcut: set both bias and output ACC addr\n"
+        "  --bias-acc-addr <hex/int>  ACC base addr for bias/psum input (default: 0x0)\n"
+        "  --out-acc-addr <hex/int>   ACC base addr for GEMM output (default: 0x4000)\n"
         "  --seed <uint>         Pseudo-random seed (default: 20260416)\n"
         "  --double-mvin         Use npu_dma_double_mvin when possible (default)\n"
         "  --no-double-mvin      Disable double mvin\n"
@@ -86,8 +93,8 @@ static void print_usage(const char * prog) {
         "  --asym-act            Enable asymmetric activations in npu_gemm_run\n"
         "  --input-a-zp <uint>   INPUTA_ZP register (default: 0)\n"
         "  --input-b-zp <uint>   INPUTB_ZP register (default: 0)\n"
-        "  --mvout-fp32          Read ACC as fp32 (dequant)\n"
-        "  --fp32-scale <float>  FP32 dequant scale (default: 1.0)\n"
+        "  --mvout-fp32          Read ACC as fp32 using per-tensor dequant\n"
+        "  --fp32-scale <float>  Per-tensor FP32 dequant scale, packed as Q8.24 immediate (default: 1.0)\n"
         "  --fp32-zp <uint>      FP32 dequant zero point (default: 0)\n"
         "  -h, --help            Show this help\n",
         prog);
@@ -125,7 +132,17 @@ static Config parse_args(int argc, char ** argv) {
             continue;
         }
         if (std::strcmp(argv[i], "--acc-addr") == 0 && i + 1 < argc) {
-            cfg.acc_addr = parse_u32(argv[++i], cfg.acc_addr);
+            const uint32_t acc_addr = parse_u32(argv[++i], cfg.bias_acc_addr);
+            cfg.bias_acc_addr = acc_addr;
+            cfg.out_acc_addr = acc_addr;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--bias-acc-addr") == 0 && i + 1 < argc) {
+            cfg.bias_acc_addr = parse_u32(argv[++i], cfg.bias_acc_addr);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--out-acc-addr") == 0 && i + 1 < argc) {
+            cfg.out_acc_addr = parse_u32(argv[++i], cfg.out_acc_addr);
             continue;
         }
         if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
@@ -260,9 +277,9 @@ static int32_t gen_i32(uint32_t seed, uint32_t idx, uint32_t salt) {
 
 static void mvin_bias_vector(const int32_t * host_bias, const Config & cfg) {
     std::puts("runtime_call=npu_dma_mvin bias->ACC");
-    npu_dma_mvin(
+    const MvinConfig bias_mvin_cfg {
         const_cast<int32_t *>(host_bias),
-        cfg.acc_addr,
+        cfg.bias_acc_addr,
         static_cast<uint32_t>(cfg.m - 1),
         0,
         0,
@@ -274,7 +291,10 @@ static void mvin_bias_vector(const int32_t * host_bias, const Config & cfg) {
         false,
         0,
         0,
-        0);
+        0,
+    };
+    npu_dma_mvin_async(kAccDmaId, &bias_mvin_cfg);
+    npu_dma_wait_mvin(1u << kAccDmaId);
 }
 
 int main(int argc, char ** argv) {
@@ -287,8 +307,8 @@ int main(int argc, char ** argv) {
     const uint32_t out_bytes = out_elems * static_cast<uint32_t>(sizeof(int32_t));
 
     std::printf(
-        "kv260_layer_gemm_replay_test: m=%d n=%d k=%d loops=%d seed=%u sram_act=0x%08x sram_wgt=0x%08x acc=0x%08x double_mvin=%d bias=%d bias_via_psum=%d zero_bias=%d asym_act=%d input_a_zp=%u input_b_zp=%u mvout_fp32=%d fp32_scale=%.9g fp32_zp=%u\n",
-        cfg.m, cfg.n, cfg.k, cfg.loops, cfg.seed, cfg.sram_act, cfg.sram_wgt, cfg.acc_addr,
+        "kv260_layer_gemm_replay_test: m=%d n=%d k=%d loops=%d seed=%u sram_act=0x%08x sram_wgt=0x%08x bias_acc=0x%08x out_acc=0x%08x double_mvin=%d bias=%d bias_via_psum=%d zero_bias=%d asym_act=%d input_a_zp=%u input_b_zp=%u mvout_fp32=%d fp32_scale=%.9g fp32_zp=%u\n",
+        cfg.m, cfg.n, cfg.k, cfg.loops, cfg.seed, cfg.sram_act, cfg.sram_wgt, cfg.bias_acc_addr, cfg.out_acc_addr,
         cfg.use_double_mvin ? 1 : 0, cfg.enable_bias ? 1 : 0, cfg.bias_via_psum ? 1 : 0, cfg.zero_bias ? 1 : 0,
         cfg.asymmetric_activations ? 1 : 0,
         static_cast<unsigned>(cfg.input_a_zeropoint),
@@ -455,11 +475,11 @@ int main(int argc, char ** argv) {
             /*output_zeropoint=*/0,
             /*output_scale=*/1,
             /*output_scaleshift=*/0,
-            /*biaspsum_addr=*/cfg.acc_addr,
+            /*biaspsum_addr=*/cfg.bias_acc_addr,
             /*biaspsum_stride=*/static_cast<uint16_t>(cfg.m),
             /*biaspsum_width=*/static_cast<uint8_t>(cfg.m),
             /*biaspsum_height=*/static_cast<uint8_t>(cfg.n),
-            /*output_addr=*/cfg.acc_addr,
+            /*output_addr=*/cfg.out_acc_addr,
             /*output_stride=*/static_cast<uint16_t>(cfg.m),
             /*isaccu=*/cfg.enable_bias,
             /*relu=*/false,
@@ -480,20 +500,43 @@ int main(int argc, char ** argv) {
         float max_abs_diff = 0.0f;
         if (cfg.mvout_fp32) {
             std::puts("runtime_call=npu_dma_mvout ACC->fp32");
-            const uint32_t f32_scale_bits = pack_f32_scale(cfg.fp32_scale);
-            npu_dma_mvout(
+            // Prime the ACC->fp32 path once. On current overlay the first fp32 mvout
+            // beat can intermittently come back as zero right after reload.
+            const MvoutConfig acc_fp32_prime_cfg {
                 host_out_f32,
-                cfg.acc_addr,
+                cfg.out_acc_addr,
+                0,
+                0,
+                1,
+                1,
+                3,
+                1,
+                true,
+                true,
+                cfg.fp32_zero_point,
+                pack_f32_scale(cfg.fp32_scale),
+                false,
+            };
+            npu_dma_mvout_async(kAccDmaId, &acc_fp32_prime_cfg);
+            npu_dma_wait_mvout(1u << kAccDmaId);
+
+            const MvoutConfig acc_fp32_mvout_cfg {
+                host_out_f32,
+                cfg.out_acc_addr,
                 out_elems - 1,
                 0,
-                out_elems,
+                static_cast<uint16_t>(out_elems),
                 out_elems,
                 3,
                 1,
                 true,
                 true,
                 cfg.fp32_zero_point,
-                f32_scale_bits);
+                pack_f32_scale(cfg.fp32_scale),
+                false,
+            };
+            npu_dma_mvout_async(kAccDmaId, &acc_fp32_mvout_cfg);
+            npu_dma_wait_mvout(1u << kAccDmaId);
             for (uint32_t i = 0; i < out_elems; ++i) {
                 const float got = host_out_f32[i];
                 const float exp = static_cast<float>(ref[i] - static_cast<int32_t>(cfg.fp32_zero_point)) * cfg.fp32_scale;
@@ -511,19 +554,23 @@ int main(int argc, char ** argv) {
             }
         } else {
             std::puts("runtime_call=npu_dma_mvout ACC->int32");
-            npu_dma_mvout(
+            const MvoutConfig acc_i32_mvout_cfg {
                 host_out,
-                cfg.acc_addr,
+                cfg.out_acc_addr,
                 out_elems - 1,
                 0,
-                out_elems,
+                static_cast<uint16_t>(out_elems),
                 out_elems,
                 1,
                 1,
                 true,
                 false,
                 0,
-                0);
+                0,
+                false,
+            };
+            npu_dma_mvout_async(kAccDmaId, &acc_i32_mvout_cfg);
+            npu_dma_wait_mvout(1u << kAccDmaId);
             for (uint32_t i = 0; i < out_elems; ++i) {
                 const int32_t got = host_out[i];
                 const int32_t exp = ref[i];
