@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_SRC="/home/gugugu/.codex/skills/kv260-llamaserver-throughput/scripts/run_kv260_latest.sh"
 SCRIPT_DIR_REAL="/home/gugugu/.codex/skills/kv260-llamaserver-throughput/scripts"
-SKILL_DIR_REAL="/tmp/kv260-llamaserver-throughput"
+SKILL_DIR_REAL="/home/gugugu/.codex/skills/kv260-llamaserver-throughput"
 TMP_SCRIPT="$(mktemp /tmp/run_kv260_latest_3dma_perchannel.XXXXXX.sh)"
 TMP_ENV_EXPORTS="$(mktemp /tmp/run_kv260_latest_3dma_perchannel_env.XXXXXX.sh)"
 

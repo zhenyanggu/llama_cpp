@@ -610,24 +610,6 @@ int main(int argc, char ** argv) {
 
                 const uint32_t out_tile_elems = static_cast<uint32_t>(tn * tm);
                 if (cfg.raw_acc_mvout) {
-                    const MvoutConfig acc_mvout_prime_cfg {
-                        tile_out_i32,
-                        tile_out_addr,
-                        0,
-                        0,
-                        1,
-                        1,
-                        1,
-                        1,
-                        true,
-                        false,
-                        0,
-                        0,
-                        false,
-                    };
-                    npu_dma_mvout_async(kAccDma, &acc_mvout_prime_cfg);
-                    npu_dma_wait_mvout(1u << kAccDma);
-
                     const MvoutConfig acc_mvout_cfg {
                         tile_out_i32,
                         tile_out_addr,
@@ -674,24 +656,6 @@ int main(int argc, char ** argv) {
                     };
                     npu_dma_mvin_async(kAccDma, &scale_mvin_cfg);
                     npu_dma_wait_mvin(1u << kAccDma);
-
-                    const MvoutConfig acc_mvout_prime_cfg {
-                        tile_out_f32,
-                        tile_out_addr,
-                        0,
-                        0,
-                        1,
-                        1,
-                        3,
-                        1,
-                        true,
-                        true,
-                        0,
-                        cfg.scale_addr,
-                        true,
-                    };
-                    npu_dma_mvout_async(kAccDma, &acc_mvout_prime_cfg);
-                    npu_dma_wait_mvout(1u << kAccDma);
 
                     const MvoutConfig acc_mvout_cfg {
                         tile_out_f32,
