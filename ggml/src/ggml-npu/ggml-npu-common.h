@@ -37,7 +37,8 @@ struct npu_runtime_layout {
     // layout to carry the corresponding bank identifier.
     npu_memory_slice activation;
     npu_memory_slice weight;
-    npu_memory_slice accumulator;
+    npu_memory_slice bias_accumulator;
+    npu_memory_slice output_accumulator;
 };
 
 struct npu_tiling_config {

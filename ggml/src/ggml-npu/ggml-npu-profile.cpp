@@ -257,6 +257,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"activation_offset", node.activation_offset},
         {"weight_offset", node.weight_offset},
         {"accumulator_offset", node.accumulator_offset},
+        {"bias_accumulator_offset", node.bias_accumulator_offset},
+        {"output_accumulator_offset", node.output_accumulator_offset},
         {"activation_pack_calls", node.activation_pack_calls},
         {"host_copy_activation_calls", node.host_copy_activation_calls},
         {"host_copy_weight_calls", node.host_copy_weight_calls},
@@ -418,7 +420,9 @@ npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu
     record.acc_bytes = plan.config.acc_bytes;
     record.activation_offset = plan.config.layout.activation.offset;
     record.weight_offset = plan.config.layout.weight.offset;
-    record.accumulator_offset = plan.config.layout.accumulator.offset;
+    record.accumulator_offset = plan.config.layout.output_accumulator.offset;
+    record.bias_accumulator_offset = plan.config.layout.bias_accumulator.offset;
+    record.output_accumulator_offset = plan.config.layout.output_accumulator.offset;
     return record;
 }
 

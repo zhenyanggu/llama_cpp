@@ -80,6 +80,8 @@ struct npu_profile_node_record {
     uint32_t activation_offset = 0;
     uint32_t weight_offset = 0;
     uint32_t accumulator_offset = 0;
+    uint32_t bias_accumulator_offset = 0;
+    uint32_t output_accumulator_offset = 0;
     int64_t activation_pack_calls = 0;
     int64_t host_copy_activation_calls = 0;
     int64_t host_copy_weight_calls = 0;

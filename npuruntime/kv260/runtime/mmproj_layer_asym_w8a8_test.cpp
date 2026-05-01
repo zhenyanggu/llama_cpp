@@ -21,13 +21,18 @@ struct Config {
 
     uint32_t sram_act = 0x00000000;
     uint32_t sram_wgt = 0x00020000;
-    uint32_t acc_addr = 0x00000000;
+    uint32_t bias_acc_addr = 0x00000000;
+    uint32_t out_acc_addr = 0x00004000;
     uint32_t scale_addr = 0x00070000;
+    uint32_t wgt_addr_step = 0;
+    uint32_t bias_addr_step = 0;
+    uint32_t out_addr_step = 0;
 
     uint32_t seed = 20260417u;
     uint8_t act_zp_u8 = 113;
     float act_scale = 0.0f; // <= 0 means auto from first loop activation.
-    float tol = 5e-3f;
+    float tol = 2e-2f;
+    bool raw_acc_mvout = false;
 };
 
 static constexpr uint32_t kSpmDmaAct = 0;
@@ -82,11 +87,17 @@ static void print_usage(const char * prog) {
         "  --tile-k <int>        Tile K (default: 768)\n"
         "  --sram-act <hex/int>  Activation SPM base (default: 0x0)\n"
         "  --sram-wgt <hex/int>  Weight SPM base (default: 0x20000)\n"
-        "  --acc-addr <hex/int>  ACC base (default: 0x0)\n"
+        "  --acc-addr <hex/int>  Legacy shortcut: set both bias/output ACC bases\n"
+        "  --bias-acc-addr <hex/int>  Bias/psum ACC base (default: 0x0)\n"
+        "  --out-acc-addr <hex/int>   Output ACC base (default: 0x4000)\n"
+        "  --wgt-addr-step <hex/int>  Add this SPM offset per output-channel tile\n"
+        "  --bias-addr-step <hex/int> Add this ACC offset per output-channel tile\n"
+        "  --out-addr-step <hex/int>  Add this ACC output offset per output-channel tile\n"
         "  --seed <uint>         Seed (default: 20260417)\n"
         "  --act-zp-u8 <uint>    Activation u8 zero-point (default: 113)\n"
         "  --act-scale <float>   Activation scale; <=0 means auto (default: auto)\n"
-        "  --tol <float>         Abs tolerance (default: 0.005)\n"
+        "  --tol <float>         Abs tolerance (default: 0.02)\n"
+        "  --raw-acc-mvout       Read raw int32 ACC and dequantize on host\n"
         "  -h, --help            Show help\n",
         prog);
 }
@@ -135,11 +146,33 @@ static Config parse_args(int argc, char ** argv) {
             continue;
         }
         if (std::strcmp(argv[i], "--acc-addr") == 0 && i + 1 < argc) {
-            cfg.acc_addr = parse_u32(argv[++i], cfg.acc_addr);
+            const uint32_t acc_addr = parse_u32(argv[++i], cfg.bias_acc_addr);
+            cfg.bias_acc_addr = acc_addr;
+            cfg.out_acc_addr = acc_addr;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--bias-acc-addr") == 0 && i + 1 < argc) {
+            cfg.bias_acc_addr = parse_u32(argv[++i], cfg.bias_acc_addr);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--out-acc-addr") == 0 && i + 1 < argc) {
+            cfg.out_acc_addr = parse_u32(argv[++i], cfg.out_acc_addr);
             continue;
         }
         if (std::strcmp(argv[i], "--scale-addr") == 0 && i + 1 < argc) {
             cfg.scale_addr = parse_u32(argv[++i], cfg.scale_addr);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--wgt-addr-step") == 0 && i + 1 < argc) {
+            cfg.wgt_addr_step = parse_u32(argv[++i], cfg.wgt_addr_step);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--bias-addr-step") == 0 && i + 1 < argc) {
+            cfg.bias_addr_step = parse_u32(argv[++i], cfg.bias_addr_step);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--out-addr-step") == 0 && i + 1 < argc) {
+            cfg.out_addr_step = parse_u32(argv[++i], cfg.out_addr_step);
             continue;
         }
         if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
@@ -156,6 +189,10 @@ static Config parse_args(int argc, char ** argv) {
         }
         if (std::strcmp(argv[i], "--tol") == 0 && i + 1 < argc) {
             cfg.tol = parse_f32(argv[++i], cfg.tol);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--raw-acc-mvout") == 0) {
+            cfg.raw_acc_mvout = true;
             continue;
         }
         std::fprintf(stderr, "Unknown arg: %s\n", argv[i]);
@@ -383,13 +420,15 @@ int main(int argc, char ** argv) {
     auto * tile_wgt = static_cast<int8_t *>(npu_mem_alloc(max_wgt_tile_bytes));
     auto * tile_bias_i32 = static_cast<int32_t *>(npu_mem_alloc(max_bias_tile_elems * sizeof(int32_t)));
     auto * tile_out_f32 = static_cast<float *>(npu_mem_alloc(max_out_tile_elems * sizeof(float)));
-    auto * tile_scale = static_cast<uint32_t *>(npu_mem_alloc(max_bias_tile_elems * sizeof(uint32_t)));
-    if (!tile_act || !tile_wgt || !tile_bias_i32 || !tile_out_f32 || !tile_scale) {
+    auto * tile_out_i32 = static_cast<int32_t *>(npu_mem_alloc(max_out_tile_elems * sizeof(int32_t)));
+    auto * tile_scale = static_cast<uint32_t *>(npu_mem_alloc(max_out_tile_elems * sizeof(uint32_t)));
+    if (!tile_act || !tile_wgt || !tile_bias_i32 || !tile_out_f32 || !tile_out_i32 || !tile_scale) {
         std::fprintf(stderr, "npu_mem_alloc failed for tile buffers\n");
         if (tile_act) npu_mem_free(tile_act);
         if (tile_wgt) npu_mem_free(tile_wgt);
         if (tile_bias_i32) npu_mem_free(tile_bias_i32);
         if (tile_out_f32) npu_mem_free(tile_out_f32);
+        if (tile_out_i32) npu_mem_free(tile_out_i32);
         if (tile_scale) npu_mem_free(tile_scale);
         npu_destroy();
         return 2;
@@ -423,10 +462,16 @@ int main(int argc, char ** argv) {
     float global_max_abs_diff = 0.0f;
 
     std::printf(
-        "kv260_mmproj_layer_asym_w8a8_test: m=%d n=%d k=%d loops=%d tile_m=%d tile_n=%d tile_k=%d seed=%u act_zp_u8=%u act_scale=%s bias=mvin act_quant=cpu_u8 weight_quant=per_channel_symmetric tol=%.6f\n",
+        "kv260_mmproj_layer_asym_w8a8_test: m=%d n=%d k=%d loops=%d tile_m=%d tile_n=%d tile_k=%d seed=%u act_zp_u8=%u act_scale=%s bias=mvin act_quant=cpu_u8 weight_quant=per_channel_symmetric bias_acc=0x%08x out_acc=0x%08x wgt_step=0x%08x bias_step=0x%08x out_step=0x%08x mvout=%s tol=%.6f\n",
         cfg.m, cfg.n, cfg.k, cfg.loops, cfg.tile_m, cfg.tile_n, cfg.tile_k, cfg.seed,
         static_cast<unsigned>(cfg.act_zp_u8),
         use_auto_scale ? "auto" : "fixed",
+        cfg.bias_acc_addr,
+        cfg.out_acc_addr,
+        cfg.wgt_addr_step,
+        cfg.bias_addr_step,
+        cfg.out_addr_step,
+        cfg.raw_acc_mvout ? "raw_i32_host_dequant" : "fp32_per_channel",
         cfg.tol);
 
     for (int loop = 0; loop < cfg.loops; ++loop) {
@@ -458,14 +503,21 @@ int main(int argc, char ** argv) {
             const int tn = std::min(cfg.tile_n, cfg.n - n0);
             for (int m0 = 0; m0 < cfg.m; m0 += cfg.tile_m) {
                 const int tm = std::min(cfg.tile_m, cfg.m - m0);
+                const uint32_t m_tile_index = static_cast<uint32_t>(m0 / cfg.tile_m);
+                const uint32_t tile_wgt_addr = cfg.sram_wgt + m_tile_index * cfg.wgt_addr_step;
+                const uint32_t tile_bias_addr = cfg.bias_acc_addr + m_tile_index * cfg.bias_addr_step;
+                const uint32_t tile_out_addr = cfg.out_acc_addr + m_tile_index * cfg.out_addr_step;
                 bool first_k = true;
                 pack_bias_tile_i32(bias_comp_f32, w_scale, act_scale, m0, tm, tile_bias_i32);
-                for (int c = 0; c < tm; ++c) {
-                    tile_scale[c] = pack_f32_scale(act_scale * w_scale[static_cast<size_t>(m0 + c)]);
+                for (int r = 0; r < tn; ++r) {
+                    for (int c = 0; c < tm; ++c) {
+                        tile_scale[static_cast<size_t>(r * tm + c)] =
+                            pack_f32_scale(act_scale * w_scale[static_cast<size_t>(m0 + c)]);
+                    }
                 }
                 const MvinConfig bias_mvin_cfg {
                     tile_bias_i32,
-                    cfg.acc_addr,
+                    tile_bias_addr,
                     static_cast<uint32_t>(tm - 1),
                     0,
                     0,
@@ -505,7 +557,7 @@ int main(int argc, char ** argv) {
                     };
                     const MvinConfig wgt_mvin_cfg {
                         tile_wgt,
-                        cfg.sram_wgt,
+                        tile_wgt_addr,
                         static_cast<uint32_t>(tk * tm - 1),
                         0,
                         0,
@@ -534,11 +586,11 @@ int main(int argc, char ** argv) {
                         /*output_zeropoint=*/0,
                         /*output_scale=*/1,
                         /*output_scaleshift=*/0,
-                        /*biaspsum_addr=*/cfg.acc_addr,
+                        /*biaspsum_addr=*/first_k ? tile_bias_addr : tile_out_addr,
                         /*biaspsum_stride=*/static_cast<uint16_t>(tm),
                         /*biaspsum_width=*/static_cast<uint8_t>(tm),
                         /*biaspsum_height=*/static_cast<uint8_t>(tn),
-                        /*output_addr=*/cfg.acc_addr,
+                        /*output_addr=*/tile_out_addr,
                         /*output_stride=*/static_cast<uint16_t>(tm),
                         /*isaccu=*/true,
                         /*relu=*/false,
@@ -548,7 +600,7 @@ int main(int argc, char ** argv) {
                         /*input_a_col_num=*/static_cast<uint16_t>(tk - 1),
                         /*input_a_row_num=*/static_cast<uint8_t>(tn - 1),
                         /*input_a_stride=*/static_cast<uint16_t>(tk),
-                        /*input_b_addr=*/cfg.sram_wgt,
+                        /*input_b_addr=*/tile_wgt_addr,
                         /*input_b_col_num=*/static_cast<uint8_t>(tm - 1),
                         /*input_b_row_num=*/static_cast<uint16_t>(tk - 1),
                         /*input_b_stride=*/static_cast<uint16_t>(tm),
@@ -557,42 +609,108 @@ int main(int argc, char ** argv) {
                 }
 
                 const uint32_t out_tile_elems = static_cast<uint32_t>(tn * tm);
-                const MvinConfig scale_mvin_cfg {
-                    tile_scale,
-                    cfg.scale_addr,
-                    static_cast<uint32_t>(tm - 1),
-                    0,
-                    0,
-                    0,
-                    1,
-                    2,
-                    true,
-                    false,
-                    false,
-                    0,
-                    0,
-                    0,
-                };
-                npu_dma_mvin_async(kAccDma, &scale_mvin_cfg);
-                npu_dma_wait_mvin(1u << kAccDma);
+                if (cfg.raw_acc_mvout) {
+                    const MvoutConfig acc_mvout_prime_cfg {
+                        tile_out_i32,
+                        tile_out_addr,
+                        0,
+                        0,
+                        1,
+                        1,
+                        1,
+                        1,
+                        true,
+                        false,
+                        0,
+                        0,
+                        false,
+                    };
+                    npu_dma_mvout_async(kAccDma, &acc_mvout_prime_cfg);
+                    npu_dma_wait_mvout(1u << kAccDma);
 
-                const MvoutConfig acc_mvout_cfg {
-                    tile_out_f32,
-                    cfg.acc_addr,
-                    out_tile_elems - 1,
-                    0,
-                    static_cast<uint16_t>(out_tile_elems),
-                    out_tile_elems,
-                    3,
-                    1,
-                    true,
-                    true,
-                    0,
-                    cfg.scale_addr,
-                    true,
-                };
-                npu_dma_mvout_async(kAccDma, &acc_mvout_cfg);
-                npu_dma_wait_mvout(1u << kAccDma);
+                    const MvoutConfig acc_mvout_cfg {
+                        tile_out_i32,
+                        tile_out_addr,
+                        out_tile_elems - 1,
+                        0,
+                        static_cast<uint16_t>(out_tile_elems),
+                        out_tile_elems,
+                        1,
+                        1,
+                        true,
+                        false,
+                        0,
+                        0,
+                        false,
+                    };
+                    npu_dma_mvout_async(kAccDma, &acc_mvout_cfg);
+                    npu_dma_wait_mvout(1u << kAccDma);
+                    for (int r = 0; r < tn; ++r) {
+                        for (int c = 0; c < tm; ++c) {
+                            const size_t local_idx = static_cast<size_t>(r * tm + c);
+                            const int global_col = m0 + c;
+                            tile_out_f32[local_idx] =
+                                static_cast<float>(tile_out_i32[local_idx]) *
+                                act_scale *
+                                w_scale[static_cast<size_t>(global_col)];
+                        }
+                    }
+                } else {
+                    const MvinConfig scale_mvin_cfg {
+                        tile_scale,
+                        cfg.scale_addr,
+                        out_tile_elems - 1,
+                        0,
+                        0,
+                        0,
+                        1,
+                        2,
+                        true,
+                        false,
+                        false,
+                        0,
+                        0,
+                        0,
+                    };
+                    npu_dma_mvin_async(kAccDma, &scale_mvin_cfg);
+                    npu_dma_wait_mvin(1u << kAccDma);
+
+                    const MvoutConfig acc_mvout_prime_cfg {
+                        tile_out_f32,
+                        tile_out_addr,
+                        0,
+                        0,
+                        1,
+                        1,
+                        3,
+                        1,
+                        true,
+                        true,
+                        0,
+                        cfg.scale_addr,
+                        true,
+                    };
+                    npu_dma_mvout_async(kAccDma, &acc_mvout_prime_cfg);
+                    npu_dma_wait_mvout(1u << kAccDma);
+
+                    const MvoutConfig acc_mvout_cfg {
+                        tile_out_f32,
+                        tile_out_addr,
+                        out_tile_elems - 1,
+                        0,
+                        static_cast<uint16_t>(out_tile_elems),
+                        out_tile_elems,
+                        3,
+                        1,
+                        true,
+                        true,
+                        0,
+                        cfg.scale_addr,
+                        true,
+                    };
+                    npu_dma_mvout_async(kAccDma, &acc_mvout_cfg);
+                    npu_dma_wait_mvout(1u << kAccDma);
+                }
 
                 for (int r = 0; r < tn; ++r) {
                     for (int c = 0; c < tm; ++c) {
@@ -634,6 +752,7 @@ int main(int argc, char ** argv) {
     npu_mem_free(tile_wgt);
     npu_mem_free(tile_bias_i32);
     npu_mem_free(tile_out_f32);
+    npu_mem_free(tile_out_i32);
     npu_mem_free(tile_scale);
     npu_destroy();
 

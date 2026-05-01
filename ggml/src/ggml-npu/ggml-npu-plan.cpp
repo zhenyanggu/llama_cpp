@@ -321,7 +321,7 @@ static bool npu_store_preloaded_weight_pack(
 }
 
 static bool npu_can_fold_output_reconstruction(const npu_node_plan & plan) {
-    return plan.aicas_w8a8.valid && plan.aicas_w8a8.weight_scale.size() == 1;
+    return plan.aicas_w8a8.valid && !plan.aicas_w8a8.weight_scale.empty();
 }
 
 static bool npu_lookup_aicas_w8a8(
@@ -565,6 +565,16 @@ static uint32_t npu_align_u32(uint32_t value, uint32_t alignment) {
 npu_tiling_config npu_default_tiling_config(void) {
     npu_tiling_config cfg;
 
+    size_t sa_rows = 0;
+    if (npu_env_to_size("GGML_NPU_SA_ROWS", &sa_rows)) {
+        cfg.sa_rows = static_cast<int64_t>(sa_rows);
+    }
+
+    size_t sa_cols = 0;
+    if (npu_env_to_size("GGML_NPU_SA_COLS", &sa_cols)) {
+        cfg.sa_cols = static_cast<int64_t>(sa_cols);
+    }
+
     size_t spm_bytes = 0;
     if (npu_env_to_size("GGML_NPU_SPM_BYTES", &spm_bytes)) {
         cfg.spm_bytes = spm_bytes;
@@ -795,17 +805,33 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     const int64_t micro_k = std::min<int64_t>(plan->config.k_block, plan->config.stage2_k_block);
 
     const uint32_t act_bytes = static_cast<uint32_t>(micro_n * micro_k);
-    const uint32_t act_offset = npu_align_u32(0, NPU_SPM_ALIGNMENT);
-
-    const uint32_t weight_offset = npu_align_u32(act_offset + act_bytes, NPU_SPM_ALIGNMENT);
+    uint32_t act_offset = npu_align_u32(0, NPU_SPM_ALIGNMENT);
+    uint32_t weight_offset = 0x00020000;
+    size_t env_act_offset = 0;
+    size_t env_weight_offset = 0;
+    if (npu_env_to_size("GGML_NPU_ACT_OFFSET", &env_act_offset)) {
+        act_offset = npu_align_u32(static_cast<uint32_t>(env_act_offset), NPU_SPM_ALIGNMENT);
+    }
+    if (npu_env_to_size("GGML_NPU_WEIGHT_OFFSET", &env_weight_offset)) {
+        weight_offset = npu_align_u32(static_cast<uint32_t>(env_weight_offset), NPU_SPM_ALIGNMENT);
+    }
     const uint32_t weight_bytes = static_cast<uint32_t>(micro_m * micro_k);
 
-    const uint32_t spm_end = weight_offset + weight_bytes;
+    const uint32_t act_end = act_offset + act_bytes;
+    const uint32_t weight_end = weight_offset + weight_bytes;
+    const bool spm_overlaps = act_offset < weight_end && weight_offset < act_end;
+    const uint32_t spm_end = std::max(act_end, weight_end);
     const uint32_t spm_limit = static_cast<uint32_t>(
         plan->config.spm_bytes > plan->config.guard_bytes
             ? plan->config.spm_bytes - plan->config.guard_bytes
             : plan->config.spm_bytes);
 
+    if (spm_overlaps) {
+        if (reason) {
+            *reason = "SPM activation/weight fixed regions overlap";
+        }
+        return false;
+    }
     if (spm_end > spm_limit) {
         if (reason) {
             *reason = "SPM offset allocation overflow";
@@ -814,8 +840,26 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     }
 
     const uint32_t acc_bytes = static_cast<uint32_t>(micro_n * micro_m * sizeof(int32_t));
-    const uint32_t acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
-    const uint32_t acc_end = acc_offset + acc_bytes;
+    uint32_t bias_acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
+    uint32_t output_acc_offset = npu_align_u32(0x00004000, NPU_ACC_ALIGNMENT);
+    size_t env_bias_acc_offset = 0;
+    size_t env_output_acc_offset = 0;
+    if (npu_env_to_size("GGML_NPU_BIAS_ACC_OFFSET", &env_bias_acc_offset)) {
+        bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_ACC_ALIGNMENT);
+    }
+    if (npu_env_to_size("GGML_NPU_OUTPUT_ACC_OFFSET", &env_output_acc_offset)) {
+        output_acc_offset = npu_align_u32(static_cast<uint32_t>(env_output_acc_offset), NPU_ACC_ALIGNMENT);
+    }
+    const uint32_t bias_acc_end = bias_acc_offset + acc_bytes;
+    const uint32_t output_acc_end = output_acc_offset + acc_bytes;
+    const bool acc_overlaps = bias_acc_offset < output_acc_end && output_acc_offset < bias_acc_end;
+    const uint32_t acc_end = std::max(bias_acc_end, output_acc_end);
+    if (acc_overlaps) {
+        if (reason) {
+            *reason = "ACC bias/output fixed regions overlap";
+        }
+        return false;
+    }
     if (acc_end > plan->config.acc_bytes) {
         if (reason) {
             *reason = "ACC offset allocation overflow";
@@ -833,9 +877,14 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         weight_offset,
         weight_bytes,
     };
-    plan->config.layout.accumulator = {
+    plan->config.layout.bias_accumulator = {
         npu_memory_space::acc,
-        acc_offset,
+        bias_acc_offset,
+        acc_bytes,
+    };
+    plan->config.layout.output_accumulator = {
+        npu_memory_space::acc,
+        output_acc_offset,
         acc_bytes,
     };
 
@@ -1208,7 +1257,8 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         << ", acc_bytes=" << plan.config.acc_bytes
         << ", act_off=" << plan.config.layout.activation.offset
         << ", wgt_off=" << plan.config.layout.weight.offset
-        << ", acc_off=" << plan.config.layout.accumulator.offset;
+        << ", bias_acc_off=" << plan.config.layout.bias_accumulator.offset
+        << ", out_acc_off=" << plan.config.layout.output_accumulator.offset;
     plan.summary = oss.str();
 
     return plan;
@@ -1224,7 +1274,8 @@ bool npu_plan_is_aot_stable(const npu_node_plan & plan, std::string * reason) {
 
     if (plan.config.layout.activation.bytes == 0 ||
         plan.config.layout.weight.bytes == 0 ||
-        plan.config.layout.accumulator.bytes == 0) {
+        plan.config.layout.bias_accumulator.bytes == 0 ||
+        plan.config.layout.output_accumulator.bytes == 0) {
         if (reason) {
             *reason = "AOT 地址分配未完成";
         }

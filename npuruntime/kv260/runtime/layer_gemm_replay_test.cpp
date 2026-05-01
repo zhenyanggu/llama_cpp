@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,9 @@ struct Config {
     uint32_t seed = 20260416u;
     bool act_2d_mvin = false;
     bool wgt_2d_mvin = false;
+    std::string act_file;
+    std::string wgt_file;
+    std::string bias_file;
 };
 
 static uint32_t parse_u32(const char * s, uint32_t fallback) {
@@ -84,6 +88,9 @@ static void print_usage(const char * prog) {
         "  --act-2d-mvin         MVIN activation as 2D tensor [n,k]\n"
         "  --wgt-2d-mvin         MVIN weight as 2D tensor [k,m]\n"
         "  --both-2d-mvin        MVIN both activation and weight in 2D mode\n"
+        "  --act-file <path>     Load activation tile bytes from file instead of generating\n"
+        "  --wgt-file <path>     Load weight tile bytes from file instead of generating\n"
+        "  --bias-file <path>    Load int32 bias vector from file instead of generating\n"
         "  --no-bias             Do not load/apply bias\n"
         "  --bias-psum           Bias through ACC psum buffer (is_bias=0, isaccu=1)\n"
         "  --zero-bias           Load bias path but fill zeros\n"
@@ -170,6 +177,18 @@ static Config parse_args(int argc, char ** argv) {
             cfg.wgt_2d_mvin = true;
             continue;
         }
+        if (std::strcmp(argv[i], "--act-file") == 0 && i + 1 < argc) {
+            cfg.act_file = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--wgt-file") == 0 && i + 1 < argc) {
+            cfg.wgt_file = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--bias-file") == 0 && i + 1 < argc) {
+            cfg.bias_file = argv[++i];
+            continue;
+        }
         if (std::strcmp(argv[i], "--no-bias") == 0) {
             cfg.enable_bias = false;
             continue;
@@ -253,6 +272,26 @@ static int32_t effective_b(int8_t raw, const Config & cfg) {
 
 static uint32_t pack_f32_scale(float scale) {
     return static_cast<uint32_t>(std::round(scale * 16777216.0f));
+}
+
+static bool read_exact_file(const std::string & path, void * dst, size_t bytes) {
+    std::ifstream fin(path, std::ios::binary);
+    if (!fin) {
+        std::fprintf(stderr, "failed to open %s\n", path.c_str());
+        return false;
+    }
+    fin.read(static_cast<char *>(dst), static_cast<std::streamsize>(bytes));
+    if (fin.gcount() != static_cast<std::streamsize>(bytes)) {
+        std::fprintf(stderr, "short read from %s: got %lld expected %zu\n",
+            path.c_str(), static_cast<long long>(fin.gcount()), bytes);
+        return false;
+    }
+    char extra = 0;
+    if (fin.read(&extra, 1)) {
+        std::fprintf(stderr, "file %s is larger than expected %zu bytes\n", path.c_str(), bytes);
+        return false;
+    }
+    return true;
 }
 
 static int8_t gen_i8(uint32_t seed, uint32_t idx, uint32_t salt) {
@@ -366,6 +405,21 @@ int main(int argc, char ** argv) {
             }
             host_bias_zero[i] = 0;
             host_bias_second[i] = cfg.bias_second_const_set ? cfg.bias_second_const : host_bias[i];
+        }
+        if (!cfg.act_file.empty() && !read_exact_file(cfg.act_file, host_a, a_bytes)) {
+            return 4;
+        }
+        if (!cfg.wgt_file.empty() && !read_exact_file(cfg.wgt_file, host_b, b_bytes)) {
+            return 4;
+        }
+        if (!cfg.bias_file.empty() &&
+                !read_exact_file(cfg.bias_file, host_bias, bias_elems * sizeof(int32_t))) {
+            return 4;
+        }
+        if (!cfg.bias_file.empty() || cfg.bias_second_const_set) {
+            for (uint32_t i = 0; i < bias_elems; ++i) {
+                host_bias_second[i] = cfg.bias_second_const_set ? cfg.bias_second_const : host_bias[i];
+            }
         }
         std::memset(host_out, 0, out_bytes);
         if (host_out_f32) {
