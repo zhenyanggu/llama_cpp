@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -u -o pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  kv260_overlay_switch_test [options]
+
+Measure the time to unload the current xmutil overlay and load a target overlay.
+
+Options:
+  --app-name <name>           Target xmutil app name to load (default: double_dma_overlayapp)
+  --iterations <count>        Number of unload/load cycles (default: 5)
+  --sudo-password-env <var>   Env var containing sudo password (default: KV260_SUDO_PASSWORD)
+  -h, --help                  Show this help
+
+Examples:
+  ./kv260_overlay_switch_test
+  ./kv260_overlay_switch_test --app-name my_overlay_app --iterations 10
+USAGE
+}
+
+APP_NAME="double_dma_overlayapp"
+ITERATIONS=5
+SUDO_PASSWORD_ENV="KV260_SUDO_PASSWORD"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app-name) APP_NAME="$2"; shift 2 ;;
+    --iterations) ITERATIONS="$2"; shift 2 ;;
+    --sudo-password-env) SUDO_PASSWORD_ENV="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$ITERATIONS" in
+  ''|*[!0-9]*)
+    echo "Invalid iterations: $ITERATIONS" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$ITERATIONS" -le 0 ]; then
+  echo "Iterations must be > 0" >&2
+  exit 2
+fi
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing command: $1" >&2
+    exit 2
+  }
+}
+
+run_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return $?
+  fi
+
+  if sudo -n true >/dev/null 2>&1; then
+    sudo "$@"
+    return $?
+  fi
+
+  local password="${!SUDO_PASSWORD_ENV:-}"
+  if [ -z "$password" ]; then
+    echo "Missing sudo password in env var: $SUDO_PASSWORD_ENV" >&2
+    echo "Either configure passwordless sudo or export $SUDO_PASSWORD_ENV='<password>'" >&2
+    return 125
+  fi
+
+  printf '%s\n' "$password" | sudo -S -p '' "$@"
+}
+
+now_ns() {
+  date +%s%N
+}
+
+ns_to_ms_3() {
+  local ns="$1"
+  local whole frac
+  whole=$((ns / 1000000))
+  frac=$(((ns % 1000000) / 1000))
+  printf '%s.%03d' "$whole" "$frac"
+}
+
+xmutil_listapps() {
+  if [ -x /usr/bin/xmutil ]; then
+    run_sudo /usr/bin/xmutil listapps
+  else
+    run_sudo xmutil listapps
+  fi
+}
+
+xmutil_app_visible() {
+  xmutil_listapps 2>/dev/null | grep -Fq "$APP_NAME"
+}
+
+xmutil_app_loaded() {
+  xmutil_listapps 2>/dev/null | grep -F "$APP_NAME" | grep -Eq '[0-9]+->[0-9]+'
+}
+
+require_command date
+require_command grep
+require_command sudo
+if [ ! -x /usr/bin/xmutil ] && ! command -v xmutil >/dev/null 2>&1; then
+  echo "xmutil is not available" >&2
+  exit 2
+fi
+
+if ! xmutil_app_visible; then
+  echo "Target overlay app is not visible in xmutil listapps: $APP_NAME" >&2
+  exit 2
+fi
+
+printf 'overlay_switch_test target_app=%s iterations=%s\n' "$APP_NAME" "$ITERATIONS"
+printf 'started_at=%s\n' "$(date -Is)"
+printf 'listapps_before:\n'
+xmutil_listapps || true
+
+total_ns_sum=0
+total_ns_min=0
+total_ns_max=0
+unload_ns_sum=0
+load_ns_sum=0
+
+for iter in $(seq 1 "$ITERATIONS"); do
+  t0="$(now_ns)"
+  if ! run_sudo xmutil unloadapp; then
+    echo "warning: xmutil unloadapp returned non-zero" >&2
+  fi
+  t1="$(now_ns)"
+  if ! run_sudo xmutil loadapp "$APP_NAME"; then
+    echo "xmutil loadapp failed for app: $APP_NAME" >&2
+    exit 3
+  fi
+  t2="$(now_ns)"
+
+  if ! xmutil_app_loaded; then
+    echo "xmutil load verification failed for app: $APP_NAME" >&2
+    exit 3
+  fi
+
+  unload_ns=$((t1 - t0))
+  load_ns=$((t2 - t1))
+  total_ns=$((t2 - t0))
+
+  unload_ns_sum=$((unload_ns_sum + unload_ns))
+  load_ns_sum=$((load_ns_sum + load_ns))
+  total_ns_sum=$((total_ns_sum + total_ns))
+
+  if [ "$iter" -eq 1 ] || [ "$total_ns" -lt "$total_ns_min" ]; then
+    total_ns_min="$total_ns"
+  fi
+  if [ "$iter" -eq 1 ] || [ "$total_ns" -gt "$total_ns_max" ]; then
+    total_ns_max="$total_ns"
+  fi
+
+  printf 'iter=%d unload_ms=%s load_ms=%s total_ms=%s\n' \
+    "$iter" \
+    "$(ns_to_ms_3 "$unload_ns")" \
+    "$(ns_to_ms_3 "$load_ns")" \
+    "$(ns_to_ms_3 "$total_ns")"
+done
+
+printf 'listapps_after:\n'
+xmutil_listapps || true
+
+printf 'summary unload_avg_ms=%s load_avg_ms=%s total_avg_ms=%s total_min_ms=%s total_max_ms=%s\n' \
+  "$(ns_to_ms_3 $((unload_ns_sum / ITERATIONS)))" \
+  "$(ns_to_ms_3 $((load_ns_sum / ITERATIONS)))" \
+  "$(ns_to_ms_3 $((total_ns_sum / ITERATIONS)))" \
+  "$(ns_to_ms_3 "$total_ns_min")" \
+  "$(ns_to_ms_3 "$total_ns_max")"
+printf 'kv260_overlay_switch_test=ok\n'
