@@ -63,11 +63,20 @@ int main(int argc, char ** argv) {
     const Config cfg = parse_config(argc, argv);
     const size_t rows = static_cast<size_t>(cfg.row_num + 1);
     const size_t cols = static_cast<size_t>(cfg.col_num + 1);
-    const size_t bytes = rows * cols;
+    const size_t dram_stride = cfg.dram_stride ? static_cast<size_t>(cfg.dram_stride) : cols;
+    const size_t sram_stride = cfg.sram_stride ? static_cast<size_t>(cfg.sram_stride) : cols;
+    if (dram_stride < cols || sram_stride < cols) {
+        std::fprintf(stderr,
+                     "Invalid 2D strides: cols=%zu sram_stride=%zu dram_stride=%zu\n",
+                     cols, sram_stride, dram_stride);
+        return 2;
+    }
+    const size_t active_bytes = rows * cols;
+    const size_t host_span_bytes = rows == 0 ? 0 : (rows - 1) * dram_stride + cols;
     const int loops = cfg.loops;
 
-    std::printf("mvin_problem_case_test: loops=%d rows=%zu cols=%zu bytes=%zu\n",
-                loops, rows, cols, bytes);
+    std::printf("mvin_problem_case_test: loops=%d rows=%zu cols=%zu active_bytes=%zu host_span_bytes=%zu\n",
+                loops, rows, cols, active_bytes, host_span_bytes);
     std::printf(
         "MVIN params: col=%u row=%u sram_stride=%u dram_stride=%u precision=1 input_type=0 dest=SPM\n",
         cfg.col_num, cfg.row_num, cfg.sram_stride, cfg.dram_stride);
@@ -78,8 +87,8 @@ int main(int argc, char ** argv) {
     }
     npu_reset();
 
-    auto * src = static_cast<uint8_t *>(npu_mem_alloc(bytes));
-    auto * dst = static_cast<uint8_t *>(npu_mem_alloc(bytes));
+    auto * src = static_cast<uint8_t *>(npu_mem_alloc(host_span_bytes));
+    auto * dst = static_cast<uint8_t *>(npu_mem_alloc(host_span_bytes));
     if (!src || !dst) {
         std::fprintf(stderr, "npu_mem_alloc failed\n");
         if (src) npu_mem_free(src);
@@ -88,14 +97,14 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
-    for (size_t i = 0; i < bytes; ++i) {
+    for (size_t i = 0; i < host_span_bytes; ++i) {
         src[i] = static_cast<uint8_t>((i * 131 + 17) & 0xFF);
     }
 
     uint64_t total_mvin_ns = 0;
     uint64_t total_mvout_ns = 0;
     for (int it = 0; it < loops; ++it) {
-        std::memset(dst, 0, bytes);
+        std::memset(dst, 0xA5, host_span_bytes);
 
         const auto t0 = std::chrono::steady_clock::now();
         npu_dma_mvin(
@@ -136,13 +145,29 @@ int main(int argc, char ** argv) {
             std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
 
         size_t mismatches = 0;
-        for (size_t i = 0; i < bytes; ++i) {
-            if (dst[i] != src[i]) {
-                if (mismatches < 8) {
-                    std::fprintf(stderr, "iter=%d mismatch idx=%zu src=0x%02x dst=0x%02x\n",
-                                 it, i, src[i], dst[i]);
+        for (size_t row = 0; row < rows; ++row) {
+            const size_t base = row * dram_stride;
+            for (size_t col = 0; col < cols; ++col) {
+                const size_t i = base + col;
+                if (dst[i] != src[i]) {
+                    if (mismatches < 8) {
+                        std::fprintf(stderr,
+                                     "iter=%d mismatch row=%zu col=%zu idx=%zu src=0x%02x dst=0x%02x\n",
+                                     it, row, col, i, src[i], dst[i]);
+                    }
+                    ++mismatches;
                 }
-                ++mismatches;
+            }
+            for (size_t col = cols; col < dram_stride && base + col < host_span_bytes; ++col) {
+                const size_t i = base + col;
+                if (dst[i] != 0xA5) {
+                    if (mismatches < 8) {
+                        std::fprintf(stderr,
+                                     "iter=%d padding overwritten row=%zu col=%zu idx=%zu dst=0x%02x\n",
+                                     it, row, col, i, dst[i]);
+                    }
+                    ++mismatches;
+                }
             }
         }
         if (mismatches) {
@@ -167,4 +192,3 @@ int main(int argc, char ** argv) {
     npu_destroy();
     return 0;
 }
-

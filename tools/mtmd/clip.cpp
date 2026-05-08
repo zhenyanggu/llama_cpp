@@ -23,6 +23,7 @@
 #include <fstream>
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <unordered_map>
@@ -43,6 +44,7 @@ using json = nlohmann::ordered_json;
 struct clip_profile_tensor_info {
     bool present = false;
     std::string name;
+    std::string op_name;
     std::string type;
     bool is_quantized = false;
     std::array<int64_t, GGML_MAX_DIMS> ne = {};
@@ -88,6 +90,7 @@ static clip_profile_tensor_info clip_capture_tensor_info(const ggml_tensor * t) 
 
     info.present = true;
     info.name = t->name;
+    info.op_name = ggml_op_desc(t);
     info.type = ggml_type_name(t->type);
     info.is_quantized = ggml_is_quantized(t->type);
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
@@ -115,10 +118,59 @@ static json clip_tensor_json(const clip_profile_tensor_info & info) {
 
     return {
         {"name", info.name},
+        {"operator_name", info.op_name},
         {"type", info.type},
         {"is_quantized", info.is_quantized},
         {"shape", clip_shape_json(info.ne)},
     };
+}
+
+static bool clip_is_bias_tensor(const clip_profile_tensor_info & info) {
+    return info.present && info.name.size() >= 5 &&
+        info.name.compare(info.name.size() - 5, 5, ".bias") == 0;
+}
+
+static bool clip_is_large_matmul_bias_add(const clip_profile_node_timing & node) {
+    if (node.op_name != "ADD") {
+        return false;
+    }
+    const bool has_bias = clip_is_bias_tensor(node.srcs[0]) || clip_is_bias_tensor(node.srcs[1]);
+    if (!has_bias) {
+        return false;
+    }
+    // LayerNorm/patch tiny bias ADDs are real elementwise CPU work. The large
+    // projection bias nodes are roots for fused NPU MUL_MAT+ADD execution.
+    return node.ne[0] >= 128 && node.ne[1] >= 128;
+}
+
+struct clip_npu_execution_index {
+    std::unordered_set<std::string> root_names;
+};
+
+static bool clip_node_is_npu_executed(
+        const clip_profile_node_timing & node,
+        const clip_npu_execution_index * npu_index) {
+    return npu_index != nullptr &&
+        npu_index->root_names.find(node.node_name) != npu_index->root_names.end();
+}
+
+static std::string clip_profile_operator_category(
+        const clip_profile_node_timing & node,
+        const clip_npu_execution_index * npu_index = nullptr) {
+    const bool on_npu = clip_node_is_npu_executed(node, npu_index);
+    if (on_npu && clip_is_large_matmul_bias_add(node)) {
+        return "FUSED_MUL_MAT_BIAS_NPU";
+    }
+    if (on_npu && node.op_name == "MUL_MAT") {
+        return "MUL_MAT_NPU";
+    }
+    if (node.op_name == "MUL_MAT") {
+        return "MUL_MAT_CPU";
+    }
+    if (node.op_name == "ADD") {
+        return "ADD_CPU";
+    }
+    return node.op_name;
 }
 
 static std::string clip_shape_key(const std::array<int64_t, GGML_MAX_DIMS> & ne) {
@@ -131,7 +183,10 @@ static std::string clip_mul_mat_signature_key(const clip_profile_node_timing & n
            node.tensor_type + "|" + clip_shape_key(node.ne);
 }
 
-static json clip_node_json(const clip_profile_node_timing & node, double total_us) {
+static json clip_node_json(
+        const clip_profile_node_timing & node,
+        double total_us,
+        const clip_npu_execution_index * npu_index = nullptr) {
     json inputs = json::array();
     for (const auto & src : node.srcs) {
         if (src.present) {
@@ -143,6 +198,9 @@ static json clip_node_json(const clip_profile_node_timing & node, double total_u
         {"event_index", node.event_index},
         {"node_name", node.node_name},
         {"operator_name", node.op_name},
+        {"operator_category", clip_profile_operator_category(node, npu_index)},
+        {"device", clip_node_is_npu_executed(node, npu_index) ? "npu" : "cpu"},
+        {"is_large_matmul_bias_add", clip_is_large_matmul_bias_add(node)},
         {"output", {
             {"name", node.node_name},
             {"type", node.tensor_type},
@@ -154,6 +212,116 @@ static json clip_node_json(const clip_profile_node_timing & node, double total_u
         {"duration_ms", node.duration_us / 1000.0},
         {"share_of_total_time_pct", clip_pct(node.duration_us, total_us)},
     };
+}
+
+struct clip_mul_mat_split_stats {
+    int64_t npu_node_count = 0;
+    double npu_duration_us = 0.0;
+    int64_t cpu_node_count = 0;
+    double cpu_duration_us = 0.0;
+    int64_t unmatched_node_count = 0;
+    double unmatched_duration_us = 0.0;
+};
+
+static clip_npu_execution_index clip_load_npu_execution_index() {
+    clip_npu_execution_index index;
+    const char * npu_trace_path = std::getenv("GGML_NPU_PROFILE_JSON");
+    if (npu_trace_path == nullptr || npu_trace_path[0] == '\0') {
+        return index;
+    }
+
+    std::ifstream in(npu_trace_path);
+    if (!in.is_open()) {
+        return index;
+    }
+
+    json doc;
+    try {
+        in >> doc;
+    } catch (...) {
+        return index;
+    }
+
+    const auto it_nodes = doc.find("nodes");
+    if (it_nodes == doc.end() || !it_nodes->is_array()) {
+        return index;
+    }
+
+    for (const auto & node : *it_nodes) {
+        if (!node.is_object()) {
+            continue;
+        }
+        const std::string root_name = node.value("root_name", std::string());
+        if (!root_name.empty()) {
+            index.root_names.insert(root_name);
+        }
+    }
+
+    return index;
+}
+
+static std::optional<clip_mul_mat_split_stats> clip_load_npu_mul_mat_split(
+    double mul_mat_total_us, int64_t mul_mat_total_node_count) {
+    const char * npu_trace_path = std::getenv("GGML_NPU_PROFILE_JSON");
+    if (npu_trace_path == nullptr || npu_trace_path[0] == '\0') {
+        return std::nullopt;
+    }
+
+    std::ifstream in(npu_trace_path);
+    if (!in.is_open()) {
+        return std::nullopt;
+    }
+
+    json doc;
+    try {
+        in >> doc;
+    } catch (...) {
+        return std::nullopt;
+    }
+
+    const auto it_nodes = doc.find("nodes");
+    if (it_nodes == doc.end() || !it_nodes->is_array()) {
+        return std::nullopt;
+    }
+
+    clip_mul_mat_split_stats s;
+    for (const auto & node : *it_nodes) {
+        if (!node.is_object()) {
+            continue;
+        }
+        if (node.value("compute_op_name", std::string()) != "MUL_MAT") {
+            continue;
+        }
+        s.npu_node_count += 1;
+        s.npu_duration_us += node.value("total_node_us", 0.0);
+    }
+
+    if (s.npu_duration_us > mul_mat_total_us) {
+        s.unmatched_duration_us = s.npu_duration_us - mul_mat_total_us;
+        s.npu_duration_us = mul_mat_total_us;
+    }
+    if (s.npu_node_count > mul_mat_total_node_count) {
+        s.unmatched_node_count = s.npu_node_count - mul_mat_total_node_count;
+        s.npu_node_count = mul_mat_total_node_count;
+    }
+
+    s.cpu_node_count = mul_mat_total_node_count - s.npu_node_count;
+    if (s.cpu_node_count < 0) {
+        s.unmatched_node_count += -s.cpu_node_count;
+        s.cpu_node_count = 0;
+    }
+
+    const double remaining_us = mul_mat_total_us - s.npu_duration_us;
+    if (s.cpu_node_count == 0 && remaining_us > 0.0) {
+        // The NPU trace and ggml callback streams are not one-to-one. Do not
+        // report the uncorrelated remainder as CPU time.
+        s.unmatched_duration_us += remaining_us;
+        s.cpu_duration_us = 0.0;
+    } else {
+        s.cpu_duration_us = std::max(0.0, remaining_us);
+    }
+
+    return s;
 }
 
 struct clip_profiler {
@@ -212,8 +380,10 @@ struct clip_profiler {
 
     json summarize() const {
         std::unordered_map<std::string, clip_profile_op_aggregate> ops;
+        std::unordered_map<std::string, clip_profile_op_aggregate> op_categories;
         std::unordered_map<std::string, clip_profile_signature_aggregate> matmuls;
         std::unordered_map<std::string, clip_profile_node_name_aggregate> node_names;
+        const clip_npu_execution_index npu_index = clip_load_npu_execution_index();
         double total_us = 0.0;
 
         for (const auto & node : nodes) {
@@ -221,6 +391,10 @@ struct clip_profiler {
             auto & agg = ops[node.op_name];
             agg.duration_us += node.duration_us;
             agg.node_count += 1;
+
+            auto & category_agg = op_categories[clip_profile_operator_category(node, &npu_index)];
+            category_agg.duration_us += node.duration_us;
+            category_agg.node_count += 1;
 
             auto & node_name_agg = node_names[node.node_name + "|" + node.op_name];
             if (node_name_agg.node_count == 0) {
@@ -263,6 +437,14 @@ struct clip_profiler {
             return lhs.first < rhs.first;
         });
 
+        std::vector<std::pair<std::string, clip_profile_op_aggregate>> sorted_categories(op_categories.begin(), op_categories.end());
+        std::sort(sorted_categories.begin(), sorted_categories.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.second.duration_us != rhs.second.duration_us) {
+                return lhs.second.duration_us > rhs.second.duration_us;
+            }
+            return lhs.first < rhs.first;
+        });
+
         std::vector<std::pair<std::string, clip_profile_signature_aggregate>> sorted_matmuls(matmuls.begin(), matmuls.end());
         std::sort(sorted_matmuls.begin(), sorted_matmuls.end(), [](const auto & lhs, const auto & rhs) {
             if (lhs.second.duration_us != rhs.second.duration_us) {
@@ -298,10 +480,23 @@ struct clip_profiler {
             });
         }
 
+        json operator_categories = json::array();
+        for (const auto & [name, agg] : sorted_categories) {
+            operator_categories.push_back({
+                {"operator_category", name},
+                {"duration_us", agg.duration_us},
+                {"duration_ms", agg.duration_us / 1000.0},
+                {"share_of_total_time_pct", clip_pct(agg.duration_us, total_us)},
+                {"node_event_count", agg.node_count},
+            });
+        }
+
         json mul_mat_signatures = json::array();
         double mul_mat_total_us = 0.0;
+        int64_t mul_mat_total_node_count = 0;
         for (const auto & [_, sig] : sorted_matmuls) {
             mul_mat_total_us += sig.duration_us;
+            mul_mat_total_node_count += sig.node_count;
             mul_mat_signatures.push_back({
                 {"src0", clip_tensor_json(sig.src0)},
                 {"src1", clip_tensor_json(sig.src1)},
@@ -312,6 +507,31 @@ struct clip_profiler {
                 {"node_event_count", sig.node_count},
                 {"example_node_names", sig.example_node_names},
             });
+        }
+
+        json mul_mat_split = nullptr;
+        if (const auto split = clip_load_npu_mul_mat_split(mul_mat_total_us, mul_mat_total_node_count); split.has_value()) {
+            const auto & s = split.value();
+            mul_mat_split = {
+                {"manifest_available", true},
+                {"npu", {
+                    {"node_event_count", s.npu_node_count},
+                    {"duration_us", s.npu_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.npu_duration_us, total_us)},
+                }},
+                {"cpu", {
+                    {"node_event_count", s.cpu_node_count},
+                    {"duration_us", s.cpu_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.cpu_duration_us, total_us)},
+                }},
+                {"unmatched", {
+                    {"node_event_count", s.unmatched_node_count},
+                    {"duration_us", s.unmatched_duration_us},
+                    {"share_of_total_time_pct", clip_pct(s.unmatched_duration_us, total_us)},
+                }},
+                {"correlation_quality", (s.unmatched_node_count == 0 && s.unmatched_duration_us == 0.0) ? "usable" : "partial"},
+                {"note", "Only matched NPU node time is attributed to NPU. Remainder is unmatched unless callback and NPU trace counts prove a CPU split."},
+            };
         }
 
         json node_name_summary = json::array();
@@ -329,12 +549,12 @@ struct clip_profiler {
 
         json top_nodes = json::array();
         for (size_t i = 0; i < sorted_nodes.size() && i < 25; ++i) {
-            top_nodes.push_back(clip_node_json(sorted_nodes[i], total_us));
+            top_nodes.push_back(clip_node_json(sorted_nodes[i], total_us, &npu_index));
         }
 
         json all_nodes = json::array();
         for (const auto & node : nodes) {
-            all_nodes.push_back(clip_node_json(node, total_us));
+            all_nodes.push_back(clip_node_json(node, total_us, &npu_index));
         }
 
         return {
@@ -342,12 +562,15 @@ struct clip_profiler {
             {"timing_unit", "us"},
             {"note", "Per-node wall-clock timings captured through ggml eval callback. Profiling forces node-by-node synchronized execution, so totals are from profiled replay and operator shares should be interpreted primarily as proportions."},
             {"node_event_count", nodes.size()},
+            {"npu_matched_root_count", npu_index.root_names.size()},
             {"total_us", total_us},
             {"total_ms", total_us / 1000.0},
             {"mul_mat_total_us", mul_mat_total_us},
             {"mul_mat_total_ms", mul_mat_total_us / 1000.0},
             {"mul_mat_share_of_total_time_pct", clip_pct(mul_mat_total_us, total_us)},
+            {"mul_mat_split", mul_mat_split},
             {"operators", operators},
+            {"operator_categories", operator_categories},
             {"mul_mat_signatures", mul_mat_signatures},
             {"node_name_summary", node_name_summary},
             {"top_nodes", top_nodes},
@@ -1773,7 +1996,9 @@ struct clip_ctx {
                 cfg.weight_scale.data(),
                 cfg.weight_scale.size(),
                 cfg.sum_w.data(),
-                cfg.sum_w.size());
+                cfg.sum_w.size(),
+                cfg.smooth_scale.empty() ? nullptr : cfg.smooth_scale.data(),
+                cfg.smooth_scale.size());
             if (ok) {
                 ++registered;
             } else {
@@ -3413,19 +3638,6 @@ private:
         }
 
         if (ctx->backend_is_npu()) {
-            if (cfg.smooth_enabled) {
-                const auto smooth_it = model.aicas_smooth_scale_tensors.find(weight->name);
-                GGML_ASSERT(smooth_it != model.aicas_smooth_scale_tensors.end());
-                ggml_tensor * smooth_scale = smooth_it->second;
-                GGML_ASSERT(smooth_scale != nullptr);
-                GGML_ASSERT(smooth_scale->type == GGML_TYPE_F32);
-                GGML_ASSERT(smooth_scale->ne[0] == act->ne[0]);
-
-                ggml_tensor * smooth_scale_2d = ggml_repeat(ctx0, smooth_scale, act);
-                ggml_set_name(smooth_scale_2d, (std::string(weight->name) + "_smooth_scale").c_str());
-                act = ggml_div(ctx0, act, smooth_scale_2d);
-                ggml_set_name(act, (std::string(weight->name) + "_desmooth").c_str());
-            }
             if (!ggml_is_contiguous(act)) {
                 act = ggml_cont(ctx0, act);
             }

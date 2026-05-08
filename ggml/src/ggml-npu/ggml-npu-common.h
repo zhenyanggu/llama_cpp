@@ -9,7 +9,7 @@
 
 namespace ggml_npu {
 
-constexpr int64_t NPU_SA_TILE = 32;
+constexpr int64_t NPU_SA_TILE = 16;
 constexpr int64_t NPU_STAGE2_K_TILE = 2048;
 constexpr int64_t NPU_Q8_BLOCK = 32;
 // TODO: Replace these placeholder capacities with the real platform values.
@@ -37,7 +37,10 @@ struct npu_runtime_layout {
     // layout to carry the corresponding bank identifier.
     npu_memory_slice activation;
     npu_memory_slice weight;
-    npu_memory_slice accumulator;
+    npu_memory_slice bias_accumulator;
+    npu_memory_slice output_accumulator;
+    npu_memory_slice bias_cache;
+    npu_memory_slice scale_cache;
 };
 
 struct npu_tiling_config {
@@ -113,6 +116,8 @@ struct npu_aicas_w8a8_config {
     int32_t act_zero_point_u8 = 128;
     std::vector<float> weight_scale;
     std::vector<int32_t> sum_w;
+    // Per-K fused activation multiplier: 1 / (act_scale * smooth_scale[k]).
+    std::vector<float> smooth_scale;
 };
 
 struct npu_prepacked_weight {

@@ -19,7 +19,9 @@ bool npu_register_aicas_w8a8(
         const float * weight_scale,
         size_t weight_scale_len,
         const int32_t * sum_w,
-        size_t sum_w_len);
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len);
 bool npu_preload_aicas_w8a8_tensor(const struct ggml_tensor * src0, std::string * error);
 void npu_clear_preloaded_weight_cache(void);
 

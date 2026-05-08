@@ -23,7 +23,7 @@ artifacts
 *.so
 *.swp
 *.tmp
-
+npuruntime/kv260/runtime/kv260_*
 AICAS/bin
 AICAS/data
 AICAS/venv

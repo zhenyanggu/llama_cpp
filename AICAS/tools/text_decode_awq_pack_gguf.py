@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-gguf", required=True)
     parser.add_argument("--output-summary", default="AICAS/artifacts/text_decode_awq_pack_summary.json")
     parser.add_argument("--min-scale", type=float, default=1e-8)
+    parser.add_argument("--scale-dtype", choices=["f32", "f16"], default="f32")
     return parser.parse_args()
 
 
@@ -140,6 +141,7 @@ def main() -> int:
         "input_gguf": os.path.abspath(args.input_gguf),
         "source_weights_gguf": os.path.abspath(args.source_weights_gguf),
         "policy": os.path.abspath(args.policy),
+        "scale_dtype": args.scale_dtype,
         "layers": [],
     }
 
@@ -179,14 +181,16 @@ def main() -> int:
                 raise RuntimeError(f"shape mismatch for {layer.tensor_name}: {source.shape} vs expected {(layer.out_features, layer.in_features)}")
             scaled = np.asarray(source * layer.smooth_scale[np.newaxis, :], dtype=np.float32)
             packed, scales, zeros = quantize_groupwise_q4(scaled, layer.group_size, args.min_scale)
+            scales_out = scales.astype(np.float16) if args.scale_dtype == "f16" else scales
 
             writer.add_tensor_info(layer.quant_tensor_name, packed.shape, packed.dtype, packed.nbytes, raw_dtype=None)
-            writer.add_tensor_info(layer.scale_tensor_name, scales.shape, scales.dtype, scales.nbytes, raw_dtype=None)
+            writer.add_tensor_info(layer.scale_tensor_name, scales_out.shape, scales_out.dtype, scales_out.nbytes, raw_dtype=None)
             writer.add_tensor_info(layer.zero_tensor_name, zeros.shape, zeros.dtype, zeros.nbytes, raw_dtype=None)
             staged.append(np.ascontiguousarray(packed))
-            staged.append(np.ascontiguousarray(scales))
+            staged.append(np.ascontiguousarray(scales_out))
             staged.append(np.ascontiguousarray(zeros))
             entry["groups"] = int(scales.shape[1])
+            entry["scale_dtype"] = args.scale_dtype
 
         summary["layers"].append(entry)
 

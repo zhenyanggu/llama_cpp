@@ -9,7 +9,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <unordered_set>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,11 @@ static std::string to_lower(std::string value) {
         return (char) std::tolower(c);
     });
     return value;
+}
+
+static std::string resolve_profile_level() {
+    const std::string level = to_lower(env_string("GGML_NPU_PROFILE_LEVEL"));
+    return level.empty() ? "diagnostic" : level;
 }
 
 static bool contains_any(const std::string & haystack, const std::vector<std::string> & needles) {
@@ -204,6 +211,7 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"dma_in_activation_us", tile.dma_in_activation_us},
         {"dma_in_weight_us", tile.dma_in_weight_us},
         {"dma_in_bias_us", tile.dma_in_bias_us},
+        {"dma_in_pair_us", tile.dma_in_pair_us},
         {"gemm_us", tile.gemm_us},
         {"dma_out_us", tile.dma_out_us},
         {"postprocess_us", tile.postprocess_us},
@@ -217,7 +225,7 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         tiles.push_back(tile_json(tile));
     }
 
-    const double total_dma_in_us = node.dma_in_activation_us_total + node.dma_in_weight_us_total + node.dma_in_bias_us_total;
+    const double total_dma_in_us = node.dma_in_pair_us_total + node.dma_in_bias_us_total;
 
     return {
         {"layer_id", node.layer_id},
@@ -249,6 +257,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"activation_offset", node.activation_offset},
         {"weight_offset", node.weight_offset},
         {"accumulator_offset", node.accumulator_offset},
+        {"bias_accumulator_offset", node.bias_accumulator_offset},
+        {"output_accumulator_offset", node.output_accumulator_offset},
         {"activation_pack_calls", node.activation_pack_calls},
         {"host_copy_activation_calls", node.host_copy_activation_calls},
         {"host_copy_weight_calls", node.host_copy_weight_calls},
@@ -256,6 +266,7 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_activation_calls", node.dma_in_activation_calls},
         {"dma_in_weight_calls", node.dma_in_weight_calls},
         {"dma_in_bias_calls", node.dma_in_bias_calls},
+        {"dma_in_pair_calls", node.dma_in_pair_calls},
         {"gemm_calls", node.gemm_calls},
         {"dma_out_calls", node.dma_out_calls},
         {"postprocess_calls", node.postprocess_calls},
@@ -271,6 +282,7 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_activation_us_total", node.dma_in_activation_us_total},
         {"dma_in_weight_us_total", node.dma_in_weight_us_total},
         {"dma_in_bias_us_total", node.dma_in_bias_us_total},
+        {"dma_in_pair_us_total", node.dma_in_pair_us_total},
         {"dma_in_total_us", total_dma_in_us},
         {"gemm_us_total", node.gemm_us_total},
         {"dma_out_us_total", node.dma_out_us_total},
@@ -281,6 +293,65 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"error", node.error.empty() ? nullptr : json(node.error)},
         {"tiles", tiles},
     };
+}
+
+static json node_json_compact(const npu_profile_node_record & node, double total_us) {
+    return {
+        {"layer_id", node.layer_id},
+        {"semantic_op", node.semantic_op},
+        {"compute_op_name", node.compute_op_name},
+        {"root_name", node.root_tensor.present ? node.root_tensor.name : ""},
+        {"weight_name", node.weight_tensor.present ? node.weight_tensor.name : ""},
+        {"m", node.m},
+        {"n", node.n},
+        {"k", node.k},
+        {"total_node_us", node.total_node_us},
+        {"share_of_profile_time_pct", pct(node.total_node_us, total_us)},
+        {"status", node.status},
+        {"error", node.error.empty() ? nullptr : json(node.error)},
+    };
+}
+
+static std::string shape_signature(const npu_profile_node_record & node) {
+    std::ostringstream oss;
+    oss << (node.compute_op_name.empty() ? "MUL_MAT" : node.compute_op_name)
+        << ":" << node.m
+        << "x" << node.n
+        << "x" << node.k;
+    return oss.str();
+}
+
+static std::vector<npu_profile_node_record> sample_nodes_by_shape(
+    const std::vector<npu_profile_node_record> & nodes) {
+    std::vector<npu_profile_node_record> sampled;
+    sampled.reserve(nodes.size());
+    std::unordered_set<std::string> seen;
+    seen.reserve(nodes.size());
+
+    for (const auto & node : nodes) {
+        const std::string sig = shape_signature(node);
+        if (seen.insert(sig).second) {
+            sampled.push_back(node);
+        }
+    }
+
+    return sampled;
+}
+
+static std::vector<npu_profile_node_record> sample_nodes_first_layer(
+    const std::vector<npu_profile_node_record> & nodes) {
+    if (nodes.empty()) {
+        return {};
+    }
+
+    const int64_t target_layer = nodes.front().layer_id;
+    std::vector<npu_profile_node_record> sampled;
+    for (const auto & node : nodes) {
+        if (node.layer_id == target_layer) {
+            sampled.push_back(node);
+        }
+    }
+    return sampled;
 }
 
 static json manifest_json(const std::vector<npu_profile_node_record> & nodes) {
@@ -349,7 +420,9 @@ npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu
     record.acc_bytes = plan.config.acc_bytes;
     record.activation_offset = plan.config.layout.activation.offset;
     record.weight_offset = plan.config.layout.weight.offset;
-    record.accumulator_offset = plan.config.layout.accumulator.offset;
+    record.accumulator_offset = plan.config.layout.output_accumulator.offset;
+    record.bias_accumulator_offset = plan.config.layout.bias_accumulator.offset;
+    record.output_accumulator_offset = plan.config.layout.output_accumulator.offset;
     return record;
 }
 
@@ -386,10 +459,12 @@ void npu_profile_flush() {
     std::vector<npu_profile_node_record> snapshot;
     std::string output_path;
     std::string manifest_path;
+    std::string profile_level;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
         output_path = resolve_output_path();
         manifest_path = derive_manifest_path(output_path);
+        profile_level = resolve_profile_level();
         state.output_path = output_path;
         state.manifest_path = manifest_path;
         snapshot = state.nodes;
@@ -404,10 +479,14 @@ void npu_profile_flush() {
     double total_host_copy_activation_us = 0.0;
     double total_host_copy_weight_us = 0.0;
     double total_bias_prepare_us = 0.0;
-    double total_dma_in_us = 0.0;
+    double total_dma_in_pair_us = 0.0;
+    double total_dma_in_bias_us = 0.0;
     double total_gemm_us = 0.0;
     double total_dma_out_us = 0.0;
     double total_postprocess_us = 0.0;
+    int64_t total_bias_prepare_calls = 0;
+    int64_t total_dma_in_pair_calls = 0;
+    int64_t total_dma_in_bias_calls = 0;
 
     std::sort(snapshot.begin(), snapshot.end(), [](const auto & lhs, const auto & rhs) {
         return lhs.layer_id < rhs.layer_id;
@@ -419,10 +498,14 @@ void npu_profile_flush() {
         total_host_copy_activation_us += node.host_copy_activation_us_total;
         total_host_copy_weight_us += node.host_copy_weight_us_total;
         total_bias_prepare_us += node.bias_prepare_us_total;
-        total_dma_in_us += node.dma_in_activation_us_total + node.dma_in_weight_us_total + node.dma_in_bias_us_total;
+        total_dma_in_pair_us += node.dma_in_pair_us_total;
+        total_dma_in_bias_us += node.dma_in_bias_us_total;
         total_gemm_us += node.gemm_us_total;
         total_dma_out_us += node.dma_out_us_total;
         total_postprocess_us += node.postprocess_us_total;
+        total_bias_prepare_calls += node.bias_prepare_calls;
+        total_dma_in_pair_calls += node.dma_in_pair_calls;
+        total_dma_in_bias_calls += node.dma_in_bias_calls;
     }
 
     std::vector<npu_profile_node_record> hot_nodes = snapshot;
@@ -444,23 +527,51 @@ void npu_profile_flush() {
         });
     }
 
+    const bool diagnostic_level = profile_level == "diagnostic";
+    const bool shape_sample = profile_level == "shape";
+    const bool first_layer_sample = profile_level == "layer" || profile_level == "first_layer";
+    const bool compact_level = profile_level == "compact" || diagnostic_level;
+    std::vector<npu_profile_node_record> node_records = snapshot;
+    if (shape_sample) {
+        node_records = sample_nodes_by_shape(snapshot);
+    } else if (first_layer_sample) {
+        node_records = sample_nodes_first_layer(snapshot);
+    }
+
     json nodes = json::array();
-    for (const auto & node : snapshot) {
-        nodes.push_back(node_json(node, total_us));
+    for (const auto & node : node_records) {
+        nodes.push_back(compact_level ? node_json_compact(node, total_us) : node_json(node, total_us));
     }
 
     json out = {
         {"profile_kind", "ggml_npu_node_trace"},
+        {"profile_level", profile_level},
         {"timing_unit", "us"},
-        {"note", "Per-node and per-tile wall-clock timings captured around ggml-npu execution. DMA/GEMM timings here are user-space call latencies; NPU runtime profile JSON provides the lower-level stage split including wait_irq."},
+        {"note", diagnostic_level
+            ? "Diagnostic profile keeps per-node aggregate timings and omits per-tile records to reduce profiling overhead. DMA-in uses additive dma_in_pair_us for dual-DMA launches; activation/weight split is bytes/calls only unless an estimated field is present."
+            : (shape_sample
+            ? "Node-level wall-clock timings captured around ggml-npu execution; nodes[] is sampled to one record per (op,m,n,k) shape to reduce profiling overhead and JSON size."
+            : (first_layer_sample
+                ? "Node-level wall-clock timings captured around ggml-npu execution; nodes[] keeps only one layer (the first layer_id in execution order) to reduce profiling overhead and JSON size."
+                : (compact_level
+                    ? "Compact profile keeps summary/by_semantic_op/hot_nodes and minimal per-node fields (layer/op/shape/time share), omitting tile/tensor/call/byte details."
+                    : "Per-node and per-tile wall-clock timings captured around ggml-npu execution. DMA/GEMM timings here are user-space call latencies; NPU runtime profile JSON provides the lower-level stage split including wait_irq.")))},
         {"node_count", snapshot.size()},
+        {"recorded_node_count", node_records.size()},
         {"summary", {
             {"total_node_us", total_us},
             {"total_activation_pack_us", total_activation_pack_us},
             {"total_host_copy_activation_us", total_host_copy_activation_us},
             {"total_host_copy_weight_us", total_host_copy_weight_us},
             {"total_bias_prepare_us", total_bias_prepare_us},
-            {"total_dma_in_us", total_dma_in_us},
+            {"total_bias_prepare_calls", total_bias_prepare_calls},
+            {"total_dma_in_us", total_dma_in_pair_us + total_dma_in_bias_us},
+            {"total_dma_in_pair_us", total_dma_in_pair_us},
+            {"total_dma_in_pair_calls", total_dma_in_pair_calls},
+            {"total_dma_in_bias_us", total_dma_in_bias_us},
+            {"total_dma_in_bias_calls", total_dma_in_bias_calls},
+            {"total_mvinbias_us", total_dma_in_bias_us},
+            {"total_mvinbias_calls", total_dma_in_bias_calls},
             {"total_gemm_us", total_gemm_us},
             {"total_dma_out_us", total_dma_out_us},
             {"total_postprocess_us", total_postprocess_us},
@@ -516,13 +627,26 @@ void npu_summary_session_stop(ggml_npu_profile_summary * out) {
     snapshot.runtime_total_us = static_cast<int64_t>(runtime.total_ns / 1000);
     snapshot.runtime_dma_in_us = static_cast<int64_t>(runtime.dma_in_ns / 1000);
     snapshot.runtime_compute_us = static_cast<int64_t>(runtime.compute_ns / 1000);
+    snapshot.runtime_compute_exclusive_us = static_cast<int64_t>((runtime.compute_ns > runtime.wait_irq_ns ? runtime.compute_ns - runtime.wait_irq_ns : 0) / 1000);
     snapshot.runtime_dma_out_us = static_cast<int64_t>(runtime.dma_out_ns / 1000);
     snapshot.runtime_layout_us = static_cast<int64_t>(runtime.layout_ns / 1000);
+    snapshot.runtime_layout_exclusive_us = static_cast<int64_t>((runtime.layout_ns > runtime.wait_irq_ns ? runtime.layout_ns - runtime.wait_irq_ns : 0) / 1000);
     snapshot.runtime_wait_irq_us = static_cast<int64_t>(runtime.wait_irq_ns / 1000);
     snapshot.runtime_mvin_calls = static_cast<int64_t>(runtime.mvin_calls);
     snapshot.runtime_compute_calls = static_cast<int64_t>(runtime.compute_calls);
     snapshot.runtime_mvout_calls = static_cast<int64_t>(runtime.mvout_calls);
     snapshot.runtime_layout_calls = static_cast<int64_t>(runtime.layout_calls);
+
+    // In dual-DMA runs, runtime dma_in_ns may report 0 despite active DMA work.
+    // Fall back to profiled per-node DMA-in totals when we have mvin activity.
+    if (snapshot.runtime_dma_in_us == 0) {
+        const int64_t profiled_dma_in_us =
+            snapshot.dma_in_pair_us_total +
+            snapshot.dma_in_bias_us_total;
+        if (profiled_dma_in_us > 0) {
+            snapshot.runtime_dma_in_us = profiled_dma_in_us;
+        }
+    }
 
     if (out != nullptr) {
         *out = snapshot;
@@ -549,6 +673,7 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_activation_calls += delta.dma_in_activation_calls;
     summary.dma_in_weight_calls += delta.dma_in_weight_calls;
     summary.dma_in_bias_calls += delta.dma_in_bias_calls;
+    summary.dma_in_pair_calls += delta.dma_in_pair_calls;
     summary.gemm_calls += delta.gemm_calls;
     summary.dma_out_calls += delta.dma_out_calls;
     summary.postprocess_calls += delta.postprocess_calls;
@@ -565,6 +690,7 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_activation_us_total += delta.dma_in_activation_us_total;
     summary.dma_in_weight_us_total += delta.dma_in_weight_us_total;
     summary.dma_in_bias_us_total += delta.dma_in_bias_us_total;
+    summary.dma_in_pair_us_total += delta.dma_in_pair_us_total;
     summary.gemm_us_total += delta.gemm_us_total;
     summary.dma_out_us_total += delta.dma_out_us_total;
     summary.postprocess_us_total += delta.postprocess_us_total;

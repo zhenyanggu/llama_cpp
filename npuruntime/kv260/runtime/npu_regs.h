@@ -90,6 +90,9 @@ extern "C" {
 #define NPU_REGS__CFG_MVOUT0__SOURCE_bm 0x20
 #define NPU_REGS__CFG_MVOUT0__SOURCE_bp 5
 #define NPU_REGS__CFG_MVOUT0__SOURCE_bw 1
+#define NPU_REGS__CFG_MVOUT0__PER_CHANNEL_bm 0x40
+#define NPU_REGS__CFG_MVOUT0__PER_CHANNEL_bp 6
+#define NPU_REGS__CFG_MVOUT0__PER_CHANNEL_bw 1
 #define NPU_REGS__CFG_MVOUT0__SRAM_STRIDE_bm 0xffff0000
 #define NPU_REGS__CFG_MVOUT0__SRAM_STRIDE_bp 16
 #define NPU_REGS__CFG_MVOUT0__SRAM_STRIDE_bw 16
@@ -385,12 +388,12 @@ extern "C" {
 #define NPU_REGS__IPR__PENDING_bw 6
 
 // Reg - npu_regs::DMA_STATUS
-#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bm 0x3
+#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bm 0x7
 #define NPU_REGS__DMA_STATUS__MVIN_BUSY_bp 0
-#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bw 2
-#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bm 0x300
+#define NPU_REGS__DMA_STATUS__MVIN_BUSY_bw 3
+#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bm 0x700
 #define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bp 8
-#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bw 2
+#define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bw 3
 
 // Addrmap - npu_regs
 typedef struct __attribute__ ((__packed__)) {

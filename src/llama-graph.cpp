@@ -205,15 +205,19 @@ static uint8_t llama_decode_awq_q4(
         : ((packed >> 4) & 0x0fu);
 }
 
-static inline float llama_tensor_read_scalar(
-        const struct ggml_tensor * t,
-        const char * row_ptr,
-        const int64_t idx) {
-    if (t->type == GGML_TYPE_F32) {
-        return ((const float *) row_ptr)[idx];
+static float llama_decode_awq_read_scale(
+        const struct ggml_tensor * scale_tensor,
+        int64_t row,
+        int64_t group) {
+    const char * ptr = (const char *) scale_tensor->data + row * scale_tensor->nb[1] + group * scale_tensor->nb[0];
+    switch (scale_tensor->type) {
+        case GGML_TYPE_F32:
+            return *(const float *) ptr;
+        case GGML_TYPE_F16:
+            return ggml_fp16_to_fp32(*(const ggml_fp16_t *) ptr);
+        default:
+            GGML_ABORT("unsupported AICAS text decode AWQ scale tensor type");
     }
-    GGML_ASSERT(t->type == GGML_TYPE_F16);
-    return ggml_fp16_to_fp32(((const ggml_fp16_t *) row_ptr)[idx]);
 }
 
 static void llama_compute_text_decode_awq_mul_mat(
@@ -247,6 +251,10 @@ static void llama_compute_text_decode_awq_mul_mat(
     GGML_ASSERT(cfg->has_valid_smooth_config());
     GGML_ASSERT(cfg->has_valid_group_params(out_channels));
 
+    const float * zero_data = (const float *) cfg->zero_tensor->data;
+    GGML_ASSERT(cfg->scale_tensor->type == GGML_TYPE_F32 || cfg->scale_tensor->type == GGML_TYPE_F16);
+    GGML_ASSERT(cfg->zero_tensor->type == GGML_TYPE_F32);
+
     const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
     const int64_t col_begin = ith * cols_per_thread;
     const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
@@ -260,18 +268,21 @@ static void llama_compute_text_decode_awq_mul_mat(
 
         for (int64_t j = 0; j < out_channels; ++j) {
             const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
-            const char * scale_row = (const char *) cfg->scale_tensor->data + j * cfg->scale_tensor->nb[1];
-            const char * zero_row  = (const char *) cfg->zero_tensor->data  + j * cfg->zero_tensor->nb[1];
+            const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
 
             float acc = 0.0f;
+            int64_t last_g = -1;
+            float group_scale = 0.0f;
             for (int64_t i = 0; i < k; ++i) {
                 const int64_t g = i / cfg->group_size;
-                // decode path: prefer FP16 activation (W4A16), but still accept F32 fallback input.
-                const float act_value = llama_tensor_read_scalar(b, act_col, i) / cfg->smooth_scale[static_cast<size_t>(i)];
+                if (g != last_g) {
+                    group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
+                    last_g = g;
+                }
+                const float act_value = act_col[i] / cfg->smooth_scale[static_cast<size_t>(i)];
                 const uint8_t packed = w_row[i / 2];
                 const float q = (float) llama_decode_awq_q4(packed, i);
-                const float w = (q - llama_tensor_read_scalar(cfg->zero_tensor, zero_row, g))
-                    * llama_tensor_read_scalar(cfg->scale_tensor, scale_row, g);
+                const float w = (q - zero_row[g]) * group_scale;
                 acc += act_value * w;
             }
             out_col[j] = acc;

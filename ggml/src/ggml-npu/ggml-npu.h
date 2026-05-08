@@ -27,6 +27,7 @@ typedef struct ggml_npu_profile_summary {
     int64_t dma_in_activation_calls;
     int64_t dma_in_weight_calls;
     int64_t dma_in_bias_calls;
+    int64_t dma_in_pair_calls;
     int64_t gemm_calls;
     int64_t dma_out_calls;
     int64_t postprocess_calls;
@@ -43,14 +44,17 @@ typedef struct ggml_npu_profile_summary {
     int64_t dma_in_activation_us_total;
     int64_t dma_in_weight_us_total;
     int64_t dma_in_bias_us_total;
+    int64_t dma_in_pair_us_total;
     int64_t gemm_us_total;
     int64_t dma_out_us_total;
     int64_t postprocess_us_total;
     int64_t runtime_total_us;
     int64_t runtime_dma_in_us;
     int64_t runtime_compute_us;
+    int64_t runtime_compute_exclusive_us;
     int64_t runtime_dma_out_us;
     int64_t runtime_layout_us;
+    int64_t runtime_layout_exclusive_us;
     int64_t runtime_wait_irq_us;
     int64_t runtime_mvin_calls;
     int64_t runtime_compute_calls;
@@ -70,7 +74,9 @@ GGML_BACKEND_API bool ggml_backend_npu_w8a8_register(
         const float * weight_scale,
         size_t weight_scale_len,
         const int32_t * sum_w,
-        size_t sum_w_len);
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len);
 GGML_BACKEND_API bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor);
 GGML_BACKEND_API void ggml_backend_npu_w8a8_preload_clear(void);
 

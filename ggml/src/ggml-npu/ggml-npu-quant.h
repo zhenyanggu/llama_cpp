@@ -45,6 +45,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         int64_t k_cols,
         float scale,
         int32_t zero_point,
+        const std::vector<float> * smooth_scale,
         std::vector<int8_t> * packed,
         std::string * error);
 

@@ -42,9 +42,10 @@ struct MvoutConfig {
     uint8_t  precision;    // 2-bit: 数据精度：仍然全1
     uint8_t  output_type;  // 2-bit: 输出类型：00代表int8（从spm），01代表int32（从acc）
     bool     source;       // 1-bit: 0=SPM, 1=ACC
-    bool     is_quant;     // 1-bit: 是否量化（没有作用，全0）
+    bool     is_quant;     // 1-bit: 是否量化
     uint32_t quant_zero;
-    uint32_t f32_scale;//要求是q8.24格式
+    uint32_t scale_or_addr;// per-tensor: signed Q8.24 immediate; per-channel: ACC address of Q8.24 scale vector
+    bool     per_channel;  // 0=scale_or_addr is immediate, 1=scale_or_addr is ACC address
 };
 
 struct SfuConfig {
@@ -297,7 +298,10 @@ public:
     void free(void* ptr);
 
 private:
-    static constexpr uint32_t DMA_CHANNEL_COUNT = 2;
+    static constexpr uint32_t DMA_CHANNEL_COUNT = 3;
+    static constexpr uint32_t SPM_DMA0_IDX = 0;
+    static constexpr uint32_t SPM_DMA1_IDX = 1;
+    static constexpr uint32_t ACC_DMA_IDX = 2;
 
     int fd;
     void* regs_virt_base;   // 寄存器空间的虚拟基地址
@@ -362,6 +366,8 @@ private:
     void validate_dma_mask(uint32_t dma_mask) const;
     void validate_mvin_dma_cfg(uint32_t dma_id, const MvinConfig& cfg) const;
     void validate_mvout_dma_cfg(uint32_t dma_id, const MvoutConfig& cfg) const;
+    uint32_t select_sync_mvin_dma(const MvinConfig& cfg) const;
+    uint32_t select_sync_mvout_dma(const MvoutConfig& cfg) const;
     void wait_dma_idle(bool is_mvin, uint32_t dma_mask);
     void release_mvin_staging(uint32_t dma_mask);
 };
@@ -492,7 +498,23 @@ extern "C" {
         bool     source,       // 1-bit: 0=SPM, 1=ACC
         bool     is_quant,     // 1-bit
         uint32_t quant_zero,
-        uint32_t f32_scale
+        uint32_t scale_or_addr
+    );
+
+    void npu_dma_mvout_ex(
+        void* host_ptr,
+        uint32_t sram_addr,
+        uint32_t col_num,
+        uint32_t row_num,
+        uint16_t sram_stride,
+        uint32_t dram_stride,
+        uint8_t  precision,
+        uint8_t  output_type,
+        bool     source,
+        bool     is_quant,
+        uint32_t quant_zero,
+        uint32_t scale_or_addr,
+        bool     per_channel
     );
 
     // 异步 DMA：提交后立即返回，调用者后续用 wait 接口等待完成。
@@ -898,7 +920,23 @@ extern "C" {
         bool     source,       // 1-bit: 0=SPM, 1=ACC
         bool     is_quant,     // 1-bit
         uint32_t quant_zero,
-        uint32_t f32_scale
+        uint32_t scale_or_addr
+    );
+
+    void npu_dma_mvout_ex(
+        void* host_ptr,
+        uint32_t sram_addr,
+        uint32_t col_num,
+        uint32_t row_num,
+        uint16_t sram_stride,
+        uint32_t dram_stride,
+        uint8_t  precision,
+        uint8_t  output_type,
+        bool     source,
+        bool     is_quant,
+        uint32_t quant_zero,
+        uint32_t scale_or_addr,
+        bool     per_channel
     );
 }
 

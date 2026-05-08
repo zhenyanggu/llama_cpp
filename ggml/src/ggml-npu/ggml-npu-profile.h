@@ -43,6 +43,7 @@ struct npu_profile_tile_record {
     double dma_in_activation_us = 0.0;
     double dma_in_weight_us = 0.0;
     double dma_in_bias_us = 0.0;
+    double dma_in_pair_us = 0.0;
     double gemm_us = 0.0;
     double dma_out_us = 0.0;
     double postprocess_us = 0.0;
@@ -79,6 +80,8 @@ struct npu_profile_node_record {
     uint32_t activation_offset = 0;
     uint32_t weight_offset = 0;
     uint32_t accumulator_offset = 0;
+    uint32_t bias_accumulator_offset = 0;
+    uint32_t output_accumulator_offset = 0;
     int64_t activation_pack_calls = 0;
     int64_t host_copy_activation_calls = 0;
     int64_t host_copy_weight_calls = 0;
@@ -86,6 +89,7 @@ struct npu_profile_node_record {
     int64_t dma_in_activation_calls = 0;
     int64_t dma_in_weight_calls = 0;
     int64_t dma_in_bias_calls = 0;
+    int64_t dma_in_pair_calls = 0;
     int64_t gemm_calls = 0;
     int64_t dma_out_calls = 0;
     int64_t postprocess_calls = 0;
@@ -101,6 +105,7 @@ struct npu_profile_node_record {
     double dma_in_activation_us_total = 0.0;
     double dma_in_weight_us_total = 0.0;
     double dma_in_bias_us_total = 0.0;
+    double dma_in_pair_us_total = 0.0;
     double gemm_us_total = 0.0;
     double dma_out_us_total = 0.0;
     double postprocess_us_total = 0.0;
@@ -122,6 +127,7 @@ struct npu_profile_summary_delta {
     int64_t dma_in_activation_calls = 0;
     int64_t dma_in_weight_calls = 0;
     int64_t dma_in_bias_calls = 0;
+    int64_t dma_in_pair_calls = 0;
     int64_t gemm_calls = 0;
     int64_t dma_out_calls = 0;
     int64_t postprocess_calls = 0;
@@ -138,6 +144,7 @@ struct npu_profile_summary_delta {
     int64_t dma_in_activation_us_total = 0;
     int64_t dma_in_weight_us_total = 0;
     int64_t dma_in_bias_us_total = 0;
+    int64_t dma_in_pair_us_total = 0;
     int64_t gemm_us_total = 0;
     int64_t dma_out_us_total = 0;
     int64_t postprocess_us_total = 0;

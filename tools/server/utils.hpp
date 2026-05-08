@@ -135,6 +135,7 @@ struct server_mtmd_prefill_profile {
         npu.dma_in_activation_calls += npu_summary.dma_in_activation_calls;
         npu.dma_in_weight_calls += npu_summary.dma_in_weight_calls;
         npu.dma_in_bias_calls += npu_summary.dma_in_bias_calls;
+        npu.dma_in_pair_calls += npu_summary.dma_in_pair_calls;
         npu.gemm_calls += npu_summary.gemm_calls;
         npu.dma_out_calls += npu_summary.dma_out_calls;
         npu.postprocess_calls += npu_summary.postprocess_calls;
@@ -151,14 +152,17 @@ struct server_mtmd_prefill_profile {
         npu.dma_in_activation_us_total += npu_summary.dma_in_activation_us_total;
         npu.dma_in_weight_us_total += npu_summary.dma_in_weight_us_total;
         npu.dma_in_bias_us_total += npu_summary.dma_in_bias_us_total;
+        npu.dma_in_pair_us_total += npu_summary.dma_in_pair_us_total;
         npu.gemm_us_total += npu_summary.gemm_us_total;
         npu.dma_out_us_total += npu_summary.dma_out_us_total;
         npu.postprocess_us_total += npu_summary.postprocess_us_total;
         npu.runtime_total_us += npu_summary.runtime_total_us;
         npu.runtime_dma_in_us += npu_summary.runtime_dma_in_us;
         npu.runtime_compute_us += npu_summary.runtime_compute_us;
+        npu.runtime_compute_exclusive_us += npu_summary.runtime_compute_exclusive_us;
         npu.runtime_dma_out_us += npu_summary.runtime_dma_out_us;
         npu.runtime_layout_us += npu_summary.runtime_layout_us;
+        npu.runtime_layout_exclusive_us += npu_summary.runtime_layout_exclusive_us;
         npu.runtime_wait_irq_us += npu_summary.runtime_wait_irq_us;
         npu.runtime_mvin_calls += npu_summary.runtime_mvin_calls;
         npu.runtime_compute_calls += npu_summary.runtime_compute_calls;
@@ -185,8 +189,10 @@ struct server_mtmd_prefill_profile {
             {"runtime_total_us", 0},
             {"runtime_dma_in_us", 0},
             {"runtime_compute_us", 0},
+            {"runtime_compute_exclusive_us", 0},
             {"runtime_dma_out_us", 0},
             {"runtime_layout_us", 0},
+            {"runtime_layout_exclusive_us", 0},
             {"runtime_wait_irq_us", 0},
         };
         double npu_host_us = 0.0;
@@ -213,9 +219,12 @@ struct server_mtmd_prefill_profile {
             {"runtime_total_us", npu.runtime_total_us},
             {"runtime_dma_in_us", npu.runtime_dma_in_us},
             {"runtime_compute_us", npu.runtime_compute_us},
+            {"runtime_compute_exclusive_us", npu.runtime_compute_exclusive_us},
             {"runtime_dma_out_us", npu.runtime_dma_out_us},
             {"runtime_layout_us", npu.runtime_layout_us},
+            {"runtime_layout_exclusive_us", npu.runtime_layout_exclusive_us},
             {"runtime_wait_irq_us", npu.runtime_wait_irq_us},
+            {"dma_in_pair_us", npu.dma_in_pair_us_total},
         };
 #endif
 
