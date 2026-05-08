@@ -17,7 +17,7 @@
 - `/home/ubuntu/kv260-regression` 下存在：
   - `scripts/run_regression.sh`
   - `driver/npu_kv260.ko`
-  - `bin/kv260_*` 测试程序
+- `bin/kv260_*` 测试程序
 
 先确认 app 能被 `xmutil` 看到：
 
@@ -65,6 +65,12 @@ export KV260_SUDO_PASSWORD='<board-sudo-password>'
 ./scripts/run_regression.sh --continue-on-fail
 ```
 
+单独测 overlay 卸载再加载耗时：
+
+```bash
+./bin/kv260_overlay_switch_test --app-name double_dma_overlayapp --iterations 5
+```
+
 ## 3. 测试行为
 
 每个测试 case 开始前都会重新执行：
@@ -103,6 +109,13 @@ sudo chmod 660 /dev/npu_kv260
 
 `mmproj_asym_w8a8` 目前不属于默认 `full` profile。它保留为单独的专项 case，用于验证“激活非对称、权重对称，并且激活从 FP32 到 INT8 的量化由 CPU 完成”的路径。
 
+`kv260_overlay_switch_test` 也不属于默认 `fast/full` profile。它是一个独立板端工具，用于统计：
+
+- `xmutil unloadapp`
+- `xmutil loadapp <app-name>`
+
+这两步合起来的总耗时，以及各自平均耗时。
+
 ## 5. 结果目录
 
 每次运行都会生成一个目录：
@@ -118,6 +131,12 @@ sudo chmod 660 /dev/npu_kv260
 - `cases/*.log`：每个 case 的完整日志。
 - `cases/*.readiness.txt`：每个 case 重新加载 overlay 后的板端状态。
 - `cases/*.dmesg_tail.txt`：失败 case 的内核日志尾部。
+
+如果运行 `./bin/kv260_overlay_switch_test`，结果会直接打印到终端。建议把输出重定向到单独日志，例如：
+
+```bash
+./bin/kv260_overlay_switch_test --app-name double_dma_overlayapp --iterations 5 | tee overlay_switch.log
+```
 
 查看 summary：
 

@@ -139,6 +139,7 @@ RUNTIME_BINS=(
   kv260_dma_double_mvin_async_test
   kv260_layer_gemm_replay_test
   kv260_mmproj_layer_asym_w8a8_test
+  kv260_overlay_switch_test
 )
 
 if [ "$SKIP_BUILD" -ne 1 ]; then

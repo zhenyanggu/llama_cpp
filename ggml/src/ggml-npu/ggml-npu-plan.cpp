@@ -840,20 +840,47 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     }
 
     const uint32_t acc_bytes = static_cast<uint32_t>(micro_n * micro_m * sizeof(int32_t));
+    const uint32_t bias_cache_bytes = plan->bias != nullptr
+        ? npu_align_u32(static_cast<uint32_t>(plan->m * sizeof(int32_t)), NPU_ACC_ALIGNMENT)
+        : 0;
+    const uint32_t scale_cache_bytes =
+        (plan->aicas_w8a8.valid && plan->aicas_w8a8.weight_scale.size() > 1)
+        ? npu_align_u32(static_cast<uint32_t>(micro_n * plan->m * sizeof(uint32_t)), NPU_ACC_ALIGNMENT)
+        : 0;
     uint32_t bias_acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
     uint32_t output_acc_offset = npu_align_u32(0x00004000, NPU_ACC_ALIGNMENT);
+    uint32_t bias_cache_offset = npu_align_u32(0x00008000, NPU_ACC_ALIGNMENT);
+    uint32_t scale_cache_offset = npu_align_u32(0x0000c000, NPU_ACC_ALIGNMENT);
     size_t env_bias_acc_offset = 0;
     size_t env_output_acc_offset = 0;
+    size_t env_bias_cache_offset = 0;
+    size_t env_scale_cache_offset = 0;
     if (npu_env_to_size("GGML_NPU_BIAS_ACC_OFFSET", &env_bias_acc_offset)) {
         bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_ACC_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_OUTPUT_ACC_OFFSET", &env_output_acc_offset)) {
         output_acc_offset = npu_align_u32(static_cast<uint32_t>(env_output_acc_offset), NPU_ACC_ALIGNMENT);
     }
+    if (npu_env_to_size("GGML_NPU_BIAS_CACHE_OFFSET", &env_bias_cache_offset)) {
+        bias_cache_offset = npu_align_u32(static_cast<uint32_t>(env_bias_cache_offset), NPU_ACC_ALIGNMENT);
+    }
+    if (npu_env_to_size("GGML_NPU_SCALE_CACHE_OFFSET", &env_scale_cache_offset)) {
+        scale_cache_offset = npu_align_u32(static_cast<uint32_t>(env_scale_cache_offset), NPU_ACC_ALIGNMENT);
+    }
     const uint32_t bias_acc_end = bias_acc_offset + acc_bytes;
     const uint32_t output_acc_end = output_acc_offset + acc_bytes;
-    const bool acc_overlaps = bias_acc_offset < output_acc_end && output_acc_offset < bias_acc_end;
-    const uint32_t acc_end = std::max(bias_acc_end, output_acc_end);
+    const uint32_t bias_cache_end = bias_cache_offset + bias_cache_bytes;
+    const uint32_t scale_cache_end = scale_cache_offset + scale_cache_bytes;
+    const bool acc_overlaps =
+        (bias_acc_offset < output_acc_end && output_acc_offset < bias_acc_end) ||
+        (bias_acc_offset < bias_cache_end && bias_cache_offset < bias_acc_end) ||
+        (bias_acc_offset < scale_cache_end && scale_cache_offset < bias_acc_end) ||
+        (output_acc_offset < bias_cache_end && bias_cache_offset < output_acc_end) ||
+        (output_acc_offset < scale_cache_end && scale_cache_offset < output_acc_end) ||
+        (bias_cache_offset < scale_cache_end && scale_cache_offset < bias_cache_end);
+    const uint32_t acc_end = std::max(
+        std::max(bias_acc_end, output_acc_end),
+        std::max(bias_cache_end, scale_cache_end));
     if (acc_overlaps) {
         if (reason) {
             *reason = "ACC bias/output fixed regions overlap";
@@ -886,6 +913,16 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         npu_memory_space::acc,
         output_acc_offset,
         acc_bytes,
+    };
+    plan->config.layout.bias_cache = {
+        npu_memory_space::acc,
+        bias_cache_offset,
+        bias_cache_bytes,
+    };
+    plan->config.layout.scale_cache = {
+        npu_memory_space::acc,
+        scale_cache_offset,
+        scale_cache_bytes,
     };
 
     return true;

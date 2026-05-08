@@ -39,6 +39,8 @@ struct npu_runtime_layout {
     npu_memory_slice weight;
     npu_memory_slice bias_accumulator;
     npu_memory_slice output_accumulator;
+    npu_memory_slice bias_cache;
+    npu_memory_slice scale_cache;
 };
 
 struct npu_tiling_config {
