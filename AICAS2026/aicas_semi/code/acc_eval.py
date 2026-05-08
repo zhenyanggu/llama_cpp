@@ -1,9 +1,13 @@
-import json
 import argparse
+import json
 import os
-from tqdm import tqdm
-import base64
-from openai import OpenAI
+
+from llama_server_client import (
+    DEFAULT_BASE_URL,
+    chat_completion,
+    extract_text_content,
+    image_to_data_url,
+)
 
 def save_json(json_list, save_path):
     """Saves a list of dictionaries to a JSON file."""
@@ -32,6 +36,12 @@ def parse_args():
         default="acc_eval_results.json",
         help="Path to save the per-sample accuracy result JSON file."
     )
+    parser.add_argument("--base-url", type=str, default=DEFAULT_BASE_URL)
+    parser.add_argument("--model", type=str, default="local-model")
+    parser.add_argument("--request-timeout", type=float, default=300.0)
+    parser.add_argument("--request-retries", type=int, default=2)
+    parser.add_argument("--retry-delay", type=float, default=2.0)
+    parser.add_argument("--progress-every", type=int, default=10)
     return parser.parse_args()
 
 OCRBench_score = {
@@ -113,11 +123,6 @@ num_all = {
     "HME100k": 0,
 }
 
-def image_to_base64(image_path):
-    """Helper function: encode image file to Base64 string"""
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
-
 if __name__ == "__main__":
     args = parse_args()
 
@@ -126,12 +131,17 @@ if __name__ == "__main__":
     with open(data_path, "r") as f:
         data = json.load(f)
 
-    client = OpenAI(
-        base_url="http://127.0.0.1:8080/v1",
-        api_key="NA"
-    )
+    base_url = getattr(args, "base_url", DEFAULT_BASE_URL)
+    model = getattr(args, "model", "local-model")
+    request_timeout = float(getattr(args, "request_timeout", 300.0))
+    request_retries = int(getattr(args, "request_retries", 2))
+    retry_delay = float(getattr(args, "retry_delay", 2.0))
+    progress_every = int(getattr(args, "progress_every", 10))
 
-    for i in tqdm(range(len(data))):
+    for i in range(len(data)):
+        if progress_every > 0 and (i == 0 or i == len(data) - 1 or (i + 1) % progress_every == 0):
+            print(f"[{i + 1}/{len(data)}] {data[i]['image_path']}")
+
         img_path = os.path.join(args.image_folder, data[i]["image_path"])
         qs = data[i]["question"]
 
@@ -141,8 +151,6 @@ if __name__ == "__main__":
             continue
 
         try:
-            img_b64 = image_to_base64(img_path)
-
             messages_payload = [
                 {
                     "role": "user",
@@ -150,8 +158,7 @@ if __name__ == "__main__":
                         {
                             "type": "image_url",
                             "image_url": {
-                                # OpenAI API requires data URI format
-                                "url": f"data:image/jpeg;base64,{img_b64}"
+                                "url": image_to_data_url(img_path)
                             }
                         },
                         {
@@ -162,15 +169,23 @@ if __name__ == "__main__":
                 }
             ]
 
-            response = client.chat.completions.create(
-                model="smolvlm2-gguf",
-                messages=messages_payload,
-                max_tokens=100,
-                temperature=0.0
-            )
-
-            response_content = response.choices[0].message.content.strip()
-            data[i]["predict"] = response_content
+            for attempt in range(request_retries + 1):
+                try:
+                    response = chat_completion(
+                        base_url=base_url,
+                        model=model,
+                        messages=messages_payload,
+                        max_tokens=100,
+                        temperature=0.0,
+                        timeout=request_timeout,
+                    )
+                    data[i]["predict"] = extract_text_content(response)
+                    break
+                except Exception as retry_error:
+                    if attempt >= request_retries:
+                        raise retry_error
+                    import time
+                    time.sleep(retry_delay)
 
         except Exception as e:
             print(f"Error processing {img_path}: {e}")

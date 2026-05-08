@@ -31,7 +31,7 @@ AICAS/third_party
 AICAS/data.zip
 *.Identifier
 # IDE / OS
-
+AICAS2026/aicas_semi/results
 .cache/
 .ccls-cache/
 .direnv/

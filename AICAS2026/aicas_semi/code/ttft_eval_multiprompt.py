@@ -2,10 +2,18 @@ import os
 import sys
 import time
 import json
-import base64
 import argparse
-from openai import OpenAI
-from PIL import Image
+
+from llama_server_client import (
+    DEFAULT_BASE_URL,
+    chat_completion,
+    image_to_data_url,
+)
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 
 def load_json(path):
@@ -18,16 +26,13 @@ def save_json(data, path):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def image_to_base64(image_path):
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
-
-
 def prepare_images(image_configs, workdir):
     for cfg in image_configs:
         source_path = os.path.join(workdir, cfg['source'])
 
         if 'resize' in cfg:
+            if Image is None:
+                raise RuntimeError("Pillow is required for resize cases in ttft_config.json")
             resize = cfg['resize']
             img = Image.open(source_path)
             img = img.resize((resize['width'], resize['height']), Image.LANCZOS)
@@ -43,52 +48,49 @@ def prepare_images(image_configs, workdir):
     return image_configs
 
 
-def measure_ttft(client, model, messages_payload):
+def measure_ttft(base_url, model, messages_payload, request_timeout):
     t0 = time.perf_counter()
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages_payload,
-        max_tokens=1,
-        temperature=0.0,
-        stream=True
-    )
-
     ttft_ms = None
     try:
+        stream = chat_completion(
+            base_url=base_url,
+            model=model,
+            messages=messages_payload,
+            max_tokens=1,
+            temperature=0.0,
+            stream=True,
+            timeout=request_timeout,
+        )
         for chunk in stream:
-            if not chunk.choices:
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices:
                 continue
-            delta = chunk.choices[0].delta
-            content = getattr(delta, "content", None)
+            delta = choices[0].get("delta", {})
+            content = delta.get("content")
             if content:
                 t1 = time.perf_counter()
                 ttft_ms = (t1 - t0) * 1000.0
                 break
     finally:
-        try:
-            stream.close()
-        except Exception:
-            pass
+        pass
 
     return ttft_ms
 
 
-def run_single_case(client, image_cfg, prompt_cfg, model):
-    img_b64 = image_to_base64(image_cfg['_path'])
-
+def run_single_case(base_url, image_cfg, prompt_cfg, model, request_timeout):
     def build_payload():
         return [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": f"[Nonce: {time.time()}]\n"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    {"type": "image_url", "image_url": {"url": image_to_data_url(image_cfg['_path'])}},
                     {"type": "text", "text": prompt_cfg['text']}
                 ]
             }
         ]
 
-    ttft_ms = measure_ttft(client, model, build_payload())
+    ttft_ms = measure_ttft(base_url, model, build_payload(), request_timeout)
     if ttft_ms is None:
         print(f"          no content received from server")
         return None
@@ -180,6 +182,12 @@ def main():
         '-o', '--output',
         help='Override output path for results JSON'
     )
+    parser.add_argument(
+        '--request-timeout',
+        type=float,
+        default=3600.0,
+        help='HTTP timeout in seconds for each streaming TTFT request'
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.config):
@@ -189,7 +197,7 @@ def main():
     config = load_json(args.config)
     workdir = os.path.dirname(os.path.abspath(args.config))
 
-    server_url = config.get('server_url', 'http://127.0.0.1:8080/v1')
+    server_url = config.get('server_url', DEFAULT_BASE_URL)
     model = config.get('model', 'local-model')
     output_path = args.output or config.get('output', 'ttft_eval_results.json')
 
@@ -219,8 +227,6 @@ def main():
 
     image_configs = prepare_images(image_configs, workdir)
 
-    client = OpenAI(base_url=server_url, api_key="NA")
-
     all_cases = []
     case_index = 0
     for img_cfg in image_configs:
@@ -231,9 +237,7 @@ def main():
             print(f"        Prompt chars: {len(prompt_cfg['text'])}")
             print("-" * 40)
 
-            result = run_single_case(
-                client, img_cfg, prompt_cfg, model
-            )
+            result = run_single_case(server_url, img_cfg, prompt_cfg, model, args.request_timeout)
 
             if result is None:
                 print(f"    SKIPPED (no valid sample)")

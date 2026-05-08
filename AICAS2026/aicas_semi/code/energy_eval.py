@@ -2,11 +2,15 @@ import os
 import sys
 import time
 import json
-import base64
 import argparse
 import threading
 from glob import glob
-from openai import OpenAI
+
+from llama_server_client import (
+    DEFAULT_BASE_URL,
+    chat_completion,
+    image_to_data_url,
+)
 
 LONG_PROMPT = """
 Act as an interdisciplinary expert combining the skills of a master art historian, a rigorous forensic image analyst, and a computational aesthetician. I am presenting you with a landscape painting. To thoroughly evaluate the visual data, you must execute a comprehensive, multi-layered analysis. Do not hallucinate details, but extract every possible piece of data from the image provided. You must not skip any section.
@@ -19,9 +23,6 @@ Meteorological and Temporal Inference: Based strictly on the lighting angles, cl
 Compositional Architecture: Analyze the geometric structure of the painting. Identify any leading lines, framing devices, or adherence to the rule of thirds. How do these compositional choices guide the viewer's eye through the landscape?
 Ensure your total response is expansive, rigorously detailed, logically sequenced, and leaves no visual element unexamined.
 """
-
-# llama-server API address
-SERVER_URL = "http://127.0.0.1:8080/v1"
 
 # Default sysfs hwmon power input file. KV260 PYNQ images expose on-board
 # INA226 sensors through hwmon, where the power readings are typically
@@ -65,13 +66,23 @@ def parse_args():
         action="store_true",
         help="List available hwmon devices and exit."
     )
+    parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help="Base URL for llama-server's OpenAI-compatible API."
+    )
+    parser.add_argument(
+        "--model",
+        default="local-model",
+        help="Model alias exposed by llama-server."
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=300.0,
+        help="HTTP timeout in seconds."
+    )
     return parser.parse_args()
-
-
-def image_to_base64(image_path):
-    """Helper function: encode an image file as a Base64 string"""
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
 
 
 class PowerSampler(threading.Thread):
@@ -176,13 +187,7 @@ def main():
 
     unit_scale = {"uW": 1e-6, "mW": 1e-3, "W": 1.0}[args.power_unit]
 
-    client = OpenAI(
-        base_url=SERVER_URL,
-        api_key="NA"
-    )
-
     try:
-        img_b64 = image_to_base64(args.image)
         messages_payload = [
             {
                 "role": "user",
@@ -190,7 +195,7 @@ def main():
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{img_b64}"
+                            "url": image_to_data_url(args.image)
                         }
                     },
                     {
@@ -208,12 +213,14 @@ def main():
 
         print("Triggering inference...")
         t_start = time.perf_counter()
-        response = client.chat.completions.create(
-            model="local-model",
+        response = chat_completion(
+            base_url=args.base_url,
+            model=args.model,
             messages=messages_payload,
             max_tokens=4096,
             temperature=0.0,
-            stream=False
+            stream=False,
+            timeout=args.request_timeout,
         )
         t_end = time.perf_counter()
 
@@ -229,10 +236,10 @@ def main():
             print("  Consider raising --sample_hz, or check that --power_path is readable.")
             sys.exit(1)
 
-        usage = response.usage
-        prompt_tokens = usage.prompt_tokens
-        completion_tokens = usage.completion_tokens
-        total_tokens = usage.total_tokens
+        usage = response.get("usage", {})
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", 0) or 0)
 
         inference_duration_s = t_end - t_start
         energy_j = trapezoid_integral(inference_samples)
