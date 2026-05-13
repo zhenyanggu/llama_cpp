@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -123,6 +124,159 @@ static json clip_tensor_json(const clip_profile_tensor_info & info) {
         {"is_quantized", info.is_quantized},
         {"shape", clip_shape_json(info.ne)},
     };
+}
+
+static void clip_dump_embeddings_if_requested(const ggml_tensor * embeddings, const float * data) {
+    const char * dump_path_env = std::getenv("MTMD_DUMP_EMBEDDINGS");
+    if (dump_path_env == nullptr || dump_path_env[0] == '\0' || embeddings == nullptr || data == nullptr) {
+        return;
+    }
+
+    const std::string dump_path = dump_path_env;
+    const int64_t n = ggml_nelements(embeddings);
+    double sum = 0.0;
+    float min_value = 0.0f;
+    float max_value = 0.0f;
+    float max_abs = 0.0f;
+    if (n > 0) {
+        min_value = data[0];
+        max_value = data[0];
+    }
+    const int64_t sample_count = std::min<int64_t>(n, 32);
+    json first_values = json::array();
+    for (int64_t i = 0; i < n; ++i) {
+        const float value = data[i];
+        sum += value;
+        min_value = std::min(min_value, value);
+        max_value = std::max(max_value, value);
+        max_abs = std::max(max_abs, std::fabs(value));
+        if (i < sample_count) {
+            first_values.push_back(value);
+        }
+    }
+
+    {
+        std::ofstream out(dump_path, std::ios::binary);
+        if (!out) {
+            LOG_ERR("%s: failed to open MTMD_DUMP_EMBEDDINGS path '%s'\n", __func__, dump_path.c_str());
+            return;
+        }
+        out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(n * (int64_t) sizeof(float)));
+        if (!out) {
+            LOG_ERR("%s: failed to write MTMD_DUMP_EMBEDDINGS path '%s'\n", __func__, dump_path.c_str());
+            return;
+        }
+    }
+
+    std::array<int64_t, GGML_MAX_DIMS> shape = {};
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        shape[i] = embeddings->ne[i];
+    }
+    json meta = {
+        {"path", dump_path},
+        {"name", embeddings->name},
+        {"type", ggml_type_name(embeddings->type)},
+        {"shape", clip_shape_json(shape)},
+        {"n_elements", n},
+        {"bytes", n * (int64_t) sizeof(float)},
+        {"min", min_value},
+        {"max", max_value},
+        {"mean", n > 0 ? sum / (double) n : 0.0},
+        {"max_abs", max_abs},
+        {"first_values", first_values},
+    };
+    if (const char * backend_env = std::getenv("MTMD_BACKEND_DEVICE")) {
+        meta["MTMD_BACKEND_DEVICE"] = backend_env;
+    }
+
+    const std::string meta_path = dump_path + ".json";
+    std::ofstream meta_out(meta_path);
+    if (!meta_out) {
+        LOG_ERR("%s: failed to open MTMD_DUMP_EMBEDDINGS metadata path '%s'\n", __func__, meta_path.c_str());
+        return;
+    }
+    meta_out << meta.dump(2) << "\n";
+    LOG_INF("%s: dumped final mmproj embeddings to %s (%" PRId64 " f32 values)\n",
+        __func__, dump_path.c_str(), n);
+}
+
+static std::string clip_sanitize_dump_name(const char * name) {
+    std::string result = name != nullptr && name[0] != '\0' ? name : "unnamed";
+    for (char & c : result) {
+        const bool ok =
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '.' || c == '_' || c == '-';
+        if (!ok) {
+            c = '_';
+        }
+    }
+    return result;
+}
+
+static void clip_dump_tensor_f32_to_dir(const std::string & dir, const ggml_tensor * tensor, int index) {
+    if (dir.empty() || tensor == nullptr || tensor->type != GGML_TYPE_F32) {
+        return;
+    }
+
+    std::vector<float> data(static_cast<size_t>(ggml_nelements(tensor)));
+    ggml_backend_tensor_get(tensor, data.data(), 0, ggml_nbytes(tensor));
+
+    double sum = 0.0;
+    float min_value = data.empty() ? 0.0f : data[0];
+    float max_value = data.empty() ? 0.0f : data[0];
+    float max_abs = 0.0f;
+    for (float value : data) {
+        sum += value;
+        min_value = std::min(min_value, value);
+        max_value = std::max(max_value, value);
+        max_abs = std::max(max_abs, std::fabs(value));
+    }
+
+    std::array<int64_t, GGML_MAX_DIMS> shape = {};
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        shape[i] = tensor->ne[i];
+    }
+
+    std::ostringstream filename;
+    filename << dir << "/";
+    filename.width(3);
+    filename.fill('0');
+    filename << index << "_" << clip_sanitize_dump_name(tensor->name) << ".bin";
+    const std::string bin_path = filename.str();
+
+    {
+        std::ofstream out(bin_path, std::ios::binary);
+        if (!out) {
+            LOG_ERR("%s: failed to open tensor dump path '%s'\n", __func__, bin_path.c_str());
+            return;
+        }
+        out.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size() * sizeof(float)));
+        if (!out) {
+            LOG_ERR("%s: failed to write tensor dump path '%s'\n", __func__, bin_path.c_str());
+            return;
+        }
+    }
+
+    json meta = {
+        {"path", bin_path},
+        {"index", index},
+        {"name", tensor->name},
+        {"op_name", ggml_op_desc(tensor)},
+        {"type", ggml_type_name(tensor->type)},
+        {"shape", clip_shape_json(shape)},
+        {"n_elements", (int64_t) data.size()},
+        {"bytes", (int64_t) data.size() * (int64_t) sizeof(float)},
+        {"min", min_value},
+        {"max", max_value},
+        {"mean", data.empty() ? 0.0 : sum / (double) data.size()},
+        {"max_abs", max_abs},
+    };
+    std::ofstream meta_out(bin_path + ".json");
+    if (meta_out) {
+        meta_out << meta.dump(2) << "\n";
+    }
 }
 
 static bool clip_is_bias_tensor(const clip_profile_tensor_info & info) {
@@ -1854,8 +2008,12 @@ struct clip_ctx {
     bool debug_graph = false;
     bool debug_dump_dot_done = false;
     std::string debug_dump_dot_path;
+    std::string debug_dump_w8a8_tensors_dir;
+    size_t debug_dump_w8a8_tensors_max = std::numeric_limits<size_t>::max();
+    std::vector<std::string> npu_w8a8_skip_contains;
     clip_profiler profiler;
     std::vector<ggml_tensor *> debug_print_tensors;
+    std::vector<ggml_tensor *> debug_dump_w8a8_tensors;
     bool aicas_w8a8_debug = false;
     clip_aicas_dequant_sim_mode aicas_dequant_sim_mode = clip_aicas_dequant_sim_mode::off;
     std::string aicas_dequant_stats_path;
@@ -1871,6 +2029,29 @@ struct clip_ctx {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
         const char * dump_dot = std::getenv("MTMD_DUMP_DOT");
         debug_dump_dot_path = dump_dot ? dump_dot : "";
+        const char * dump_w8a8_dir = std::getenv("MTMD_DUMP_W8A8_TENSORS_DIR");
+        debug_dump_w8a8_tensors_dir = dump_w8a8_dir ? dump_w8a8_dir : "";
+        if (const char * dump_w8a8_max = std::getenv("MTMD_DUMP_W8A8_TENSORS_MAX")) {
+            const long parsed = std::strtol(dump_w8a8_max, nullptr, 10);
+            if (parsed >= 0) {
+                debug_dump_w8a8_tensors_max = static_cast<size_t>(parsed);
+            }
+        }
+        if (const char * skip_env = std::getenv("MTMD_NPU_W8A8_SKIP_CONTAINS")) {
+            std::stringstream ss(skip_env);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                }));
+                item.erase(std::find_if(item.rbegin(), item.rend(), [](unsigned char ch) {
+                    return !std::isspace(ch);
+                }).base(), item.end());
+                if (!item.empty()) {
+                    npu_w8a8_skip_contains.push_back(item);
+                }
+            }
+        }
         profiler.init_from_env();
         aicas_w8a8_debug = std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
         aicas_dequant_sim_mode = clip_get_dequant_sim_mode();
@@ -1950,6 +2131,18 @@ struct clip_ctx {
 #else
         return false;
 #endif
+    }
+
+    bool should_route_w8a8_to_npu(const std::string & weight_name) const {
+        if (!backend_is_npu()) {
+            return false;
+        }
+        for (const std::string & needle : npu_w8a8_skip_contains) {
+            if (weight_name.find(needle) != std::string::npos) {
+                return false;
+            }
+        }
+        return true;
     }
 
     bool should_preload_aicas_w8a8_for_npu() const {
@@ -2214,6 +2407,45 @@ struct clip_ctx {
         fout << out.dump(2);
     }
 };
+
+static bool clip_should_dump_w8a8_tensor(const clip_ctx * ctx, const ggml_tensor * t, int * index) {
+    if (ctx == nullptr || ctx->debug_dump_w8a8_tensors_dir.empty() || t == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < ctx->debug_dump_w8a8_tensors.size(); ++i) {
+        if (ctx->debug_dump_w8a8_tensors[i] == t) {
+            if (index != nullptr) {
+                *index = static_cast<int>(i);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool clip_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
+    auto * ctx = static_cast<clip_ctx *>(user_data);
+    if (ctx == nullptr) {
+        return false;
+    }
+
+    int dump_index = -1;
+    const bool should_dump = clip_should_dump_w8a8_tensor(ctx, t, &dump_index);
+    if (ask) {
+        if (ctx->profiler.enabled) {
+            clip_profiler::eval_callback(t, ask, &ctx->profiler);
+        }
+        return ctx->profiler.enabled || should_dump;
+    }
+
+    if (should_dump) {
+        clip_dump_tensor_f32_to_dir(ctx->debug_dump_w8a8_tensors_dir, t, dump_index);
+    }
+    if (ctx->profiler.enabled) {
+        return clip_profiler::eval_callback(t, ask, &ctx->profiler);
+    }
+    return true;
+}
 
 static void clip_collect_activation_f32_passthrough(
         struct ggml_tensor * dst,
@@ -3637,7 +3869,7 @@ private:
             return ggml_mul_mat(ctx0, weight, act);
         }
 
-        if (ctx->backend_is_npu()) {
+        if (ctx->should_route_w8a8_to_npu(weight->name)) {
             if (!ggml_is_contiguous(act)) {
                 act = ggml_cont(ctx0, act);
             }
@@ -3654,6 +3886,10 @@ private:
             }
             ggml_tensor * out = ggml_mul_mat(ctx0, weight, act);
             ggml_set_name(out, weight->name);
+            if (!ctx->debug_dump_w8a8_tensors_dir.empty() &&
+                    ctx->debug_dump_w8a8_tensors.size() < ctx->debug_dump_w8a8_tensors_max) {
+                ctx->debug_dump_w8a8_tensors.push_back(out);
+            }
             return out;
         }
 
@@ -3698,6 +3934,11 @@ private:
             clip_compute_w8a8_mul_mat,
             GGML_N_TASKS_MAX,
             kernel_userdata);
+        ggml_set_name(out, weight->name);
+        if (!ctx->debug_dump_w8a8_tensors_dir.empty() &&
+                ctx->debug_dump_w8a8_tensors.size() < ctx->debug_dump_w8a8_tensors_max) {
+            ctx->debug_dump_w8a8_tensors.push_back(out);
+        }
 
         if (ctx->aicas_w8a8_debug) {
             LOG_DBG("%s: using W8A8 for %s (layer=%d)\n", __func__, weight->name, il);
@@ -6132,6 +6373,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
 
     // build the inference graph
     ctx->debug_print_tensors.clear();
+    ctx->debug_dump_w8a8_tensors.clear();
     ctx->profiler.reset();
     ggml_backend_sched_reset(ctx->sched.get());
     ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);
@@ -6145,8 +6387,8 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     }
     ggml_backend_sched_set_eval_callback(
         ctx->sched.get(),
-        ctx->profiler.enabled ? clip_profiler::eval_callback : nullptr,
-        ctx->profiler.enabled ? &ctx->profiler : nullptr);
+        (ctx->profiler.enabled || !ctx->debug_dump_w8a8_tensors_dir.empty()) ? clip_eval_callback : nullptr,
+        (ctx->profiler.enabled || !ctx->debug_dump_w8a8_tensors_dir.empty()) ? ctx : nullptr);
     if (ctx->aicas_w8a8_debug) {
         LOG_INF("%s: allocating mmproj graph\n", __func__);
     }
@@ -6520,6 +6762,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
 
     // copy the embeddings to the location passed by the user
     ggml_backend_tensor_get(embeddings, vec, 0, ggml_nbytes(embeddings));
+    clip_dump_embeddings_if_requested(embeddings, vec);
 
     return true;
 }

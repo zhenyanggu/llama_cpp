@@ -137,6 +137,7 @@ struct server_mtmd_prefill_profile {
         npu.dma_in_bias_calls += npu_summary.dma_in_bias_calls;
         npu.dma_in_pair_calls += npu_summary.dma_in_pair_calls;
         npu.gemm_calls += npu_summary.gemm_calls;
+        npu.gemm_plan_calls += npu_summary.gemm_plan_calls;
         npu.dma_out_calls += npu_summary.dma_out_calls;
         npu.postprocess_calls += npu_summary.postprocess_calls;
         npu.packed_activation_bytes_total += npu_summary.packed_activation_bytes_total;
@@ -156,6 +157,8 @@ struct server_mtmd_prefill_profile {
         npu.gemm_us_total += npu_summary.gemm_us_total;
         npu.dma_out_us_total += npu_summary.dma_out_us_total;
         npu.postprocess_us_total += npu_summary.postprocess_us_total;
+        npu.accounted_us_total += npu_summary.accounted_us_total;
+        npu.unaccounted_us_total += npu_summary.unaccounted_us_total;
         npu.runtime_total_us += npu_summary.runtime_total_us;
         npu.runtime_dma_in_us += npu_summary.runtime_dma_in_us;
         npu.runtime_compute_us += npu_summary.runtime_compute_us;
@@ -166,6 +169,7 @@ struct server_mtmd_prefill_profile {
         npu.runtime_wait_irq_us += npu_summary.runtime_wait_irq_us;
         npu.runtime_mvin_calls += npu_summary.runtime_mvin_calls;
         npu.runtime_compute_calls += npu_summary.runtime_compute_calls;
+        npu.runtime_gemm_plan_calls += npu_summary.runtime_gemm_plan_calls;
         npu.runtime_mvout_calls += npu_summary.runtime_mvout_calls;
         npu.runtime_layout_calls += npu_summary.runtime_layout_calls;
 #endif
@@ -180,7 +184,12 @@ struct server_mtmd_prefill_profile {
             {"used_npu", false},
             {"node_count", 0},
             {"exec_tile_count", 0},
+            {"gemm_calls", 0},
+            {"gemm_plan_calls", 0},
             {"total_node_us", 0},
+            {"accounted_us", 0},
+            {"unaccounted_us", 0},
+            {"accounted_share_pct", 0.0},
             {"activation_pack_us", 0},
             {"host_copy_activation_us", 0},
             {"host_copy_weight_us", 0},
@@ -194,6 +203,8 @@ struct server_mtmd_prefill_profile {
             {"runtime_layout_us", 0},
             {"runtime_layout_exclusive_us", 0},
             {"runtime_wait_irq_us", 0},
+            {"runtime_compute_calls", 0},
+            {"runtime_gemm_plan_calls", 0},
         };
         double npu_host_us = 0.0;
         double npu_total_node_us = 0.0;
@@ -210,7 +221,13 @@ struct server_mtmd_prefill_profile {
             {"used_npu", npu.used_npu != 0},
             {"node_count", npu.node_count},
             {"exec_tile_count", npu.exec_tile_count},
+            {"gemm_calls", npu.gemm_calls},
+            {"gemm_plan_calls", npu.gemm_plan_calls},
             {"total_node_us", npu.total_node_us},
+            {"accounted_us", npu.accounted_us_total},
+            {"unaccounted_us", npu.unaccounted_us_total},
+            {"accounted_share_pct", npu.total_node_us == 0 ? 0.0 :
+                static_cast<double>(npu.accounted_us_total) / static_cast<double>(npu.total_node_us) * 100.0},
             {"activation_pack_us", npu.activation_pack_us_total},
             {"host_copy_activation_us", npu.host_copy_activation_us_total},
             {"host_copy_weight_us", npu.host_copy_weight_us_total},
@@ -224,6 +241,8 @@ struct server_mtmd_prefill_profile {
             {"runtime_layout_us", npu.runtime_layout_us},
             {"runtime_layout_exclusive_us", npu.runtime_layout_exclusive_us},
             {"runtime_wait_irq_us", npu.runtime_wait_irq_us},
+            {"runtime_compute_calls", npu.runtime_compute_calls},
+            {"runtime_gemm_plan_calls", npu.runtime_gemm_plan_calls},
             {"dma_in_pair_us", npu.dma_in_pair_us_total},
         };
 #endif

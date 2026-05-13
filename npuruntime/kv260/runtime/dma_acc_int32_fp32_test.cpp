@@ -4,465 +4,174 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
-#include <csignal>
 
 namespace {
 
-constexpr uint32_t kAccDmaId = 2;
+constexpr uint32_t kAccAddr = 0x0000;
+constexpr uint32_t kScaleAddr = 0x00070000;
+constexpr uint32_t kCols = 16;
+constexpr uint32_t kRows = 16;
+constexpr uint32_t kElemCount = kCols * kRows;
 
-volatile sig_atomic_t g_last_stage = 0;
-
-enum StageId : sig_atomic_t {
-    STAGE_NONE = 0,
-    STAGE_INIT,
-    STAGE_RESET,
-    STAGE_ALLOC,
-    STAGE_PREPARE_INPUT,
-    STAGE_MVIN_ACC_INT32_BEGIN,
-    STAGE_MVIN_ACC_INT32_END,
-    STAGE_MVOUT_ACC_RAW_BEGIN,
-    STAGE_MVOUT_ACC_RAW_END,
-    STAGE_CHECK_RAW,
-    STAGE_MVOUT_ACC_FP32_BEGIN,
-    STAGE_MVOUT_ACC_FP32_END,
-    STAGE_CHECK_FP32,
-    STAGE_DONE,
-};
-
-const char * stage_name(sig_atomic_t stage) {
-    switch (stage) {
-        case STAGE_NONE: return "none";
-        case STAGE_INIT: return "init";
-        case STAGE_RESET: return "reset";
-        case STAGE_ALLOC: return "alloc";
-        case STAGE_PREPARE_INPUT: return "prepare_input";
-        case STAGE_MVIN_ACC_INT32_BEGIN: return "mvin_acc_int32_begin";
-        case STAGE_MVIN_ACC_INT32_END: return "mvin_acc_int32_end";
-        case STAGE_MVOUT_ACC_RAW_BEGIN: return "mvout_acc_raw_begin";
-        case STAGE_MVOUT_ACC_RAW_END: return "mvout_acc_raw_end";
-        case STAGE_CHECK_RAW: return "check_raw";
-        case STAGE_MVOUT_ACC_FP32_BEGIN: return "mvout_acc_fp32_begin";
-        case STAGE_MVOUT_ACC_FP32_END: return "mvout_acc_fp32_end";
-        case STAGE_CHECK_FP32: return "check_fp32";
-        case STAGE_DONE: return "done";
-        default: return "unknown";
-    }
-}
-
-void set_stage(sig_atomic_t stage) {
-    g_last_stage = stage;
-}
-
-void log_stage(const char * label) {
-    std::fprintf(stderr, "[stage] %s\n", label);
-    std::fflush(stderr);
-}
-
-void log_dma_call(
-        const char * op,
-        void * host_ptr,
-        uint32_t sram_addr,
-        uint32_t col_num,
-        uint32_t row_num,
-        uint16_t sram_stride,
-        uint32_t dram_stride,
-        uint8_t precision,
-        uint8_t type,
-        bool flag0,
-        bool flag1,
-        uint32_t arg0,
-        uint32_t arg1) {
-    std::fprintf(
-        stderr,
-        "[call] %s host_ptr=%p sram_addr=0x%08x col_num=%u row_num=%u sram_stride=%u dram_stride=%u precision=%u type=%u flag0=%d flag1=%d arg0=0x%08x arg1=0x%08x\n",
-        op,
-        host_ptr,
-        sram_addr,
-        col_num,
-        row_num,
-        static_cast<unsigned>(sram_stride),
-        dram_stride,
-        static_cast<unsigned>(precision),
-        static_cast<unsigned>(type),
-        flag0 ? 1 : 0,
-        flag1 ? 1 : 0,
-        arg0,
-        arg1);
-    std::fflush(stderr);
-}
-
-void signal_handler(int signo) {
-    std::fprintf(
-        stderr,
-        "[signal] signo=%d last_stage=%d (%s)\n",
-        signo,
-        static_cast<int>(g_last_stage),
-        stage_name(g_last_stage));
-    std::fflush(stderr);
-    std::_Exit(128 + signo);
-}
-
-void install_signal_handlers() {
-    std::signal(SIGBUS, signal_handler);
-    std::signal(SIGSEGV, signal_handler);
-    std::signal(SIGABRT, signal_handler);
-}
-
-struct Config {
-    uint32_t acc_addr = 0x0000;
-    uint32_t scale_addr = 0x00070000;
-    uint32_t col_num = 127;
-    uint32_t row_num = 0;
-    uint16_t mvout_sram_stride = 128;
-    uint32_t mvout_dram_stride = 0;
-    uint32_t zero_point = 0;
-    float scale = 1.0f;
-    int loops = 1;
-    bool run_fp32 = true;
-    bool per_channel = false;
-};
-
-uint32_t pack_f32_scale(float scale) {
-    return static_cast<uint32_t>(std::round(scale * 16777216.0f));
+int32_t pack_q8_24(float scale) {
+    return static_cast<int32_t>(std::round(scale * 16777216.0f));
 }
 
 float dequant_theory(int32_t x, uint32_t zero_point, float scale) {
-    const float centered = static_cast<float>(x) - static_cast<float>(zero_point);
-    return centered * scale;
+    return (static_cast<float>(x) - static_cast<float>(zero_point)) * scale;
 }
 
-float scale_for_col(const Config& cfg, size_t col) {
-    if (!cfg.per_channel) {
-        return cfg.scale;
+bool check_raw(const int32_t* got, const int32_t* expect) {
+    uint32_t mismatches = 0;
+    for (uint32_t i = 0; i < kElemCount; ++i) {
+        if (got[i] != expect[i]) {
+            if (mismatches < 16) {
+                std::fprintf(stderr, "raw mismatch idx=%u expect=%d got=%d\n", i, expect[i], got[i]);
+            }
+            ++mismatches;
+        }
     }
-    return cfg.scale * (1.0f + 0.015625f * static_cast<float>(col % 17));
+    if (mismatches != 0) {
+        std::fprintf(stderr, "raw readback failed mismatches=%u\n", mismatches);
+        return false;
+    }
+    return true;
 }
 
-uint32_t parse_u32(const char * s, uint32_t fallback) {
-    if (s == nullptr || s[0] == '\0') {
-        return fallback;
+bool check_fp32(const float* got, const int32_t* src, const float* scales, uint32_t zero_point, const char* tag) {
+    uint32_t mismatches = 0;
+    constexpr float kAbsTol = 1e-5f;
+    for (uint32_t i = 0; i < kElemCount; ++i) {
+        const float expect = dequant_theory(src[i], zero_point, scales[i]);
+        if (std::fabs(expect - got[i]) > kAbsTol) {
+            if (mismatches < 16) {
+                std::fprintf(
+                    stderr, "%s mismatch idx=%u expect=%.6f got=%.6f src=%d scale=%.6f\n",
+                    tag, i, expect, got[i], src[i], scales[i]);
+            }
+            ++mismatches;
+        }
     }
-    return static_cast<uint32_t>(std::strtoull(s, nullptr, 0));
+    if (mismatches != 0) {
+        std::fprintf(stderr, "%s failed mismatches=%u\n", tag, mismatches);
+        return false;
+    }
+    return true;
 }
 
-uint16_t parse_u16(const char * s, uint16_t fallback) {
-    return static_cast<uint16_t>(parse_u32(s, fallback));
-}
+enum class Stage {
+    Mvin,
+    All,
+    Raw,
+    Tensor,
+    Channel,
+};
 
-float parse_f32(const char * s, float fallback) {
-    if (s == nullptr || s[0] == '\0') {
-        return fallback;
+Stage parse_stage() {
+    const char* env = std::getenv("NPU_DMA_ACC_STAGE");
+    if (env == nullptr || *env == '\0' || std::strcmp(env, "all") == 0) {
+        return Stage::All;
     }
-    return std::strtof(s, nullptr);
-}
-
-Config parse_args(int argc, char ** argv) {
-    Config cfg;
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--col") == 0 && i + 1 < argc) {
-            cfg.col_num = parse_u32(argv[++i], cfg.col_num);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--row") == 0 && i + 1 < argc) {
-            cfg.row_num = parse_u32(argv[++i], cfg.row_num);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--sram-stride") == 0 && i + 1 < argc) {
-            cfg.mvout_sram_stride = parse_u16(argv[++i], cfg.mvout_sram_stride);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--dram-stride") == 0 && i + 1 < argc) {
-            cfg.mvout_dram_stride = parse_u32(argv[++i], cfg.mvout_dram_stride);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
-            cfg.scale = parse_f32(argv[++i], cfg.scale);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--zero-point") == 0 && i + 1 < argc) {
-            cfg.zero_point = parse_u32(argv[++i], cfg.zero_point);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--loops") == 0 && i + 1 < argc) {
-            const int v = std::atoi(argv[++i]);
-            cfg.loops = v > 0 ? v : cfg.loops;
-            continue;
-        }
-        if (std::strcmp(argv[i], "--acc-addr") == 0 && i + 1 < argc) {
-            cfg.acc_addr = parse_u32(argv[++i], cfg.acc_addr);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--scale-addr") == 0 && i + 1 < argc) {
-            cfg.scale_addr = parse_u32(argv[++i], cfg.scale_addr);
-            continue;
-        }
-        if (std::strcmp(argv[i], "--per-channel") == 0) {
-            cfg.per_channel = true;
-            continue;
-        }
-        if (std::strcmp(argv[i], "--no-fp32") == 0) {
-            cfg.run_fp32 = false;
-            continue;
-        }
-    }
-
-    if (cfg.mvout_sram_stride == 0) {
-        cfg.mvout_sram_stride = static_cast<uint16_t>(cfg.col_num + 1);
-    }
-    return cfg;
+    if (std::strcmp(env, "mvin") == 0) return Stage::Mvin;
+    if (std::strcmp(env, "raw") == 0) return Stage::Raw;
+    if (std::strcmp(env, "tensor") == 0) return Stage::Tensor;
+    if (std::strcmp(env, "channel") == 0) return Stage::Channel;
+    std::fprintf(stderr, "unknown NPU_DMA_ACC_STAGE=%s\n", env);
+    std::exit(2);
 }
 
 } // namespace
 
-int main(int argc, char ** argv) {
-    install_signal_handlers();
+int main() {
+    std::puts("kv260_dma_acc_int32_fp32_test: acc int32 raw/per-tensor/per-channel fp32 mvout");
 
-    const Config cfg = parse_args(argc, argv);
-    const size_t rows = static_cast<size_t>(cfg.row_num + 1);
-    const size_t cols = static_cast<size_t>(cfg.col_num + 1);
-    const size_t elem_count = rows * cols;
-    const size_t scale_count = cfg.per_channel ? cols : 1;
-
-    std::printf(
-        "kv260_dma_acc_int32_fp32_test: loops=%d col=%u row=%u elems=%zu sram_stride=%u dram_stride=%u scale=%.9g zp=%u fp32=%d scale_addr=0x%08x per_channel=%d\n",
-        cfg.loops,
-        cfg.col_num,
-        cfg.row_num,
-        elem_count,
-        cfg.mvout_sram_stride,
-        cfg.mvout_dram_stride,
-        cfg.scale,
-        cfg.zero_point,
-        cfg.run_fp32 ? 1 : 0,
-        cfg.scale_addr,
-        cfg.per_channel ? 1 : 0);
-
-    set_stage(STAGE_INIT);
-    log_stage("before npu_init");
     if (npu_init() != 0) {
         std::perror("npu_init");
         return 1;
     }
-    set_stage(STAGE_RESET);
-    log_stage("before npu_reset");
     npu_reset();
 
-    set_stage(STAGE_ALLOC);
-    log_stage("before npu_mem_alloc");
-    auto * host_src = static_cast<int32_t *>(npu_mem_alloc(elem_count * sizeof(int32_t)));
-    auto * host_raw = static_cast<int32_t *>(npu_mem_alloc(elem_count * sizeof(int32_t)));
-    auto * host_f32 = static_cast<float *>(npu_mem_alloc(elem_count * sizeof(float)));
-    auto * host_scale = static_cast<uint32_t *>(npu_mem_alloc(scale_count * sizeof(uint32_t)));
-    if (!host_src || !host_raw || !host_f32 || !host_scale) {
+    auto* host_src = static_cast<int32_t*>(npu_mem_alloc(kElemCount * sizeof(int32_t)));
+    auto* host_raw = static_cast<int32_t*>(npu_mem_alloc(kElemCount * sizeof(int32_t)));
+    auto* host_f32 = static_cast<float*>(npu_mem_alloc(kElemCount * sizeof(float)));
+    auto* host_scales = static_cast<int32_t*>(npu_mem_alloc(kElemCount * sizeof(int32_t)));
+    if (!host_src || !host_raw || !host_f32 || !host_scales) {
         std::fprintf(stderr, "npu_mem_alloc failed\n");
-        if (host_src) npu_mem_free(host_src);
-        if (host_raw) npu_mem_free(host_raw);
-        if (host_f32) npu_mem_free(host_f32);
-        if (host_scale) npu_mem_free(host_scale);
-        npu_destroy();
         return 2;
     }
 
-    for (int it = 0; it < cfg.loops; ++it) {
-        set_stage(STAGE_PREPARE_INPUT);
-        std::fprintf(stderr, "[iter] %d prepare_input elems=%zu\n", it, elem_count);
-        std::fflush(stderr);
-        for (size_t i = 0; i < elem_count; ++i) {
-            host_src[i] = static_cast<int32_t>((i + it * 17) % 10007 - 5003);
-        }
-        std::memset(host_raw, 0, elem_count * sizeof(int32_t));
-        std::memset(host_f32, 0, elem_count * sizeof(float));
-        for (size_t c = 0; c < scale_count; ++c) {
-            host_scale[c] = pack_f32_scale(scale_for_col(cfg, c));
-        }
+    for (uint32_t i = 0; i < kElemCount; ++i) {
+        host_src[i] = static_cast<int32_t>((static_cast<int>(i) - 128) * 17);
+        host_scales[i] = pack_q8_24(1.0f);
+    }
+    std::memset(host_raw, 0, kElemCount * sizeof(int32_t));
+    std::memset(host_f32, 0, kElemCount * sizeof(float));
 
-        // Step 1: write int32 to ACC.
-        set_stage(STAGE_MVIN_ACC_INT32_BEGIN);
-        log_dma_call(
-            "npu_dma_mvin(acc-int32)",
-            host_src,
-            cfg.acc_addr,
-            static_cast<uint32_t>(elem_count - 1),
-            0,
-            0,
-            0,
-            1,
-            2,
-            true,
-            false,
-            0,
-            0);
-        const MvinConfig acc_mvin_cfg {
-            host_src,
-            cfg.acc_addr,
-            static_cast<uint32_t>(elem_count - 1),
-            0,
-            0,
-            0,
-            1,
-            2,
-            true,
-            false,
-            false,
-            0,
-            0,
-            0,
-        };
-        npu_dma_mvin_async(kAccDmaId, &acc_mvin_cfg);
-        npu_dma_wait_mvin(1u << kAccDmaId);
-        set_stage(STAGE_MVIN_ACC_INT32_END);
-        log_stage("after npu_dma_mvin(acc-int32)");
+    const Stage stage = parse_stage();
+    const bool do_mvin_only = (stage == Stage::Mvin);
+    const bool do_raw = (stage == Stage::All || stage == Stage::Raw);
+    const bool do_tensor = (stage == Stage::All || stage == Stage::Tensor);
+    const bool do_channel = (stage == Stage::All || stage == Stage::Channel);
 
-        // Step 2: raw int32 readback.
-        set_stage(STAGE_MVOUT_ACC_RAW_BEGIN);
-        log_dma_call(
-            "npu_dma_mvout(acc-raw-int32)",
-            host_raw,
-            cfg.acc_addr,
-            cfg.col_num,
-            cfg.row_num,
-            cfg.mvout_sram_stride,
-            cfg.mvout_dram_stride,
-            1,
-            1,
-            true,
-            false,
-            0,
-            0);
-        const MvoutConfig acc_raw_mvout_cfg {
-            host_raw,
-            cfg.acc_addr,
-            cfg.col_num,
-            cfg.row_num,
-            cfg.mvout_sram_stride,
-            cfg.mvout_dram_stride,
-            1,
-            1,
-            true,
-            false,
-            0,
-            0,
-            false,
-        };
-        npu_dma_mvout_async(kAccDmaId, &acc_raw_mvout_cfg);
-        npu_dma_wait_mvout(1u << kAccDmaId);
-        set_stage(STAGE_MVOUT_ACC_RAW_END);
-        log_stage("after npu_dma_mvout(acc-raw-int32)");
+    // Use 2D stride form for ACC int32 path to avoid 1D packing ambiguity.
+    npu_dma_mvin(
+        host_src, kAccAddr, kCols - 1, kRows - 1, static_cast<uint16_t>(kCols), kCols,
+        1, 2, true, false, false, 0, 0, 0);
 
-        set_stage(STAGE_CHECK_RAW);
-        size_t raw_mismatch = 0;
-        for (size_t i = 0; i < elem_count; ++i) {
-            if (host_raw[i] != host_src[i]) {
-                if (raw_mismatch < 8) {
-                    std::fprintf(stderr,
-                                 "iter=%d raw mismatch idx=%zu expect=%d got=%d\n",
-                                 it, i, host_src[i], host_raw[i]);
-                }
-                ++raw_mismatch;
-            }
-        }
-        if (raw_mismatch != 0) {
-            std::fprintf(stderr, "iter=%d raw readback failed mismatches=%zu\n", it, raw_mismatch);
-            npu_mem_free(host_src);
-            npu_mem_free(host_raw);
-            npu_mem_free(host_f32);
-            npu_mem_free(host_scale);
-            npu_destroy();
-            return 3;
-        }
-
-        if (cfg.run_fp32) {
-            // Step 3: fp32 readback with dequant.
-            set_stage(STAGE_MVOUT_ACC_FP32_BEGIN);
-            log_dma_call(
-                "npu_dma_mvout(acc-fp32-dequant)",
-                host_f32,
-                cfg.acc_addr,
-                cfg.col_num,
-                cfg.row_num,
-                cfg.mvout_sram_stride,
-                cfg.mvout_dram_stride,
-                3,
-                1,
-                true,
-                true,
-                cfg.zero_point,
-                cfg.per_channel ? cfg.scale_addr : host_scale[0]);
-
-            if (cfg.per_channel) {
-                const MvinConfig scale_mvin_cfg {
-                    host_scale,
-                    cfg.scale_addr,
-                    static_cast<uint32_t>(scale_count - 1),
-                    0,
-                    0,
-                    0,
-                    1,
-                    2,
-                    true,
-                    false,
-                    false,
-                    0,
-                    0,
-                    0,
-                };
-                npu_dma_mvin_async(kAccDmaId, &scale_mvin_cfg);
-                npu_dma_wait_mvin(1u << kAccDmaId);
-            }
-
-            const MvoutConfig acc_fp32_mvout_cfg {
-                host_f32,
-                cfg.acc_addr,
-                cfg.col_num,
-                cfg.row_num,
-                cfg.mvout_sram_stride,
-                cfg.mvout_dram_stride,
-                3,
-                1,
-                true,
-                true,
-                cfg.zero_point,
-                cfg.per_channel ? cfg.scale_addr : host_scale[0],
-                cfg.per_channel,
-            };
-            npu_dma_mvout_async(kAccDmaId, &acc_fp32_mvout_cfg);
-            npu_dma_wait_mvout(1u << kAccDmaId);
-            set_stage(STAGE_MVOUT_ACC_FP32_END);
-            log_stage("after npu_dma_mvout(acc-fp32-dequant)");
-
-            set_stage(STAGE_CHECK_FP32);
-            size_t f32_mismatch = 0;
-            const float abs_tol = std::max(1e-4f, std::fabs(cfg.scale) * 2e-4f);
-            for (size_t i = 0; i < elem_count; ++i) {
-                const float expect = dequant_theory(host_src[i], cfg.zero_point, scale_for_col(cfg, i % cols));
-                const float got = host_f32[i];
-                if (std::fabs(expect - got) > abs_tol) {
-                    if (f32_mismatch < 8) {
-                        std::fprintf(stderr,
-                                     "iter=%d f32 mismatch idx=%zu expect=%.6f got=%.6f src=%d\n",
-                                     it, i, expect, got, host_src[i]);
-                    }
-                    ++f32_mismatch;
-                }
-            }
-            if (f32_mismatch != 0) {
-                std::fprintf(stderr, "iter=%d fp32 readback failed mismatches=%zu\n", it, f32_mismatch);
-                npu_mem_free(host_src);
-                npu_mem_free(host_raw);
-                npu_mem_free(host_f32);
-                npu_destroy();
-                return 4;
-            }
-        }
+    if (do_mvin_only) {
+        npu_mem_free(host_src);
+        npu_mem_free(host_raw);
+        npu_mem_free(host_f32);
+        npu_mem_free(host_scales);
+        npu_destroy();
+        std::puts("mvin stage: ok");
+        return 0;
     }
 
-    set_stage(STAGE_DONE);
-    std::puts("kv260_dma_acc_int32_fp32_test=ok");
+    if (do_raw) {
+        npu_dma_mvout(
+            host_raw, kAccAddr, kCols - 1, kRows - 1, static_cast<uint16_t>(kCols), kCols,
+            1, 1, true, false, 0, 0);
+        if (!check_raw(host_raw, host_src)) return 3;
+        std::puts("raw readback: ok");
+    }
+
+    constexpr uint32_t kZeroPoint = 0;
+    if (do_tensor || do_channel) {
+        const int32_t tensor_scale = pack_q8_24(1.0f);
+        npu_dma_mvout(
+            host_f32, kAccAddr, kCols - 1, kRows - 1, static_cast<uint16_t>(kCols), kCols,
+            3, 1, true, true, kZeroPoint, static_cast<uint32_t>(tensor_scale));
+
+        float tensor_scales[kElemCount];
+        for (uint32_t i = 0; i < kElemCount; ++i) tensor_scales[i] = 1.0f;
+        if (!check_fp32(host_f32, host_src, tensor_scales, kZeroPoint, "per_tensor fp32")) return 4;
+        std::puts("per_tensor fp32: ok");
+    }
+
+    if (do_channel) {
+        float channel_scales[kElemCount];
+        for (uint32_t i = 0; i < kElemCount; ++i) {
+            channel_scales[i] = 0.25f * static_cast<float>((i % 4) + 1);
+            host_scales[i] = pack_q8_24(channel_scales[i]);
+        }
+        npu_dma_mvin(
+            host_scales, kScaleAddr, kCols - 1, kRows - 1, static_cast<uint16_t>(kCols), kCols,
+            1, 2, true, false, false, 0, 0, 0);
+        std::memset(host_f32, 0, kElemCount * sizeof(float));
+
+        npu_dma_mvout_ex(
+            host_f32, kAccAddr, kCols - 1, kRows - 1, static_cast<uint16_t>(kCols), kCols,
+            3, 1, true, true, kZeroPoint, kScaleAddr, true);
+        if (!check_fp32(host_f32, host_src, channel_scales, kZeroPoint, "per_channel fp32")) return 5;
+        std::puts("per_channel fp32: ok");
+    }
+
     npu_mem_free(host_src);
     npu_mem_free(host_raw);
     npu_mem_free(host_f32);
-    npu_mem_free(host_scale);
+    npu_mem_free(host_scales);
     npu_destroy();
+    std::puts("kv260_dma_acc_int32_fp32_test=ok");
     return 0;
 }

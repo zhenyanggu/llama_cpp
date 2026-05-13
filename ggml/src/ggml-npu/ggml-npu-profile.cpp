@@ -77,6 +77,22 @@ static double pct(double numerator, double denominator) {
     return numerator / denominator * 100.0;
 }
 
+static double profile_accounted_us(const npu_profile_node_record & node) {
+    return node.activation_pack_us_total +
+        node.host_copy_activation_us_total +
+        node.host_copy_weight_us_total +
+        node.bias_prepare_us_total +
+        node.dma_in_pair_us_total +
+        node.dma_in_bias_us_total +
+        node.gemm_us_total +
+        node.dma_out_us_total +
+        node.postprocess_us_total;
+}
+
+static double profile_unaccounted_us(double total_us, double accounted_us) {
+    return total_us > accounted_us ? total_us - accounted_us : 0.0;
+}
+
 static std::string to_lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return (char) std::tolower(c);
@@ -215,6 +231,8 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"gemm_us", tile.gemm_us},
         {"dma_out_us", tile.dma_out_us},
         {"postprocess_us", tile.postprocess_us},
+        {"accounted_us", tile.accounted_us},
+        {"unaccounted_us", tile.unaccounted_us},
         {"total_us", tile.total_us},
     };
 }
@@ -268,6 +286,7 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_bias_calls", node.dma_in_bias_calls},
         {"dma_in_pair_calls", node.dma_in_pair_calls},
         {"gemm_calls", node.gemm_calls},
+        {"gemm_plan_calls", node.gemm_plan_calls},
         {"dma_out_calls", node.dma_out_calls},
         {"postprocess_calls", node.postprocess_calls},
         {"packed_activation_bytes_total", node.packed_activation_bytes_total},
@@ -287,6 +306,9 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"gemm_us_total", node.gemm_us_total},
         {"dma_out_us_total", node.dma_out_us_total},
         {"postprocess_us_total", node.postprocess_us_total},
+        {"accounted_us_total", node.accounted_us_total},
+        {"unaccounted_us_total", node.unaccounted_us_total},
+        {"accounted_share_pct", pct(node.accounted_us_total, node.total_node_us)},
         {"total_node_us", node.total_node_us},
         {"share_of_profile_time_pct", pct(node.total_node_us, total_us)},
         {"status", node.status},
@@ -306,6 +328,10 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"n", node.n},
         {"k", node.k},
         {"total_node_us", node.total_node_us},
+        {"accounted_us_total", node.accounted_us_total},
+        {"unaccounted_us_total", node.unaccounted_us_total},
+        {"gemm_calls", node.gemm_calls},
+        {"gemm_plan_calls", node.gemm_plan_calls},
         {"share_of_profile_time_pct", pct(node.total_node_us, total_us)},
         {"status", node.status},
         {"error", node.error.empty() ? nullptr : json(node.error)},
@@ -492,6 +518,16 @@ void npu_profile_flush() {
         return lhs.layer_id < rhs.layer_id;
     });
 
+    for (auto & node : snapshot) {
+        if (node.accounted_us_total <= 0.0) {
+            node.accounted_us_total = profile_accounted_us(node);
+        }
+        node.unaccounted_us_total = profile_unaccounted_us(node.total_node_us, node.accounted_us_total);
+    }
+
+    double total_accounted_us = 0.0;
+    double total_unaccounted_us = 0.0;
+    int64_t total_gemm_plan_calls = 0;
     for (const auto & node : snapshot) {
         total_us += node.total_node_us;
         total_activation_pack_us += node.activation_pack_us_total;
@@ -503,9 +539,12 @@ void npu_profile_flush() {
         total_gemm_us += node.gemm_us_total;
         total_dma_out_us += node.dma_out_us_total;
         total_postprocess_us += node.postprocess_us_total;
+        total_accounted_us += node.accounted_us_total;
+        total_unaccounted_us += node.unaccounted_us_total;
         total_bias_prepare_calls += node.bias_prepare_calls;
         total_dma_in_pair_calls += node.dma_in_pair_calls;
         total_dma_in_bias_calls += node.dma_in_bias_calls;
+        total_gemm_plan_calls += node.gemm_plan_calls;
     }
 
     std::vector<npu_profile_node_record> hot_nodes = snapshot;
@@ -573,8 +612,12 @@ void npu_profile_flush() {
             {"total_mvinbias_us", total_dma_in_bias_us},
             {"total_mvinbias_calls", total_dma_in_bias_calls},
             {"total_gemm_us", total_gemm_us},
+            {"total_gemm_plan_calls", total_gemm_plan_calls},
             {"total_dma_out_us", total_dma_out_us},
             {"total_postprocess_us", total_postprocess_us},
+            {"total_accounted_us", total_accounted_us},
+            {"total_unaccounted_us", total_unaccounted_us},
+            {"accounted_share_pct", pct(total_accounted_us, total_us)},
             {"hot_nodes", hot},
         }},
         {"nodes", nodes},
@@ -634,6 +677,7 @@ void npu_summary_session_stop(ggml_npu_profile_summary * out) {
     snapshot.runtime_wait_irq_us = static_cast<int64_t>(runtime.wait_irq_ns / 1000);
     snapshot.runtime_mvin_calls = static_cast<int64_t>(runtime.mvin_calls);
     snapshot.runtime_compute_calls = static_cast<int64_t>(runtime.compute_calls);
+    snapshot.runtime_gemm_plan_calls = static_cast<int64_t>(runtime.gemm_plan_calls);
     snapshot.runtime_mvout_calls = static_cast<int64_t>(runtime.mvout_calls);
     snapshot.runtime_layout_calls = static_cast<int64_t>(runtime.layout_calls);
 
@@ -675,6 +719,7 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_bias_calls += delta.dma_in_bias_calls;
     summary.dma_in_pair_calls += delta.dma_in_pair_calls;
     summary.gemm_calls += delta.gemm_calls;
+    summary.gemm_plan_calls += delta.gemm_plan_calls;
     summary.dma_out_calls += delta.dma_out_calls;
     summary.postprocess_calls += delta.postprocess_calls;
     summary.packed_activation_bytes_total += delta.packed_activation_bytes_total;
@@ -694,6 +739,8 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.gemm_us_total += delta.gemm_us_total;
     summary.dma_out_us_total += delta.dma_out_us_total;
     summary.postprocess_us_total += delta.postprocess_us_total;
+    summary.accounted_us_total += delta.accounted_us_total;
+    summary.unaccounted_us_total += delta.unaccounted_us_total;
 }
 
 } // namespace ggml_npu

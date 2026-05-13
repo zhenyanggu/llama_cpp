@@ -247,12 +247,12 @@ extern "C" {
 #define NPU_REGS__SA_IN_A__ADDR_bm 0xffffffff
 #define NPU_REGS__SA_IN_A__ADDR_bp 0
 #define NPU_REGS__SA_IN_A__ADDR_bw 32
-#define NPU_REGS__SA_IN_A__COL_bm 0x7ff00000000
+#define NPU_REGS__SA_IN_A__COL_bm 0xfff00000000
 #define NPU_REGS__SA_IN_A__COL_bp 32
-#define NPU_REGS__SA_IN_A__COL_bw 11
-#define NPU_REGS__SA_IN_A__ROW_bm 0xf80000000000
-#define NPU_REGS__SA_IN_A__ROW_bp 43
-#define NPU_REGS__SA_IN_A__ROW_bw 5
+#define NPU_REGS__SA_IN_A__COL_bw 12
+#define NPU_REGS__SA_IN_A__ROW_bm 0xf00000000000
+#define NPU_REGS__SA_IN_A__ROW_bp 44
+#define NPU_REGS__SA_IN_A__ROW_bw 4
 #define NPU_REGS__SA_IN_A__STRIDE_bm 0xffff000000000000
 #define NPU_REGS__SA_IN_A__STRIDE_bp 48
 #define NPU_REGS__SA_IN_A__STRIDE_bw 16
@@ -261,12 +261,12 @@ extern "C" {
 #define NPU_REGS__SA_IN_B__ADDR_bm 0xffffffff
 #define NPU_REGS__SA_IN_B__ADDR_bp 0
 #define NPU_REGS__SA_IN_B__ADDR_bw 32
-#define NPU_REGS__SA_IN_B__COL_bm 0x1f00000000
+#define NPU_REGS__SA_IN_B__COL_bm 0xf00000000
 #define NPU_REGS__SA_IN_B__COL_bp 32
-#define NPU_REGS__SA_IN_B__COL_bw 5
-#define NPU_REGS__SA_IN_B__ROW_bm 0xffe000000000
-#define NPU_REGS__SA_IN_B__ROW_bp 37
-#define NPU_REGS__SA_IN_B__ROW_bw 11
+#define NPU_REGS__SA_IN_B__COL_bw 4
+#define NPU_REGS__SA_IN_B__ROW_bm 0xfff000000000
+#define NPU_REGS__SA_IN_B__ROW_bp 36
+#define NPU_REGS__SA_IN_B__ROW_bw 12
 #define NPU_REGS__SA_IN_B__STRIDE_bm 0xffff000000000000
 #define NPU_REGS__SA_IN_B__STRIDE_bp 48
 #define NPU_REGS__SA_IN_B__STRIDE_bw 16
@@ -395,6 +395,24 @@ extern "C" {
 #define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bp 8
 #define NPU_REGS__DMA_STATUS__MVOUT_BUSY_bw 3
 
+// Reg - npu_regs::GEMM_PLAN_0
+#define NPU_REGS__GEMM_PLAN_0__ENABLE_bm 0x1
+#define NPU_REGS__GEMM_PLAN_0__ENABLE_bp 0
+#define NPU_REGS__GEMM_PLAN_0__ENABLE_bw 1
+#define NPU_REGS__GEMM_PLAN_0__TILE_K_bm 0xffff0000
+#define NPU_REGS__GEMM_PLAN_0__TILE_K_bp 16
+#define NPU_REGS__GEMM_PLAN_0__TILE_K_bw 16
+
+// Reg - npu_regs::GEMM_PLAN_1
+#define NPU_REGS__GEMM_PLAN_1__SCRATCH_ADDR_bm 0xffffffff
+#define NPU_REGS__GEMM_PLAN_1__SCRATCH_ADDR_bp 0
+#define NPU_REGS__GEMM_PLAN_1__SCRATCH_ADDR_bw 32
+
+// Reg - npu_regs::GEMM_PLAN_2
+#define NPU_REGS__GEMM_PLAN_2__RESERVED_bm 0xffffffffffffffff
+#define NPU_REGS__GEMM_PLAN_2__RESERVED_bp 0
+#define NPU_REGS__GEMM_PLAN_2__RESERVED_bw 64
+
 // Addrmap - npu_regs
 typedef struct __attribute__ ((__packed__)) {
     uint64_t MVIN_CTRL0;
@@ -426,10 +444,13 @@ typedef struct __attribute__ ((__packed__)) {
     uint64_t ISR;
     uint64_t IPR;
     uint64_t DMA_STATUS;
+    uint64_t GEMM_PLAN_0;
+    uint64_t GEMM_PLAN_1;
+    uint64_t GEMM_PLAN_2;
 } npu_regs_t;
 
 
-static_assert(sizeof(npu_regs_t) == 0xe8, "Packing error");
+static_assert(sizeof(npu_regs_t) == 0x100, "Packing error");
 
 #ifdef __cplusplus
 }

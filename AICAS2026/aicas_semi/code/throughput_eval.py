@@ -51,6 +51,17 @@ def parse_args():
         type=float,
         default=300.0
     )
+    parser.add_argument(
+        "--max-tokens",
+        help="Maximum generated tokens for this throughput request.",
+        type=int,
+        default=4096
+    )
+    parser.add_argument(
+        "--prompt",
+        help="Prompt text for this throughput request.",
+        default=LONG_PROMPT
+    )
     return parser.parse_args()
 
 
@@ -75,7 +86,7 @@ def main():
                     },
                     {
                         "type": "text",
-                        "text": LONG_PROMPT
+                        "text": args.prompt
                     }
                 ]
             }
@@ -86,7 +97,7 @@ def main():
             base_url=args.base_url,
             model=args.model,
             messages=messages_payload,
-            max_tokens=4096,
+            max_tokens=args.max_tokens,
             temperature=0.0,
             stream=False,
             timeout=args.request_timeout,
@@ -152,6 +163,7 @@ def main():
         print(f"\n\n--- AN ERROR OCCURRED ---")
         print(f"Error Type: {type(e).__name__}")
         print(f"Error Message: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

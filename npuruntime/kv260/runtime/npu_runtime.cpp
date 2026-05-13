@@ -75,6 +75,7 @@ enum class ProfileCallCounter {
     None,
     Mvin,
     Compute,
+    GemmPlan,
     Mvout,
     Layout
 };
@@ -89,6 +90,7 @@ struct LayerProfileRecord {
     uint64_t waitIrqNs = 0;
     uint64_t mvinCalls = 0;
     uint64_t computeCalls = 0;
+    uint64_t gemmPlanCalls = 0;
     uint64_t mvoutCalls = 0;
     uint64_t layoutCalls = 0;
 };
@@ -548,6 +550,10 @@ static void addStageSample(
     case ProfileCallCounter::Compute:
         record.computeCalls += 1;
         break;
+    case ProfileCallCounter::GemmPlan:
+        record.computeCalls += 1;
+        record.gemmPlanCalls += 1;
+        break;
     case ProfileCallCounter::Mvout:
         record.mvoutCalls += 1;
         break;
@@ -642,6 +648,7 @@ static void dumpProfilerReport(const char* pathOverride) {
     uint64_t cpuTotalNs = 0;
     uint64_t npuTotalNs = 0;
     uint64_t npuLayerCount = 0;
+    uint64_t totalGemmPlanCalls = 0;
     std::vector<std::pair<int64_t, uint64_t>> hotLayers;
     hotLayers.reserve(snapshot.size());
 
@@ -654,6 +661,7 @@ static void dumpProfilerReport(const char* pathOverride) {
         } else {
             cpuTotalNs += record.totalNs;
         }
+        totalGemmPlanCalls += record.gemmPlanCalls;
         hotLayers.emplace_back(entry.first, record.totalNs);
     }
 
@@ -682,6 +690,7 @@ static void dumpProfilerReport(const char* pathOverride) {
                                    static_cast<double>(snapshot.size()))
         << ",\n";
     out << "    \"npu_macs_share\": null,\n";
+    out << "    \"gemm_plan_calls\": " << totalGemmPlanCalls << ",\n";
     out << "    \"top_hot_layers\": [";
     for (size_t i = 0; i < hotLayers.size() && i < 5; ++i) {
         if (i != 0) {
@@ -716,10 +725,8 @@ static void dumpProfilerReport(const char* pathOverride) {
         const std::string device =
             metadata && !metadata->device.empty() ? metadata->device
                                                  : (isNpuLayer ? "npu" : "cpu");
-        const uint64_t computeExclusiveNs = record.computeNs > record.waitIrqNs ? record.computeNs - record.waitIrqNs : 0;
-        const uint64_t layoutExclusiveNs = record.layoutNs > record.waitIrqNs ? record.layoutNs - record.waitIrqNs : 0;
         const uint64_t stagedNs =
-            record.dmaInNs + computeExclusiveNs + record.dmaOutNs + layoutExclusiveNs + record.waitIrqNs;
+            record.dmaInNs + record.computeNs + record.dmaOutNs + record.layoutNs;
         const uint64_t otherNs =
             record.totalNs > stagedNs ? record.totalNs - stagedNs
                                       : (isNpuLayer ? 0 : record.totalNs);
@@ -776,14 +783,13 @@ static void dumpProfilerReport(const char* pathOverride) {
             << ",\n";
         out << "      \"dma_in_ns\": " << record.dmaInNs << ",\n";
         out << "      \"compute_ns\": " << record.computeNs << ",\n";
-        out << "      \"compute_exclusive_ns\": " << computeExclusiveNs << ",\n";
         out << "      \"dma_out_ns\": " << record.dmaOutNs << ",\n";
         out << "      \"layout_ns\": " << record.layoutNs << ",\n";
-        out << "      \"layout_exclusive_ns\": " << layoutExclusiveNs << ",\n";
         out << "      \"wait_irq_ns\": " << record.waitIrqNs << ",\n";
         out << "      \"other_ns\": " << otherNs << ",\n";
         out << "      \"mvin_calls\": " << record.mvinCalls << ",\n";
         out << "      \"compute_calls\": " << record.computeCalls << ",\n";
+        out << "      \"gemm_plan_calls\": " << record.gemmPlanCalls << ",\n";
         out << "      \"mvout_calls\": " << record.mvoutCalls << ",\n";
         out << "      \"layout_calls\": " << record.layoutCalls << "\n";
         out << "    }";
@@ -1234,6 +1240,8 @@ void NpuRuntime::wait_irq() {
     ScopedStageTimer waitTimer(ProfileStage::WaitIrq);
     NPU_TIMER_SECTION_BEGIN("wait_irq")
     NPU_LOG("Waiting for IRQ (hybrid polling)...");
+    const uint32_t expected_irq = g_last_op_ctx.start_bit & NPU_REGS__IAR__ACK_bm;
+    const uint32_t wait_mask = expected_irq ? expected_irq : NPU_REGS__IAR__ACK_bm;
     
     // ========== Phase 1: 自旋轮询（无延迟，最低延迟路径）==========
     // 在用户态轮询模式下，IER=0，因此 IPR = ISR & IER = 0（永远为0）
@@ -1244,20 +1252,20 @@ void NpuRuntime::wait_irq() {
     // 循环展开：每次迭代检测4次，减少循环开销
     int i = 0;
     for (; i < NPU_POLL_SPIN_COUNT - 3; i += 4) {
-        if (*isr_ptr) { ack_irq(); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr) { ack_irq(); NPU_LOG("IRQ received via spin polling (iter=%d)", i+1); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr) { ack_irq(); NPU_LOG("IRQ received via spin polling (iter=%d)", i+2); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr) { ack_irq(); NPU_LOG("IRQ received via spin polling (iter=%d)", i+3); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+1); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+2); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+3); NPU_TIMER_SECTION_END() return; }
     }
     // 处理剩余迭代
     for (; i < NPU_POLL_SPIN_COUNT; ++i) {
-        if (*isr_ptr) { ack_irq(); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
     }
     
     // ========== Phase 2: 让出式轮询（短暂sleep，减少CPU占用）==========
     for (int i = 0; i < NPU_POLL_YIELD_COUNT; ++i) {
-        if (check_irq_pending()) {
-            ack_irq();
+        if (*isr_ptr & wait_mask) {
+            ack_irq(wait_mask);
             NPU_LOG("IRQ received via yield polling (iter=%d)", i);
             NPU_TIMER_SECTION_END()
             return;
@@ -1266,12 +1274,16 @@ void NpuRuntime::wait_irq() {
     }
     
     // ========== Phase 3: 中断等待（回退到阻塞模式）==========
-    // 轮询超时，先打印中断相关寄存器用于诊断
-    dump_irq_regs();
-    // 【关键修复】在进入内核等待前，先清除可能已经挂起的中断，
-    // 然后切换到内核模式，让内核ISR负责ACK后续中断
-    ack_irq();
-    
+    // The IRQ may arrive in the small window after the final userspace poll.
+    // Do not ACK before entering kernel wait; doing so can clear the late IRQ
+    // and make IOCTL_WAIT_IRQ time out on an operation that already completed.
+    if (*isr_ptr & wait_mask) {
+        ack_irq(wait_mask);
+        NPU_LOG("IRQ received after polling window, before kernel wait");
+        NPU_TIMER_SECTION_END()
+        return;
+    }
+
     // 切换到内核中断模式：从此刻起，内核ISR会ACK中断
     ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
     
@@ -1284,6 +1296,7 @@ void NpuRuntime::wait_irq() {
     
     if (ret < 0) {
         perror("Wait IRQ failed");
+        dump_irq_regs();
         NPU_ERR(
             "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX",
             g_last_op_ctx.op,
@@ -1320,97 +1333,10 @@ void NpuRuntime::run_mvin(const MvinConfig& cfg) {
     NPU_TIMER_TOTAL("run_mvin");
     ScopedStageTimer profileTimer(ProfileStage::DmaIn, ProfileCallCounter::Mvin);
     const uint32_t dma_id = select_sync_mvin_dma(cfg);
-    validate_mvin_dma_cfg(dma_id, cfg);
-
-    const uint32_t busy_mask = read_dma_busy_mask(true);
-    if (busy_mask & (1u << dma_id)) {
-        NPU_LOG("DMA%u MVIN busy before sync launch, waiting for idle (busy_mask=0x%X)", dma_id, busy_mask);
-        wait_mvin(1u << dma_id);
-    }
-    if (pending_mvin_staging[dma_id]) {
-        throw std::runtime_error(
-            std::string("DMA") + std::to_string(dma_id) + " has unreleased MVIN staging buffer");
-    }
-
-    const uint8_t precision = 1; // force precision regardless of API input
-
-    auto calc_transfer_bytes = [&](const MvinConfig& c) -> size_t {
-        const uint64_t cols = static_cast<uint64_t>(c.col_num) + 1ULL;
-        const uint64_t rows = static_cast<uint64_t>(c.row_num) + 1ULL;
-        const uint64_t elem_bytes = 1ULL; // precision is forced to int8 path.
-        const uint64_t stride_bytes =
-            static_cast<uint64_t>(std::max<uint32_t>(c.dram_stride, c.col_num + 1U)) * elem_bytes;
-        if (rows <= 1ULL) return static_cast<size_t>(cols * elem_bytes);
-        const uint64_t total =
-            (rows - 1ULL) * stride_bytes + cols * elem_bytes;
-        return static_cast<size_t>(total);
-    };
-
-    void *dma_src_ptr = cfg.host_ptr;
-    uint32_t phys_dram = 0;
-    try {
-        phys_dram = virt_to_phys(dma_src_ptr);
-    } catch (const std::runtime_error &) {
-        size_t transfer_bytes = calc_transfer_bytes(cfg);
-        void * staging_ptr = alloc(transfer_bytes);
-        if (!staging_ptr) {
-            throw std::runtime_error(
-                "run_mvin staging alloc failed for non-NPU host pointer");
-        }
-        std::memcpy(staging_ptr, cfg.host_ptr, transfer_bytes);
-        pending_mvin_staging[dma_id] = staging_ptr;
-        dma_src_ptr = staging_ptr;
-        phys_dram = virt_to_phys(dma_src_ptr);
-        NPU_LOG(
-            "MVIN sync DMA%u staged host ptr %p -> NPU ptr %p (%zu bytes)",
-            dma_id, cfg.host_ptr, staging_ptr, transfer_bytes);
-    }
-
-    NPU_TIMER_SECTION_BEGIN("run_mvin(pre_reg)")
-    NPU_LOG("Running MVIN sync DMA%u (HostPtr=%p, phy_dram=0x%x, SRAM=0x%x)",
-            dma_id, dma_src_ptr, phys_dram, cfg.sram_addr);
-    NPU_TIMER_SECTION_END()
-
-    NPU_TIMER_SECTION_BEGIN("run_mvin(reg_write)")
-    uint64_t val_dram = REG_FIELD(MVIN_CTRL0, DRAM_ADDR, phys_dram) |
-                        REG_FIELD(MVIN_CTRL0, ROW_NUM, cfg.row_num);
-    reg_write64(RegOffset::MVIN_DRAM_ADDR, val_dram);
-
-    uint64_t val_sram = REG_FIELD(MVIN_CTRL1, SRAM_ADDR, cfg.sram_addr) |
-                        REG_FIELD(MVIN_CTRL1, COL_NUM, cfg.col_num);
-    reg_write64(RegOffset::MVIN_SRAM_ADDR, val_sram);
-
-    uint64_t val_cfg = REG_FIELD(CFG_MVIN0, INPUT_TYPE, cfg.input_type) |
-                       REG_FIELD(CFG_MVIN0, INPUT_PRECISION, precision) |
-                       REG_FIELD(CFG_MVIN0, IS_QUANT, cfg.is_quant) |
-                       REG_FIELD(CFG_MVIN0, DEST, cfg.dest) |
-                       REG_FIELD(CFG_MVIN0, IS_BIAS, cfg.is_bias) |
-                       REG_FIELD(CFG_MVIN0, SRAM_STRIDE, cfg.sram_stride) |
-                       REG_FIELD(CFG_MVIN0, DRAM_STRIDE, cfg.dram_stride);
-    reg_write64_cached(RegOffset::MVIN_CFG, val_cfg, &shadow.mvin_cfg);
-    g_last_op_ctx = {
-        "MVIN",
-        val_dram,
-        val_sram,
-        val_cfg,
-        0,
-        BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id))
-    };
-
-    if (cfg.is_quant) {
-        uint64_t val_quant = REG_FIELD(CFG_MVIN1, ZEROPOINT, cfg.quant_zero) |
-                             REG_FIELD(CFG_MVIN1, SCALE, cfg.quant_scale) |
-                             REG_FIELD(CFG_MVIN1, SCALE_SHIFT, cfg.quant_shift);
-        reg_write64_cached(RegOffset::MVIN_QUANT, val_quant, &shadow.mvin_quant);
-        g_last_op_ctx.cfg1 = val_quant;
-    }
-    const uint32_t start_word =
-        BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id));
-    reg_write(RegOffset::START, start_word);
-    NPU_TIMER_SECTION_END()
-
-    NPU_TIMER_SECTION_BEGIN("run_mvin(wait_dma)")
-    wait_mvin(1u << dma_id);
+    run_mvin_async(dma_id, cfg);
+    NPU_TIMER_SECTION_BEGIN("run_mvin(wait_irq)")
+    wait_irq();
+    release_mvin_staging(1u << dma_id);
     NPU_TIMER_SECTION_END()
 }
 
@@ -1419,8 +1345,8 @@ void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
     ScopedStageTimer profileTimer(ProfileStage::DmaOut, ProfileCallCounter::Mvout);
     const uint32_t dma_id = select_sync_mvout_dma(cfg);
     run_mvout_async(dma_id, cfg);
-    NPU_TIMER_SECTION_BEGIN("run_mvout(wait_dma)")
-    wait_mvout(1u << dma_id);
+    NPU_TIMER_SECTION_BEGIN("run_mvout(wait_irq)")
+    wait_irq();
     NPU_TIMER_SECTION_END()
 }
 
@@ -1428,12 +1354,18 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
     validate_mvin_dma_cfg(dma_id, cfg);
 
     const uint32_t busy_mask = read_dma_busy_mask(true);
-    if (busy_mask & (1u << dma_id)) {
+    const bool acc_path = (dma_id == ACC_DMA_IDX);
+    if (!acc_path && (busy_mask & (1u << dma_id))) {
         NPU_LOG(
             "DMA%u MVIN busy before async launch, waiting for idle (busy_mask=0x%X)",
             dma_id,
             busy_mask);
         wait_mvin(1u << dma_id);
+    } else if (acc_path && (busy_mask & (1u << dma_id))) {
+        NPU_LOG(
+            "DMA%u MVIN busy bit is set before async launch, skipping busy wait for ACC path (busy_mask=0x%X)",
+            dma_id,
+            busy_mask);
     }
     if (pending_mvin_staging[dma_id]) {
         throw std::runtime_error(
@@ -1514,6 +1446,7 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
         reg_write64_cached(RegOffset::MVIN_QUANT, val_quant, &shadow.mvin_quant);
         g_last_op_ctx.cfg1 = val_quant;
     }
+    ack_irq(BIT_START_DMA_MVIN);
     const uint32_t start_word =
         BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id));
     reg_write(RegOffset::START, start_word);
@@ -1524,12 +1457,18 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
     validate_mvout_dma_cfg(dma_id, cfg);
 
     const uint32_t busy_mask = read_dma_busy_mask(false);
-    if (busy_mask & (1u << dma_id)) {
+    const bool acc_path = (dma_id == ACC_DMA_IDX);
+    if (!acc_path && (busy_mask & (1u << dma_id))) {
         NPU_LOG(
             "DMA%u MVOUT busy before async launch, waiting for idle (busy_mask=0x%X)",
             dma_id,
             busy_mask);
         wait_mvout(1u << dma_id);
+    } else if (acc_path && (busy_mask & (1u << dma_id))) {
+        NPU_LOG(
+            "DMA%u MVOUT busy bit is set before async launch, skipping busy wait for ACC path (busy_mask=0x%X)",
+            dma_id,
+            busy_mask);
     }
 
     const uint8_t precision = static_cast<uint8_t>(cfg.precision & 0x3);
@@ -1567,14 +1506,15 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
     };
     
     if (precision == 3) {
-        uint16_t scale_or_addr_lo = static_cast<uint16_t>(cfg.scale_or_addr & 0xFFFF);
-        uint16_t scale_or_addr_hi = static_cast<uint16_t>((cfg.scale_or_addr >> 16) & 0xFFFF);
+        uint16_t quant_scale = static_cast<uint16_t>(cfg.scale_or_addr & 0xFFFF);
+        uint16_t quant_scaleshift = static_cast<uint16_t>((cfg.scale_or_addr >> 16) & 0xFFFF);
         uint64_t val_quant = REG_FIELD(CFG_MVOUT1, ZEROPOINT, cfg.quant_zero) |
-                             REG_FIELD(CFG_MVOUT1, SCALE, scale_or_addr_lo) |
-                             REG_FIELD(CFG_MVOUT1, SCALE_SHIFT, scale_or_addr_hi);
+                             REG_FIELD(CFG_MVOUT1, SCALE, quant_scale) |
+                             REG_FIELD(CFG_MVOUT1, SCALE_SHIFT, quant_scaleshift);
         reg_write64_cached(RegOffset::MVOUT_QUANT, val_quant, &shadow.mvout_quant);
         g_last_op_ctx.cfg1 = val_quant;
     }
+    ack_irq(BIT_START_DMA_MVOUT);
     const uint32_t start_word =
         BIT_START_DMA_MVOUT | static_cast<uint32_t>(REG_FIELD(START_REG, MVOUT_DMA_SEL, dma_id));
     reg_write(RegOffset::START, start_word);
@@ -1601,21 +1541,21 @@ void NpuRuntime::run_double_mvin(const MvinConfig& dma0_cfg, const MvinConfig& d
     bool dma0_started = false;
     bool dma1_started = false;
     try {
-        run_mvin_async(SPM_DMA0_IDX, dma0_cfg);
+        run_mvin_async(0, dma0_cfg);
         dma0_started = true;
-        run_mvin_async(SPM_DMA1_IDX, dma1_cfg);
+        run_mvin_async(1, dma1_cfg);
         dma1_started = true;
     } catch (...) {
         if (dma1_started) {
-            try { wait_mvin(1u << SPM_DMA1_IDX); } catch (...) {}
+            try { wait_mvin(1u << 1); } catch (...) {}
         }
         if (dma0_started) {
-            try { wait_mvin(1u << SPM_DMA0_IDX); } catch (...) {}
+            try { wait_mvin(1u << 0); } catch (...) {}
         }
         throw;
     }
 
-    wait_mvin((1u << SPM_DMA0_IDX) | (1u << SPM_DMA1_IDX));
+    wait_mvin((1u << 0) | (1u << 1));
 }
 
 void NpuRuntime::run_sfu(const SfuConfig& cfg) {
@@ -1912,6 +1852,9 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
     NPU_TIMER_SECTION_END()
 
     NPU_TIMER_SECTION_BEGIN("run_gemm(reg_write)")
+    // GEMM_PLAN is sticky MMIO state; legacy single-GEMM launches must not inherit it.
+    reg_write64(RegOffset::GEMM_PLAN_0, 0);
+
     // 1. Compute Config 1
     uint64_t val_cfg1 = REG_FIELD(CFG_COMPUTE0, DATAFLOW, cfg.dataflow) |
                         REG_FIELD(CFG_COMPUTE0, INT_TYPE, cfg.int_type) |
@@ -1967,11 +1910,112 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
     };
 
     // 7. Start SA
+    ack_irq(BIT_START_SA);
     reg_write(RegOffset::START, BIT_START_SA);
     NPU_TIMER_SECTION_END()
 
     NPU_TIMER_SECTION_BEGIN("run_gemm(wait_irq)")
     wait_irq();
+    NPU_TIMER_SECTION_END()
+}
+
+void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
+    NPU_TIMER_TOTAL("run_gemm_plan");
+    ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::GemmPlan);
+
+    constexpr uint8_t kPlanTileM = 16;
+    constexpr uint8_t kPlanTileN = 16;
+    constexpr uint16_t kPlanTileKDefault = 16;
+    constexpr uint16_t kPlanTileKMax = 4096;
+    constexpr uint8_t kPlanIntTypeInt8 = 0;
+    constexpr uint8_t kPlanOpTypeGemm = 0;
+    constexpr bool kPlanDataflowOS = true;
+    constexpr bool kPlanAccOutToAcc = true;
+    uint16_t plan_tile_k = kPlanTileKDefault;
+    if (const char* tile_env = std::getenv("NPU_GEMM_PLAN_TILE_K")) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(tile_env, &end, 0);
+        if (end != tile_env && *end == '\0' && parsed > 0 && parsed <= kPlanTileKMax) {
+            plan_tile_k = static_cast<uint16_t>(parsed);
+        }
+    }
+
+    if (cfg.block_m == 0 || cfg.block_n == 0 || cfg.block_k == 0) {
+        throw std::runtime_error("run_gemm_plan: block sizes must be non-zero");
+    }
+    if (cfg.block_m > 255 || cfg.block_n > 255) {
+        throw std::runtime_error("run_gemm_plan: block M/N exceed hardware plan limit");
+    }
+    if (cfg.block_k > kPlanTileKMax) {
+        throw std::runtime_error("run_gemm_plan: block K exceeds current RTL plan limit");
+    }
+
+    NPU_TIMER_SECTION_BEGIN("run_gemm_plan(reg_write)")
+    const uint64_t val_cfg1 = REG_FIELD(CFG_COMPUTE0, DATAFLOW, kPlanDataflowOS) |
+                              REG_FIELD(CFG_COMPUTE0, INT_TYPE, kPlanIntTypeInt8) |
+                              REG_FIELD(CFG_COMPUTE0, OPTYPE, kPlanOpTypeGemm) |
+                              REG_FIELD(CFG_COMPUTE0, ACCOUT_DEST, kPlanAccOutToAcc) |
+                              REG_FIELD(CFG_COMPUTE0, ASYMMETRIC_ACTIVATIONS, cfg.asymmetric_activations ? 1 : 0) |
+                              REG_FIELD(CFG_COMPUTE0, INPUTA_ZP, 0) |
+                              REG_FIELD(CFG_COMPUTE0, INPUTB_ZP, 0);
+    reg_write64_cached(RegOffset::CFG_COMPUTE_1, val_cfg1, &shadow.compute_cfg1);
+
+    const uint64_t val_cfg2 = REG_FIELD(CFG_COMPUTE1, OUT_ZP, 0) |
+                              REG_FIELD(CFG_COMPUTE1, OUT_SCALE, 0) |
+                              REG_FIELD(CFG_COMPUTE1, OUT_SHIFT, 0);
+    reg_write64_cached(RegOffset::CFG_COMPUTE_2, val_cfg2, &shadow.compute_cfg2);
+
+    const uint32_t biaspsum_addr = cfg.have_bias ? cfg.bias_addr : (cfg.is_accumulate ? cfg.out_addr : 0);
+    const uint16_t biaspsum_stride = (cfg.have_bias || cfg.is_accumulate) ? cfg.bias_stride : 0;
+    const uint64_t val_acc1 = REG_FIELD(CFG_ACCU0, BIASPSUM_ADDR, biaspsum_addr) |
+                              REG_FIELD(CFG_ACCU0, STRIDE, biaspsum_stride) |
+                              REG_FIELD(CFG_ACCU0, WIDTH, cfg.block_n) |
+                              REG_FIELD(CFG_ACCU0, HEIGHT, cfg.block_m);
+    reg_write64_cached(RegOffset::CFG_ACCU_1, val_acc1, &shadow.accu_cfg1);
+
+    const bool read_accumulator_input = cfg.is_accumulate || cfg.have_bias;
+    const uint64_t val_acc2 = REG_FIELD(CFG_ACCU1, OUT_ADDR, cfg.out_addr) |
+                              REG_FIELD(CFG_ACCU1, OUT_STRIDE, cfg.out_stride) |
+                              REG_FIELD(CFG_ACCU1, IS_ACCU, read_accumulator_input ? 1 : 0) |
+                              REG_FIELD(CFG_ACCU1, RELU, 0) |
+                              REG_FIELD(CFG_ACCU1, RELU_TYPE, 0) |
+                              REG_FIELD(CFG_ACCU1, IS_BIAS, cfg.have_bias ? 1 : 0);
+    reg_write64_cached(RegOffset::CFG_ACCU_2, val_acc2, &shadow.accu_cfg2);
+
+    const uint64_t val_input_a = REG_FIELD(SA_IN_A, ADDR, cfg.a_addr) |
+                                 REG_FIELD(SA_IN_A, COL, static_cast<uint16_t>(cfg.block_k - 1)) |
+                                 REG_FIELD(SA_IN_A, ROW, static_cast<uint8_t>(kPlanTileM - 1)) |
+                                 REG_FIELD(SA_IN_A, STRIDE, cfg.a_stride);
+    reg_write64(RegOffset::SA_INPUT_A, val_input_a);
+
+    const uint64_t val_input_b = REG_FIELD(SA_IN_B, ADDR, cfg.b_addr) |
+                                 REG_FIELD(SA_IN_B, COL, static_cast<uint8_t>(kPlanTileN - 1)) |
+                                 REG_FIELD(SA_IN_B, ROW, static_cast<uint16_t>(cfg.block_k - 1)) |
+                                 REG_FIELD(SA_IN_B, STRIDE, cfg.b_stride);
+    reg_write64(RegOffset::SA_INPUT_B, val_input_b);
+
+    const uint64_t plan0 = (1ull << 0) | (static_cast<uint64_t>(plan_tile_k) << 16);
+    const uint64_t plan1 = cfg.scratch_addr;
+    reg_write64(RegOffset::GEMM_PLAN_0, plan0);
+    reg_write64(RegOffset::GEMM_PLAN_1, plan1);
+    reg_write64(RegOffset::GEMM_PLAN_2, 0);
+
+    g_last_op_ctx = {
+        "GEMM_PLAN",
+        val_input_a,
+        val_input_b,
+        plan0,
+        plan1,
+        BIT_START_SA
+    };
+
+    ack_irq(BIT_START_SA);
+    reg_write(RegOffset::START, BIT_START_SA);
+    NPU_TIMER_SECTION_END()
+
+    NPU_TIMER_SECTION_BEGIN("run_gemm_plan(wait_irq)")
+    wait_irq();
+    reg_write64(RegOffset::GEMM_PLAN_0, 0);
     NPU_TIMER_SECTION_END()
 }
 
@@ -2463,6 +2507,7 @@ void npu_profile_get_summary(struct npu_profile_runtime_summary * out) {
         out->wait_irq_ns += record.waitIrqNs;
         out->mvin_calls += record.mvinCalls;
         out->compute_calls += record.computeCalls;
+        out->gemm_plan_calls += record.gemmPlanCalls;
         out->mvout_calls += record.mvoutCalls;
         out->layout_calls += record.layoutCalls;
     }
@@ -2512,17 +2557,8 @@ void npu_dma_mvout(
     uint16_t sram_stride, uint32_t dram_stride, uint8_t precision, uint8_t output_type,
     bool source, bool is_quant, uint32_t quant_zero, uint32_t scale_or_addr
 ) {
-    npu_dma_mvout_ex(host_ptr, sram_addr, col_num, row_num, sram_stride, dram_stride,
-                     precision, output_type, source, is_quant, quant_zero, scale_or_addr, false);
-}
-
-void npu_dma_mvout_ex(
-    void* host_ptr, uint32_t sram_addr, uint32_t col_num, uint32_t row_num,
-    uint16_t sram_stride, uint32_t dram_stride, uint8_t precision, uint8_t output_type,
-    bool source, bool is_quant, uint32_t quant_zero, uint32_t scale_or_addr, bool per_channel
-) {
     NPU_CAPI_LOG(
-        "npu_dma_mvout_ex(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, scale_or_addr=0x%08X, per_channel=%d)",
+        "npu_dma_mvout(host_ptr=%p, sram_addr=0x%08X, col_num=%u, row_num=%u, sram_stride=%u, dram_stride=%u, precision=%u, output_type=%u, source=%d, is_quant=%d, quant_zero=%u, scale_or_addr=0x%08X)",
         host_ptr,
         sram_addr,
         (unsigned)col_num,
@@ -2534,8 +2570,19 @@ void npu_dma_mvout_ex(
         (int)source,
         (int)is_quant,
         quant_zero,
-        (unsigned)scale_or_addr,
-        (int)per_channel);
+        (unsigned)scale_or_addr);
+    if (g_npu_runtime) {
+        MvoutConfig cfg = {host_ptr, sram_addr, col_num, row_num, sram_stride, dram_stride,
+                           precision, output_type, source, is_quant, quant_zero, scale_or_addr, false};
+        g_npu_runtime->run_mvout(cfg);
+    }
+}
+
+void npu_dma_mvout_ex(
+    void* host_ptr, uint32_t sram_addr, uint32_t col_num, uint32_t row_num,
+    uint16_t sram_stride, uint32_t dram_stride, uint8_t precision, uint8_t output_type,
+    bool source, bool is_quant, uint32_t quant_zero, uint32_t scale_or_addr, bool per_channel
+) {
     if (g_npu_runtime) {
         MvoutConfig cfg = {host_ptr, sram_addr, col_num, row_num, sram_stride, dram_stride,
                            precision, output_type, source, is_quant, quant_zero, scale_or_addr, per_channel};
@@ -2802,6 +2849,112 @@ void npu_gemm_run(
             input_b_addr, input_b_col_num, input_b_row_num, input_b_stride
         };
         g_npu_runtime->run_gemm(cfg);
+    }
+}
+
+void npu_gemm_plan_run(
+    uint32_t a_addr,
+    uint32_t b_addr,
+    uint32_t out_addr,
+    uint32_t scratch_addr,
+    uint32_t bias_addr,
+    uint16_t block_m,
+    uint16_t block_n,
+    uint16_t block_k,
+    uint16_t a_stride,
+    uint16_t b_stride,
+    uint16_t out_stride,
+    uint16_t bias_stride,
+    bool have_bias
+) {
+    NPU_CAPI_LOG(
+        "npu_gemm_plan_run(a=0x%08X, b=0x%08X, out=0x%08X, scratch=0x%08X, bias=0x%08X, have_bias=%d, block=[%u,%u,%u], stride=[%u,%u,%u,%u])",
+        a_addr,
+        b_addr,
+        out_addr,
+        scratch_addr,
+        bias_addr,
+        (int)have_bias,
+        (unsigned)block_m,
+        (unsigned)block_n,
+        (unsigned)block_k,
+        (unsigned)a_stride,
+        (unsigned)b_stride,
+        (unsigned)out_stride,
+        (unsigned)bias_stride);
+    if (g_npu_runtime) {
+        GemmPlanConfig cfg = {
+            a_addr,
+            b_addr,
+            out_addr,
+            scratch_addr,
+            bias_addr,
+            block_m,
+            block_n,
+            block_k,
+            a_stride,
+            b_stride,
+            out_stride,
+            bias_stride,
+            have_bias
+        };
+        g_npu_runtime->run_gemm_plan(cfg);
+    }
+}
+
+void npu_gemm_plan_run_ex(
+    uint32_t a_addr,
+    uint32_t b_addr,
+    uint32_t out_addr,
+    uint32_t scratch_addr,
+    uint32_t bias_addr,
+    uint16_t block_m,
+    uint16_t block_n,
+    uint16_t block_k,
+    uint16_t a_stride,
+    uint16_t b_stride,
+    uint16_t out_stride,
+    uint16_t bias_stride,
+    bool have_bias,
+    bool is_accumulate,
+    bool asymmetric_activations
+) {
+    NPU_CAPI_LOG(
+        "npu_gemm_plan_run_ex(a=0x%08X, b=0x%08X, out=0x%08X, scratch=0x%08X, bias=0x%08X, have_bias=%d, is_accumulate=%d, asymmetric_activations=%d, block=[%u,%u,%u], stride=[%u,%u,%u,%u])",
+        a_addr,
+        b_addr,
+        out_addr,
+        scratch_addr,
+        bias_addr,
+        (int)have_bias,
+        (int)is_accumulate,
+        (int)asymmetric_activations,
+        (unsigned)block_m,
+        (unsigned)block_n,
+        (unsigned)block_k,
+        (unsigned)a_stride,
+        (unsigned)b_stride,
+        (unsigned)out_stride,
+        (unsigned)bias_stride);
+    if (g_npu_runtime) {
+        GemmPlanConfig cfg = {
+            a_addr,
+            b_addr,
+            out_addr,
+            scratch_addr,
+            bias_addr,
+            block_m,
+            block_n,
+            block_k,
+            a_stride,
+            b_stride,
+            out_stride,
+            bias_stride,
+            have_bias,
+            is_accumulate,
+            asymmetric_activations
+        };
+        g_npu_runtime->run_gemm_plan(cfg);
     }
 }
 

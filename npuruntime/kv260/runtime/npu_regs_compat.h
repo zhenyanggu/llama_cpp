@@ -4,10 +4,10 @@
 /**
  * @file npu_regs_compat.h
  * @brief 寄存器兼容层 - 桥接 RDL 自动生成的头文件与 Runtime
- * 
+ *
  * 本文件提供从 PeakRDL 生成的 npu_regs.h 到 Runtime 使用格式的映射。
  * 当 RDL 定义变化时，只需重新生成 npu_regs.h，本文件会自动适配。
- * 
+ *
  * 使用方法:
  *   1. 修改 doc/rdl/npu_regs.rdl
  *   2. 运行 make (在 doc/rdl 目录)
@@ -31,7 +31,7 @@ namespace RegOffset {
     constexpr uint32_t MVIN_QUANT     = offsetof(npu_regs_t, CFG_MVIN1);    // 0x28
     constexpr uint32_t MVOUT_CFG      = offsetof(npu_regs_t, CFG_MVOUT0);   // 0x30
     constexpr uint32_t MVOUT_QUANT    = offsetof(npu_regs_t, CFG_MVOUT1);   // 0x38
-    
+
     constexpr uint32_t CFG_COMPUTE_1  = offsetof(npu_regs_t, CFG_COMPUTE0); // 0x40
     constexpr uint32_t CFG_COMPUTE_2  = offsetof(npu_regs_t, CFG_COMPUTE1); // 0x48
     constexpr uint32_t CFG_SFU_1      = offsetof(npu_regs_t, CFG_SFU0);     // 0x50
@@ -40,12 +40,12 @@ namespace RegOffset {
     constexpr uint32_t CFG_ACCU_2     = offsetof(npu_regs_t, CFG_ACCU1);    // 0x68
     constexpr uint32_t SA_INPUT_A     = offsetof(npu_regs_t, SA_IN_A);      // 0x70
     constexpr uint32_t SA_INPUT_B     = offsetof(npu_regs_t, SA_IN_B);      // 0x78
-    
+
     constexpr uint32_t MATADD_CTRL_0  = offsetof(npu_regs_t, MATADD_CTRL0); // 0x80
     constexpr uint32_t MATADD_CTRL_1  = offsetof(npu_regs_t, MATADD_CTRL1); // 0x88
     constexpr uint32_t MATVEC_CTRL_0  = offsetof(npu_regs_t, MATVEC_CTRL0); // 0x90
     constexpr uint32_t MATVEC_CTRL_1  = offsetof(npu_regs_t, MATVEC_CTRL1); // 0x98
-    
+
     constexpr uint32_t SFU_INPUT      = offsetof(npu_regs_t, SFU_EXE0);     // 0xA0
     constexpr uint32_t SFU_OUTPUT     = offsetof(npu_regs_t, SFU_EXE1);     // 0xA8
     constexpr uint32_t START          = offsetof(npu_regs_t, START_REG);    // 0xB0
@@ -55,6 +55,9 @@ namespace RegOffset {
     constexpr uint32_t ISR            = offsetof(npu_regs_t, ISR);          // 0xD0
     constexpr uint32_t IPR            = offsetof(npu_regs_t, IPR);          // 0xD8
     constexpr uint32_t DMA_STATUS     = offsetof(npu_regs_t, DMA_STATUS);   // 0xE0
+    constexpr uint32_t GEMM_PLAN_0    = offsetof(npu_regs_t, GEMM_PLAN_0);  // 0xE8
+    constexpr uint32_t GEMM_PLAN_1    = offsetof(npu_regs_t, GEMM_PLAN_1);  // 0xF0
+    constexpr uint32_t GEMM_PLAN_2    = offsetof(npu_regs_t, GEMM_PLAN_2);  // 0xF8
 }
 
 // ==========================================

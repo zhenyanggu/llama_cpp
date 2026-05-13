@@ -32,7 +32,9 @@ AICAS/data.zip
 *.Identifier
 # IDE / OS
 AICAS2026/aicas_semi/results
+/AICAS2026/VersaVLM/ubuntu@*/
 .cache/
+.codex*
 .ccls-cache/
 .direnv/
 .DS_Store
@@ -165,6 +167,7 @@ kv260-profile-results/
 
 # Local AICAS artifacts
 /llama_mtmd_profile.json
+/docs/kv260-npu-debug-summary-*.md
 *.tar.gz
 *.tar
 *.Zone.Identifier

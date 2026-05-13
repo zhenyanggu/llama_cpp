@@ -47,6 +47,8 @@ struct npu_profile_tile_record {
     double gemm_us = 0.0;
     double dma_out_us = 0.0;
     double postprocess_us = 0.0;
+    double accounted_us = 0.0;
+    double unaccounted_us = 0.0;
     double total_us = 0.0;
 };
 
@@ -91,6 +93,7 @@ struct npu_profile_node_record {
     int64_t dma_in_bias_calls = 0;
     int64_t dma_in_pair_calls = 0;
     int64_t gemm_calls = 0;
+    int64_t gemm_plan_calls = 0;
     int64_t dma_out_calls = 0;
     int64_t postprocess_calls = 0;
     int64_t packed_activation_bytes_total = 0;
@@ -109,6 +112,8 @@ struct npu_profile_node_record {
     double gemm_us_total = 0.0;
     double dma_out_us_total = 0.0;
     double postprocess_us_total = 0.0;
+    double accounted_us_total = 0.0;
+    double unaccounted_us_total = 0.0;
     double total_node_us = 0.0;
     std::string status = "success";
     std::string error;
@@ -129,6 +134,7 @@ struct npu_profile_summary_delta {
     int64_t dma_in_bias_calls = 0;
     int64_t dma_in_pair_calls = 0;
     int64_t gemm_calls = 0;
+    int64_t gemm_plan_calls = 0;
     int64_t dma_out_calls = 0;
     int64_t postprocess_calls = 0;
     int64_t packed_activation_bytes_total = 0;
@@ -148,6 +154,8 @@ struct npu_profile_summary_delta {
     int64_t gemm_us_total = 0;
     int64_t dma_out_us_total = 0;
     int64_t postprocess_us_total = 0;
+    int64_t accounted_us_total = 0;
+    int64_t unaccounted_us_total = 0;
 };
 
 bool npu_profile_enabled();

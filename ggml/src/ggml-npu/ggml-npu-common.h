@@ -38,6 +38,7 @@ struct npu_runtime_layout {
     npu_memory_slice activation;
     npu_memory_slice weight;
     npu_memory_slice bias_accumulator;
+    npu_memory_slice scratch_accumulator;
     npu_memory_slice output_accumulator;
     npu_memory_slice bias_cache;
     npu_memory_slice scale_cache;
@@ -158,6 +159,8 @@ struct npu_node_plan {
     int64_t first_stage_tm = 0;
     int64_t first_stage_tn = 0;
     int64_t first_stage_tk = 0;
+    bool use_gemm_plan = true;
+    bool weight_stationary = false;
     std::vector<npu_mn_tile> mn_tiles;
     std::vector<npu_k_tile> k_tiles;
     std::vector<npu_prepacked_weight> weight_packs;

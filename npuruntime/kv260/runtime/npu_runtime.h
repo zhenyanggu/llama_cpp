@@ -25,7 +25,7 @@ struct MvinConfig {
     uint8_t  precision;    // 2-bit: 数据精度，01是int8，int32也是int8，所以全部配1
     uint8_t  input_type;   // 2-bit: 输入类型，00=IFM, 01=WEIGHT（IFM还是weight不区分）都是int8输入 | 10=BIAS int32 到acc
     bool     dest;         // 1-bit: 0=SPM, 1=ACC
-    bool     is_bias;      // 1-bit: 0=No, 1=Bias（mvin到acc的bias寄存器时为1，一次32个数据）
+    bool     is_bias;      // 1-bit: 0=No, 1=Bias（bias 数据现在按 ACC 普通数据写入）
     bool     is_quant;     // 1-bit: 是否量化，是则输入int8后量化到int32存到acc
     uint32_t quant_zero;
     uint16_t quant_scale;
@@ -42,10 +42,10 @@ struct MvoutConfig {
     uint8_t  precision;    // 2-bit: 数据精度：仍然全1
     uint8_t  output_type;  // 2-bit: 输出类型：00代表int8（从spm），01代表int32（从acc）
     bool     source;       // 1-bit: 0=SPM, 1=ACC
-    bool     is_quant;     // 1-bit: 是否量化
+    bool     is_quant;     // 1-bit: 是否量化（没有作用，全0）
     uint32_t quant_zero;
-    uint32_t scale_or_addr;// per-tensor: signed Q8.24 immediate; per-channel: ACC address of Q8.24 scale vector
-    bool     per_channel;  // 0=scale_or_addr is immediate, 1=scale_or_addr is ACC address
+    uint32_t scale_or_addr; // per-tensor: packed signed Q8.24 immediate; per-channel: ACC base address of Q8.24 scale vector
+    bool     per_channel;   // 0=per-tensor immediate scale, 1=per-channel scale vector address
 };
 
 struct SfuConfig {
@@ -187,7 +187,7 @@ struct GemmConfig {
     uint16_t output_scaleshift;   // ACC to SPM scaleshift
     
     // config_accumulate
-    uint32_t biaspsum_addr;         //acc中的部分和地址，如果是加bias请使用bias寄存器
+    uint32_t biaspsum_addr;         // ACC 中 bias/psum 基地址；is_bias=1 时作为 bias 基地址
     uint16_t biaspsum_stride;       
     uint8_t  biaspsum_width;        //不累加也要配置，也就是输出矩阵的大小，不需要减1
     uint8_t  biaspsum_height;       //不累加也要配置
@@ -197,7 +197,7 @@ struct GemmConfig {
     bool     isaccu;              // 1-bit: 0=No accumulate, 1=Accumulate with previous psum，
     bool     relu;                // 1-bit: 0=Disabled, 1=Enabled
     uint8_t  relu_type;           // 3-bit: 0=relu, 1=relu6, 2=leaky(0.1), 3=leaky(0.2), 4=leaky(0.01)
-    bool     is_bias;             // 1-bit: 0=accumulate psum, 1=accumulate bias，bias现在都在acc中的bias寄存器里，如果这位是1则加寄存器中的值
+    bool     is_bias;             // 1-bit: 0=accumulate psum, 1=accumulate bias from ACC
 
     // compute_sa
     uint32_t input_a_addr;
@@ -209,6 +209,26 @@ struct GemmConfig {
     uint8_t  input_b_col_num;
     uint16_t input_b_row_num;
     uint16_t input_b_stride;
+};
+
+// GEMM plan API: one call launches one SPM-resident GEMM block.
+// Hardware fixes SA tiling to 16x16 and internally slices K up to the RTL limit.
+struct GemmPlanConfig {
+    uint32_t a_addr;          // A block base address in SPM
+    uint32_t b_addr;          // B block base address in SPM
+    uint32_t out_addr;        // Final output address
+    uint32_t scratch_addr;    // ACC scratch address for K-split accumulation
+    uint32_t bias_addr;       // Bias base address in ACC/SPM (used only when have_bias=true)
+    uint16_t block_m;         // GEMM block M dimension
+    uint16_t block_n;         // GEMM block N dimension
+    uint16_t block_k;         // GEMM block K dimension
+    uint16_t a_stride;        // A stride in elements
+    uint16_t b_stride;        // B stride in elements
+    uint16_t out_stride;      // Output stride in elements
+    uint16_t bias_stride;     // Bias stride in elements
+    bool     have_bias;       // True when bias_addr is valid
+    bool     is_accumulate = false;          // True when out_addr already contains a partial sum
+    bool     asymmetric_activations = false; // True when input A holds raw uint8 and hardware subtracts 128
 };
 
 struct MataddConfig {
@@ -286,6 +306,8 @@ public:
     void run_sfu(const SfuConfig& cfg);
     void run_conv(const ConvConfig& cfg);
     void run_gemm(const GemmConfig& cfg);
+    // Launch one GEMM block; hardware auto-tiles 16x16 and splits K internally.
+    void run_gemm_plan(const GemmPlanConfig& cfg);
     void run_matadd(const MataddConfig& cfg);
     void run_transpose(const TransposeConfig& cfg);
     void run_resample(const ResampleConfig& cfg);
@@ -407,6 +429,7 @@ extern "C" {
         uint64_t wait_irq_ns;
         uint64_t mvin_calls;
         uint64_t compute_calls;
+        uint64_t gemm_plan_calls;
         uint64_t mvout_calls;
         uint64_t layout_calls;
     };
@@ -483,8 +506,7 @@ extern "C" {
      * @param source          数据源，寄存器位宽 1-bit：0=SPM, 1=ACC。
      * @param is_quant        是否量化，寄存器位宽 1-bit：0/1。
      * @param quant_zero      量化零点，寄存器位宽 32-bit。
-     * @param quant_scale     量化 scale，寄存器位宽 16-bit。
-     * @param quant_shift     量化 shift，寄存器位宽 16-bit。
+     * @param scale_or_addr   per-tensor 时传打包后的有符号 Q8.24 立即数；per-channel 时传 ACC 中 scale 向量基地址。
      */
     void npu_dma_mvout(
         void* host_ptr,
@@ -770,6 +792,42 @@ extern "C" {
         bool     asymmetric_activations = false
     );
 
+    // GEMM plan block API: software provides a preloaded SPM block; hardware runs the full tile schedule.
+    void npu_gemm_plan_run(
+        uint32_t a_addr,
+        uint32_t b_addr,
+        uint32_t out_addr,
+        uint32_t scratch_addr,
+        uint32_t bias_addr,
+        uint16_t block_m,
+        uint16_t block_n,
+        uint16_t block_k,
+        uint16_t a_stride,
+        uint16_t b_stride,
+        uint16_t out_stride,
+        uint16_t bias_stride,
+        bool     have_bias
+    );
+
+    // Extended GEMM plan block API for software-managed outer tiling.
+    void npu_gemm_plan_run_ex(
+        uint32_t a_addr,
+        uint32_t b_addr,
+        uint32_t out_addr,
+        uint32_t scratch_addr,
+        uint32_t bias_addr,
+        uint16_t block_m,
+        uint16_t block_n,
+        uint16_t block_k,
+        uint16_t a_stride,
+        uint16_t b_stride,
+        uint16_t out_stride,
+        uint16_t bias_stride,
+        bool     have_bias,
+        bool     is_accumulate,
+        bool     asymmetric_activations
+    );
+
     // ---------------------------------------------------------------------
     // MATADD Operations
     // ---------------------------------------------------------------------
@@ -921,22 +979,6 @@ extern "C" {
         bool     is_quant,     // 1-bit
         uint32_t quant_zero,
         uint32_t scale_or_addr
-    );
-
-    void npu_dma_mvout_ex(
-        void* host_ptr,
-        uint32_t sram_addr,
-        uint32_t col_num,
-        uint32_t row_num,
-        uint16_t sram_stride,
-        uint32_t dram_stride,
-        uint8_t  precision,
-        uint8_t  output_type,
-        bool     source,
-        bool     is_quant,
-        uint32_t quant_zero,
-        uint32_t scale_or_addr,
-        bool     per_channel
     );
 }
 

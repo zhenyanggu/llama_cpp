@@ -1,5 +1,6 @@
 #include "ggml-npu-plan.h"
 #include "ggml-npu-quant.h"
+#include "ggml-npu-tiling.h"
 #include "npu_runtime.h"
 
 #include <algorithm>
@@ -544,6 +545,22 @@ static bool npu_env_to_size(const char * name, size_t * out) {
     return true;
 }
 
+static bool npu_env_to_f64(const char * name, double * out) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+
+    char * end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    if (end == value || *end != '\0' || parsed < 0.0) {
+        return false;
+    }
+
+    *out = parsed;
+    return true;
+}
+
 static int64_t npu_round_down_multiple(int64_t value, int64_t multiple) {
     return (value / multiple) * multiple;
 }
@@ -800,22 +817,29 @@ static void npu_calculate_auto_gemm_tile(
 }
 
 static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reason) {
-    const int64_t micro_n = std::min<int64_t>(plan->first_stage_tn, plan->config.sa_rows);
-    const int64_t micro_m = std::min<int64_t>(plan->first_stage_tm, plan->config.sa_cols);
-    const int64_t micro_k = std::min<int64_t>(plan->config.k_block, plan->config.stage2_k_block);
+    const int64_t tile_n = plan->use_gemm_plan
+        ? plan->first_stage_tn
+        : std::min<int64_t>(plan->first_stage_tn, plan->config.sa_rows);
+    const int64_t tile_m = plan->use_gemm_plan
+        ? plan->first_stage_tm
+        : std::min<int64_t>(plan->first_stage_tm, plan->config.sa_cols);
+    const int64_t tile_k = plan->use_gemm_plan
+        ? plan->config.k_block
+        : std::min<int64_t>(plan->config.k_block, plan->config.stage2_k_block);
 
-    const uint32_t act_bytes = static_cast<uint32_t>(micro_n * micro_k);
+    const uint32_t act_bytes = static_cast<uint32_t>(tile_n * tile_k);
     uint32_t act_offset = npu_align_u32(0, NPU_SPM_ALIGNMENT);
-    uint32_t weight_offset = 0x00020000;
+    uint32_t weight_offset = 0;
     size_t env_act_offset = 0;
     size_t env_weight_offset = 0;
     if (npu_env_to_size("GGML_NPU_ACT_OFFSET", &env_act_offset)) {
         act_offset = npu_align_u32(static_cast<uint32_t>(env_act_offset), NPU_SPM_ALIGNMENT);
     }
+    weight_offset = npu_align_u32(act_offset + act_bytes, NPU_SPM_ALIGNMENT);
     if (npu_env_to_size("GGML_NPU_WEIGHT_OFFSET", &env_weight_offset)) {
         weight_offset = npu_align_u32(static_cast<uint32_t>(env_weight_offset), NPU_SPM_ALIGNMENT);
     }
-    const uint32_t weight_bytes = static_cast<uint32_t>(micro_m * micro_k);
+    const uint32_t weight_bytes = static_cast<uint32_t>(tile_m * tile_k);
 
     const uint32_t act_end = act_offset + act_bytes;
     const uint32_t weight_end = weight_offset + weight_bytes;
@@ -839,27 +863,33 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         return false;
     }
 
-    const uint32_t acc_bytes = static_cast<uint32_t>(micro_n * micro_m * sizeof(int32_t));
-    const uint32_t bias_cache_bytes = plan->bias != nullptr
-        ? npu_align_u32(static_cast<uint32_t>(plan->m * sizeof(int32_t)), NPU_ACC_ALIGNMENT)
+    const uint32_t acc_bytes = static_cast<uint32_t>(tile_n * tile_m * sizeof(int32_t));
+    const uint32_t bias_acc_bytes = plan->bias != nullptr || plan->aicas_w8a8.valid
+        ? npu_align_u32(static_cast<uint32_t>(tile_m * sizeof(int32_t)), NPU_ACC_ALIGNMENT)
         : 0;
+    const uint32_t bias_cache_bytes = 0;
     const uint32_t scale_cache_bytes =
         (plan->aicas_w8a8.valid && plan->aicas_w8a8.weight_scale.size() > 1)
-        ? npu_align_u32(static_cast<uint32_t>(micro_n * plan->m * sizeof(uint32_t)), NPU_ACC_ALIGNMENT)
+        ? npu_align_u32(static_cast<uint32_t>(tile_m * sizeof(uint32_t)), NPU_ACC_ALIGNMENT)
         : 0;
-    uint32_t bias_acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
-    uint32_t output_acc_offset = npu_align_u32(0x00004000, NPU_ACC_ALIGNMENT);
-    uint32_t bias_cache_offset = npu_align_u32(0x00008000, NPU_ACC_ALIGNMENT);
-    uint32_t scale_cache_offset = npu_align_u32(0x0000c000, NPU_ACC_ALIGNMENT);
+    uint32_t output_acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
+    uint32_t scratch_acc_offset = npu_align_u32(output_acc_offset + acc_bytes, NPU_ACC_ALIGNMENT);
+    uint32_t bias_acc_offset = npu_align_u32(scratch_acc_offset + acc_bytes, NPU_ACC_ALIGNMENT);
+    uint32_t bias_cache_offset = npu_align_u32(bias_acc_offset + bias_acc_bytes, NPU_ACC_ALIGNMENT);
+    uint32_t scale_cache_offset = npu_align_u32(bias_cache_offset + bias_cache_bytes, NPU_ACC_ALIGNMENT);
     size_t env_bias_acc_offset = 0;
     size_t env_output_acc_offset = 0;
+    size_t env_scratch_acc_offset = 0;
     size_t env_bias_cache_offset = 0;
     size_t env_scale_cache_offset = 0;
-    if (npu_env_to_size("GGML_NPU_BIAS_ACC_OFFSET", &env_bias_acc_offset)) {
-        bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_ACC_ALIGNMENT);
-    }
     if (npu_env_to_size("GGML_NPU_OUTPUT_ACC_OFFSET", &env_output_acc_offset)) {
         output_acc_offset = npu_align_u32(static_cast<uint32_t>(env_output_acc_offset), NPU_ACC_ALIGNMENT);
+    }
+    if (npu_env_to_size("GGML_NPU_SCRATCH_ACC_OFFSET", &env_scratch_acc_offset)) {
+        scratch_acc_offset = npu_align_u32(static_cast<uint32_t>(env_scratch_acc_offset), NPU_ACC_ALIGNMENT);
+    }
+    if (npu_env_to_size("GGML_NPU_BIAS_ACC_OFFSET", &env_bias_acc_offset)) {
+        bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_ACC_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_BIAS_CACHE_OFFSET", &env_bias_cache_offset)) {
         bias_cache_offset = npu_align_u32(static_cast<uint32_t>(env_bias_cache_offset), NPU_ACC_ALIGNMENT);
@@ -867,19 +897,24 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     if (npu_env_to_size("GGML_NPU_SCALE_CACHE_OFFSET", &env_scale_cache_offset)) {
         scale_cache_offset = npu_align_u32(static_cast<uint32_t>(env_scale_cache_offset), NPU_ACC_ALIGNMENT);
     }
-    const uint32_t bias_acc_end = bias_acc_offset + acc_bytes;
+    const uint32_t bias_acc_end = bias_acc_offset + bias_acc_bytes;
+    const uint32_t scratch_acc_end = scratch_acc_offset + acc_bytes;
     const uint32_t output_acc_end = output_acc_offset + acc_bytes;
     const uint32_t bias_cache_end = bias_cache_offset + bias_cache_bytes;
     const uint32_t scale_cache_end = scale_cache_offset + scale_cache_bytes;
     const bool acc_overlaps =
+        (output_acc_offset < scratch_acc_end && scratch_acc_offset < output_acc_end) ||
         (bias_acc_offset < output_acc_end && output_acc_offset < bias_acc_end) ||
+        (bias_acc_offset < scratch_acc_end && scratch_acc_offset < bias_acc_end) ||
         (bias_acc_offset < bias_cache_end && bias_cache_offset < bias_acc_end) ||
         (bias_acc_offset < scale_cache_end && scale_cache_offset < bias_acc_end) ||
+        (scratch_acc_offset < bias_cache_end && bias_cache_offset < scratch_acc_end) ||
+        (scratch_acc_offset < scale_cache_end && scale_cache_offset < scratch_acc_end) ||
         (output_acc_offset < bias_cache_end && bias_cache_offset < output_acc_end) ||
         (output_acc_offset < scale_cache_end && scale_cache_offset < output_acc_end) ||
         (bias_cache_offset < scale_cache_end && scale_cache_offset < bias_cache_end);
     const uint32_t acc_end = std::max(
-        std::max(bias_acc_end, output_acc_end),
+        std::max(std::max(bias_acc_end, output_acc_end), scratch_acc_end),
         std::max(bias_cache_end, scale_cache_end));
     if (acc_overlaps) {
         if (reason) {
@@ -907,6 +942,11 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     plan->config.layout.bias_accumulator = {
         npu_memory_space::acc,
         bias_acc_offset,
+        bias_acc_bytes,
+    };
+    plan->config.layout.scratch_accumulator = {
+        npu_memory_space::acc,
+        scratch_acc_offset,
         acc_bytes,
     };
     plan->config.layout.output_accumulator = {
@@ -1158,21 +1198,90 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     // module-level alloc/free/reuse with first-fit allocators, so if we later
     // plan multiple NPU ops together we should switch to a graph/global memory
     // planner instead of these fixed working-set slices.
+    const bool use_legacy_gemm = std::getenv("GGML_NPU_USE_LEGACY_GEMM") != nullptr;
+    plan.use_gemm_plan = !use_legacy_gemm;
+
     int64_t first_stage_tm = 0;
     int64_t first_stage_tn = 0;
     int64_t first_stage_tk = 0;
-    npu_calculate_auto_gemm_tile(
-        plan.m,
-        plan.n,
-        plan.k,
-        static_cast<int64_t>(plan.config.spm_bytes > plan.config.guard_bytes
+    npu_gemm_tiling_result tiling;
+    if (plan.use_gemm_plan) {
+        const int64_t usable_spm = static_cast<int64_t>(plan.config.spm_bytes > plan.config.guard_bytes
             ? plan.config.spm_bytes - plan.config.guard_bytes
-            : plan.config.spm_bytes),
-        static_cast<int64_t>(plan.config.acc_bytes),
-        plan.config.output_in_spm,
-        &first_stage_tm,
-        &first_stage_tn,
-        &first_stage_tk);
+            : plan.config.spm_bytes);
+        const int64_t metadata_words =
+            (plan.bias != nullptr ? 1 : 0) +
+            (plan.aicas_w8a8.valid && plan.aicas_w8a8.weight_scale.size() > 1 ? 1 : 0);
+        npu_gemm_tiling_params params;
+        params.n = plan.n;
+        params.m = plan.m;
+        params.k = plan.k;
+        params.spm_bytes = usable_spm;
+        params.acc_bytes = static_cast<int64_t>(plan.config.acc_bytes);
+        params.sa_rows = plan.config.sa_rows;
+        params.sa_cols = plan.config.sa_cols;
+        params.tk_align = 16;
+        params.metadata_words_per_channel = metadata_words;
+        params.acc_tile_buffers = 3;
+        params.max_u = 255;
+        params.max_v = 255;
+        params.max_tk = 4096;
+        size_t env_tk_align = 0;
+        size_t env_acc_tile_buffers = 0;
+        size_t env_spm_factor_a = 0;
+        size_t env_spm_factor_b = 0;
+        size_t env_max_u = 0;
+        size_t env_max_v = 0;
+        size_t env_max_tk = 0;
+        double env_lambda_dma = 0.0;
+        if (npu_env_to_size("GGML_NPU_TK_ALIGN", &env_tk_align)) {
+            params.tk_align = static_cast<int64_t>(env_tk_align);
+        }
+        if (npu_env_to_size("GGML_NPU_ACC_TILE_BUFFERS", &env_acc_tile_buffers)) {
+            params.acc_tile_buffers = static_cast<int64_t>(env_acc_tile_buffers);
+        }
+        if (npu_env_to_size("GGML_NPU_SPM_FACTOR_A", &env_spm_factor_a)) {
+            params.spm_factor_a = static_cast<int64_t>(env_spm_factor_a);
+        }
+        if (npu_env_to_size("GGML_NPU_SPM_FACTOR_B", &env_spm_factor_b)) {
+            params.spm_factor_b = static_cast<int64_t>(env_spm_factor_b);
+        }
+        if (npu_env_to_size("GGML_NPU_MAX_U", &env_max_u)) {
+            params.max_u = static_cast<int64_t>(env_max_u);
+        }
+        if (npu_env_to_size("GGML_NPU_MAX_V", &env_max_v)) {
+            params.max_v = static_cast<int64_t>(env_max_v);
+        }
+        if (npu_env_to_size("GGML_NPU_MAX_TK", &env_max_tk)) {
+            params.max_tk = static_cast<int64_t>(env_max_tk);
+        }
+        if (npu_env_to_f64("GGML_NPU_LAMBDA_DMA", &env_lambda_dma)) {
+            params.lambda_dma = env_lambda_dma;
+        }
+        tiling = npu_search_gemm_tiling(params);
+        if (tiling.valid) {
+            first_stage_tn = tiling.u;
+            first_stage_tm = tiling.v;
+            first_stage_tk = tiling.tk;
+            plan.weight_stationary = tiling.mode == npu_gemm_stationary_mode::weight;
+        } else {
+            plan.summary = "GEMM tiling search failed";
+            return plan;
+        }
+    } else {
+        npu_calculate_auto_gemm_tile(
+            plan.m,
+            plan.n,
+            plan.k,
+            static_cast<int64_t>(plan.config.spm_bytes > plan.config.guard_bytes
+                ? plan.config.spm_bytes - plan.config.guard_bytes
+                : plan.config.spm_bytes),
+            static_cast<int64_t>(plan.config.acc_bytes),
+            plan.config.output_in_spm,
+            &first_stage_tm,
+            &first_stage_tn,
+            &first_stage_tk);
+    }
 
     plan.first_stage_tm = first_stage_tm;
     plan.first_stage_tn = first_stage_tn;
@@ -1206,36 +1315,64 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     }
 
     for (const npu_mn_tile & macro_tile : plan.mn_tiles) {
-        for (int64_t micro_n0 = macro_tile.n0; micro_n0 < macro_tile.n0 + macro_tile.n; micro_n0 += plan.config.sa_rows) {
-            const int64_t micro_n = std::min<int64_t>(plan.config.sa_rows, macro_tile.n0 + macro_tile.n - micro_n0);
-            for (int64_t micro_m0 = macro_tile.m0; micro_m0 < macro_tile.m0 + macro_tile.m; micro_m0 += plan.config.sa_cols) {
-                const int64_t micro_m = std::min<int64_t>(plan.config.sa_cols, macro_tile.m0 + macro_tile.m - micro_m0);
-                for (const npu_k_tile & k_tile : plan.k_tiles) {
-                    for (int64_t sub_k0 = k_tile.k0; sub_k0 < k_tile.k0 + k_tile.k; sub_k0 += plan.config.stage2_k_block) {
-                        const int64_t sub_k = std::min<int64_t>(plan.config.stage2_k_block, k_tile.k0 + k_tile.k - sub_k0);
-                        const bool first_k_global = (sub_k0 == 0);
-                        const bool last_k_global = (sub_k0 + sub_k >= plan.k);
-                        const npu_loop_stage stage = npu_make_stage(first_k_global, last_k_global);
-                        std::string pack_error;
-                        const int32_t weight_pack_index = npu_find_or_create_weight_pack(
-                            &plan, micro_m0, micro_m, sub_k0, sub_k, &pack_error);
-                        if (weight_pack_index < 0) {
-                            plan.summary = std::string("weight pack failed: ") + pack_error;
-                            return plan;
+        if (plan.use_gemm_plan) {
+            for (const npu_k_tile & k_tile : plan.k_tiles) {
+                const bool first_k_global = (k_tile.k0 == 0);
+                const bool last_k_global = (k_tile.k0 + k_tile.k >= plan.k);
+                const npu_loop_stage stage = npu_make_stage(first_k_global, last_k_global);
+                std::string pack_error;
+                const int32_t weight_pack_index = npu_find_or_create_weight_pack(
+                    &plan, macro_tile.m0, macro_tile.m, k_tile.k0, k_tile.k, &pack_error);
+                if (weight_pack_index < 0) {
+                    plan.summary = std::string("weight pack failed: ") + pack_error;
+                    return plan;
+                }
+                plan.exec_tiles.push_back({
+                    macro_tile.m0,
+                    macro_tile.n0,
+                    macro_tile.m,
+                    macro_tile.n,
+                    k_tile.k0,
+                    k_tile.k,
+                    stage,
+                    first_k_global,
+                    last_k_global,
+                    weight_pack_index,
+                    -1,
+                });
+            }
+        } else {
+            for (int64_t micro_n0 = macro_tile.n0; micro_n0 < macro_tile.n0 + macro_tile.n; micro_n0 += plan.config.sa_rows) {
+                const int64_t micro_n = std::min<int64_t>(plan.config.sa_rows, macro_tile.n0 + macro_tile.n - micro_n0);
+                for (int64_t micro_m0 = macro_tile.m0; micro_m0 < macro_tile.m0 + macro_tile.m; micro_m0 += plan.config.sa_cols) {
+                    const int64_t micro_m = std::min<int64_t>(plan.config.sa_cols, macro_tile.m0 + macro_tile.m - micro_m0);
+                    for (const npu_k_tile & k_tile : plan.k_tiles) {
+                        for (int64_t sub_k0 = k_tile.k0; sub_k0 < k_tile.k0 + k_tile.k; sub_k0 += plan.config.stage2_k_block) {
+                            const int64_t sub_k = std::min<int64_t>(plan.config.stage2_k_block, k_tile.k0 + k_tile.k - sub_k0);
+                            const bool first_k_global = (sub_k0 == 0);
+                            const bool last_k_global = (sub_k0 + sub_k >= plan.k);
+                            const npu_loop_stage stage = npu_make_stage(first_k_global, last_k_global);
+                            std::string pack_error;
+                            const int32_t weight_pack_index = npu_find_or_create_weight_pack(
+                                &plan, micro_m0, micro_m, sub_k0, sub_k, &pack_error);
+                            if (weight_pack_index < 0) {
+                                plan.summary = std::string("weight pack failed: ") + pack_error;
+                                return plan;
+                            }
+                            plan.exec_tiles.push_back({
+                                micro_m0,
+                                micro_n0,
+                                micro_m,
+                                micro_n,
+                                sub_k0,
+                                sub_k,
+                                stage,
+                                first_k_global,
+                                last_k_global,
+                                weight_pack_index,
+                                -1,
+                            });
                         }
-                        plan.exec_tiles.push_back({
-                            micro_m0,
-                            micro_n0,
-                            micro_m,
-                            micro_n,
-                            sub_k0,
-                            sub_k,
-                            stage,
-                            first_k_global,
-                            last_k_global,
-                            weight_pack_index,
-                            -1,
-                        });
                     }
                 }
             }
@@ -1278,6 +1415,12 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         << ", macro_tm=" << first_stage_tm
         << ", macro_tn=" << first_stage_tn
         << ", macro_tk=" << plan.config.k_block
+        << ", gemm_api=" << (plan.use_gemm_plan ? "gemm_plan" : "legacy_gemm")
+        << ", stationary=" << (plan.use_gemm_plan ? npu_stationary_mode_name(tiling.mode) : "legacy_micro")
+        << ", tiling_cost=" << (tiling.valid ? tiling.cost : 0.0)
+        << ", q_data=" << (tiling.valid ? tiling.q_data : 0)
+        << ", q_meta=" << (tiling.valid ? tiling.q_meta : 0)
+        << ", num_dma_est=" << (tiling.valid ? tiling.num_dma : 0)
         << ", mn_tiles=" << plan.mn_tiles.size()
         << ", k_tiles=" << plan.k_tiles.size()
         << ", weight_packs=" << plan.weight_packs.size()
@@ -1311,8 +1454,9 @@ bool npu_plan_is_aot_stable(const npu_node_plan & plan, std::string * reason) {
 
     if (plan.config.layout.activation.bytes == 0 ||
         plan.config.layout.weight.bytes == 0 ||
-        plan.config.layout.bias_accumulator.bytes == 0 ||
-        plan.config.layout.output_accumulator.bytes == 0) {
+        plan.config.layout.output_accumulator.bytes == 0 ||
+        (plan.use_gemm_plan && plan.config.layout.scratch_accumulator.bytes == 0) ||
+        (plan.bias != nullptr && plan.config.layout.bias_accumulator.bytes == 0)) {
         if (reason) {
             *reason = "AOT 地址分配未完成";
         }
