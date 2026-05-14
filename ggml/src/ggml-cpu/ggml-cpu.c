@@ -59,6 +59,13 @@
 #define GGML_CACHE_ALIGN __attribute__((aligned(GGML_CACHE_LINE)))
 #endif
 
+#define GGML_CPU_PROFILE_MAX_OPS        128
+#define GGML_CPU_PROFILE_MAX_CATEGORIES 64
+#define GGML_CPU_PROFILE_MAX_SIGNATURES 256
+#define GGML_CPU_PROFILE_MAX_NODES      512
+#define GGML_CPU_PROFILE_NAME_LEN       96
+#define GGML_CPU_PROFILE_KEY_LEN        384
+
 #if defined(__has_feature)
 #if __has_feature(thread_sanitizer)
 #define GGML_TSAN_ENABLED 1
@@ -2869,6 +2876,409 @@ struct ggml_cplan ggml_graph_plan(
     return cplan;
 }
 
+struct ggml_cpu_profile_aggregate {
+    char name[GGML_CPU_PROFILE_NAME_LEN];
+    int64_t node_count;
+    int64_t duration_us;
+    int64_t elements;
+    int64_t bytes;
+};
+
+struct ggml_cpu_profile_tensor_info {
+    char name[GGML_CPU_PROFILE_NAME_LEN];
+    char type[24];
+    int64_t ne[GGML_MAX_DIMS];
+};
+
+struct ggml_cpu_profile_signature {
+    char key[GGML_CPU_PROFILE_KEY_LEN];
+    struct ggml_cpu_profile_tensor_info src0;
+    struct ggml_cpu_profile_tensor_info src1;
+    struct ggml_cpu_profile_tensor_info dst;
+    int64_t node_count;
+    int64_t duration_us;
+    int64_t elements;
+    int64_t bytes;
+};
+
+struct ggml_cpu_profile_state {
+    bool enabled;
+    int64_t node_count;
+    int64_t duration_us;
+    int op_count;
+    int category_count;
+    int signature_count;
+    int node_name_count;
+    struct ggml_cpu_profile_aggregate ops[GGML_CPU_PROFILE_MAX_OPS];
+    struct ggml_cpu_profile_aggregate categories[GGML_CPU_PROFILE_MAX_CATEGORIES];
+    struct ggml_cpu_profile_signature signatures[GGML_CPU_PROFILE_MAX_SIGNATURES];
+    struct ggml_cpu_profile_aggregate node_names[GGML_CPU_PROFILE_MAX_NODES];
+    char * json;
+    size_t json_len;
+    size_t json_cap;
+};
+
+static struct ggml_cpu_profile_state g_cpu_profile;
+
+static void ggml_cpu_profile_copy_str(char * dst, size_t dst_size, const char * src) {
+    if (dst_size == 0) {
+        return;
+    }
+    if (src == NULL) {
+        src = "";
+    }
+    snprintf(dst, dst_size, "%s", src);
+}
+
+static void ggml_cpu_profile_capture_tensor(struct ggml_cpu_profile_tensor_info * out, const struct ggml_tensor * t) {
+    memset(out, 0, sizeof(*out));
+    if (t == NULL) {
+        ggml_cpu_profile_copy_str(out->type, sizeof(out->type), "none");
+        return;
+    }
+    ggml_cpu_profile_copy_str(out->name, sizeof(out->name), t->name);
+    ggml_cpu_profile_copy_str(out->type, sizeof(out->type), ggml_type_name(t->type));
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        out->ne[i] = t->ne[i];
+    }
+}
+
+static const char * ggml_cpu_profile_category(const struct ggml_tensor * node) {
+    if (node == NULL) {
+        return "UNKNOWN_CPU";
+    }
+    switch (node->op) {
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+            return "MUL_MAT_CPU";
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_FLASH_ATTN_EXT:
+            return "ATTENTION_CPU";
+        case GGML_OP_UNARY:
+        case GGML_OP_GLU:
+        case GGML_OP_LEAKY_RELU:
+            return "ACTIVATION_CPU";
+        case GGML_OP_RMS_NORM:
+        case GGML_OP_NORM:
+        case GGML_OP_GROUP_NORM:
+        case GGML_OP_L2_NORM:
+            return "NORM_CPU";
+        case GGML_OP_ADD:
+        case GGML_OP_SUB:
+        case GGML_OP_MUL:
+        case GGML_OP_DIV:
+        case GGML_OP_SQR:
+        case GGML_OP_SQRT:
+        case GGML_OP_SCALE:
+        case GGML_OP_CLAMP:
+            return "ELEMENTWISE_CPU";
+        case GGML_OP_CONT:
+        case GGML_OP_CPY:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_GET_ROWS:
+            return "LAYOUT_CPU";
+        case GGML_OP_IM2COL:
+        case GGML_OP_IM2COL_BACK:
+        case GGML_OP_IM2COL_3D:
+            return "IM2COL_CPU";
+        case GGML_OP_POOL_1D:
+        case GGML_OP_POOL_2D:
+            return "POOL_CPU";
+        case GGML_OP_MAP_CUSTOM1:
+            return "MAP_CUSTOM1_CPU";
+        case GGML_OP_MAP_CUSTOM2:
+            return "MAP_CUSTOM2_CPU";
+        case GGML_OP_MAP_CUSTOM3:
+            return "MAP_CUSTOM3_CPU";
+        case GGML_OP_CUSTOM:
+            return "CUSTOM_CPU";
+        default:
+            return ggml_op_desc(node);
+    }
+}
+
+static struct ggml_cpu_profile_aggregate * ggml_cpu_profile_find_aggregate(
+        struct ggml_cpu_profile_aggregate * values,
+        int * count,
+        int max_count,
+        const char * name) {
+    for (int i = 0; i < *count; ++i) {
+        if (strcmp(values[i].name, name) == 0) {
+            return &values[i];
+        }
+    }
+    if (*count >= max_count) {
+        return NULL;
+    }
+    struct ggml_cpu_profile_aggregate * out = &values[*count];
+    memset(out, 0, sizeof(*out));
+    ggml_cpu_profile_copy_str(out->name, sizeof(out->name), name);
+    *count += 1;
+    return out;
+}
+
+static void ggml_cpu_profile_add_aggregate(
+        struct ggml_cpu_profile_aggregate * values,
+        int * count,
+        int max_count,
+        const char * name,
+        int64_t duration_us,
+        int64_t elements,
+        int64_t bytes) {
+    struct ggml_cpu_profile_aggregate * agg = ggml_cpu_profile_find_aggregate(values, count, max_count, name);
+    if (agg == NULL) {
+        return;
+    }
+    agg->node_count += 1;
+    agg->duration_us += duration_us;
+    agg->elements += elements;
+    agg->bytes += bytes;
+}
+
+static void ggml_cpu_profile_signature_key(
+        char * out,
+        size_t out_size,
+        const struct ggml_cpu_profile_tensor_info * src0,
+        const struct ggml_cpu_profile_tensor_info * src1,
+        const struct ggml_cpu_profile_tensor_info * dst) {
+    snprintf(out, out_size,
+        "%s|%" PRId64 "x%" PRId64 "x%" PRId64 "x%" PRId64 "|"
+        "%s|%" PRId64 "x%" PRId64 "x%" PRId64 "x%" PRId64 "|"
+        "%s|%" PRId64 "x%" PRId64 "x%" PRId64 "x%" PRId64,
+        src0->type, src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
+        src1->type, src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
+        dst->type,  dst->ne[0],  dst->ne[1],  dst->ne[2],  dst->ne[3]);
+}
+
+static void ggml_cpu_profile_add_signature(
+        const struct ggml_tensor * node,
+        int64_t duration_us,
+        int64_t elements,
+        int64_t bytes) {
+    if (node == NULL || node->op != GGML_OP_MUL_MAT || node->src[0] == NULL || node->src[1] == NULL) {
+        return;
+    }
+
+    struct ggml_cpu_profile_tensor_info src0;
+    struct ggml_cpu_profile_tensor_info src1;
+    struct ggml_cpu_profile_tensor_info dst;
+    ggml_cpu_profile_capture_tensor(&src0, node->src[0]);
+    ggml_cpu_profile_capture_tensor(&src1, node->src[1]);
+    ggml_cpu_profile_capture_tensor(&dst, node);
+
+    char key[GGML_CPU_PROFILE_KEY_LEN];
+    ggml_cpu_profile_signature_key(key, sizeof(key), &src0, &src1, &dst);
+
+    struct ggml_cpu_profile_signature * sig = NULL;
+    for (int i = 0; i < g_cpu_profile.signature_count; ++i) {
+        if (strcmp(g_cpu_profile.signatures[i].key, key) == 0) {
+            sig = &g_cpu_profile.signatures[i];
+            break;
+        }
+    }
+    if (sig == NULL) {
+        if (g_cpu_profile.signature_count >= GGML_CPU_PROFILE_MAX_SIGNATURES) {
+            return;
+        }
+        sig = &g_cpu_profile.signatures[g_cpu_profile.signature_count++];
+        memset(sig, 0, sizeof(*sig));
+        ggml_cpu_profile_copy_str(sig->key, sizeof(sig->key), key);
+        sig->src0 = src0;
+        sig->src1 = src1;
+        sig->dst = dst;
+    }
+
+    sig->node_count += 1;
+    sig->duration_us += duration_us;
+    sig->elements += elements;
+    sig->bytes += bytes;
+}
+
+static bool ggml_cpu_profile_enabled(void) {
+    return g_cpu_profile.enabled;
+}
+
+static void ggml_cpu_profile_record_node(const struct ggml_tensor * node, int64_t duration_us) {
+    if (!ggml_cpu_profile_enabled() || node == NULL || duration_us < 0) {
+        return;
+    }
+
+    const int64_t elements = ggml_nelements(node);
+    const int64_t bytes = (int64_t) ggml_nbytes(node);
+    const char * op_name = ggml_op_desc(node);
+    const char * category = ggml_cpu_profile_category(node);
+
+    char node_key[GGML_CPU_PROFILE_NAME_LEN];
+    snprintf(node_key, sizeof(node_key), "%s|%s", node->name, op_name);
+
+    g_cpu_profile.node_count += 1;
+    g_cpu_profile.duration_us += duration_us;
+    ggml_cpu_profile_add_aggregate(g_cpu_profile.ops, &g_cpu_profile.op_count, GGML_CPU_PROFILE_MAX_OPS, op_name, duration_us, elements, bytes);
+    ggml_cpu_profile_add_aggregate(g_cpu_profile.categories, &g_cpu_profile.category_count, GGML_CPU_PROFILE_MAX_CATEGORIES, category, duration_us, elements, bytes);
+    ggml_cpu_profile_add_aggregate(g_cpu_profile.node_names, &g_cpu_profile.node_name_count, GGML_CPU_PROFILE_MAX_NODES, node_key, duration_us, elements, bytes);
+    ggml_cpu_profile_add_signature(node, duration_us, elements, bytes);
+}
+
+static int ggml_cpu_profile_cmp_aggregate(const void * a, const void * b) {
+    const struct ggml_cpu_profile_aggregate * lhs = (const struct ggml_cpu_profile_aggregate *) a;
+    const struct ggml_cpu_profile_aggregate * rhs = (const struct ggml_cpu_profile_aggregate *) b;
+    if (lhs->duration_us < rhs->duration_us) {
+        return 1;
+    }
+    if (lhs->duration_us > rhs->duration_us) {
+        return -1;
+    }
+    return strcmp(lhs->name, rhs->name);
+}
+
+static int ggml_cpu_profile_cmp_signature(const void * a, const void * b) {
+    const struct ggml_cpu_profile_signature * lhs = (const struct ggml_cpu_profile_signature *) a;
+    const struct ggml_cpu_profile_signature * rhs = (const struct ggml_cpu_profile_signature *) b;
+    if (lhs->duration_us < rhs->duration_us) {
+        return 1;
+    }
+    if (lhs->duration_us > rhs->duration_us) {
+        return -1;
+    }
+    return strcmp(lhs->key, rhs->key);
+}
+
+static void ggml_cpu_profile_json_append(const char * fmt, ...) {
+    if (g_cpu_profile.json == NULL) {
+        g_cpu_profile.json_cap = 4096;
+        g_cpu_profile.json = (char *) malloc(g_cpu_profile.json_cap);
+        g_cpu_profile.json_len = 0;
+        if (g_cpu_profile.json == NULL) {
+            g_cpu_profile.json_cap = 0;
+            return;
+        }
+        g_cpu_profile.json[0] = '\0';
+    }
+
+    while (true) {
+        va_list args;
+        va_start(args, fmt);
+        const int n = vsnprintf(
+            g_cpu_profile.json + g_cpu_profile.json_len,
+            g_cpu_profile.json_cap - g_cpu_profile.json_len,
+            fmt,
+            args);
+        va_end(args);
+
+        if (n < 0) {
+            return;
+        }
+        if (g_cpu_profile.json_len + (size_t) n < g_cpu_profile.json_cap) {
+            g_cpu_profile.json_len += (size_t) n;
+            return;
+        }
+
+        const size_t new_cap = g_cpu_profile.json_cap * 2 + (size_t) n + 1;
+        char * new_json = (char *) realloc(g_cpu_profile.json, new_cap);
+        if (new_json == NULL) {
+            return;
+        }
+        g_cpu_profile.json = new_json;
+        g_cpu_profile.json_cap = new_cap;
+    }
+}
+
+static void ggml_cpu_profile_json_tensor(const char * key, const struct ggml_cpu_profile_tensor_info * info) {
+    ggml_cpu_profile_json_append(
+        "\"%s\":{\"name\":\"%s\",\"type\":\"%s\",\"shape\":[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "]}",
+        key,
+        info->name,
+        info->type,
+        info->ne[0],
+        info->ne[1],
+        info->ne[2],
+        info->ne[3]);
+}
+
+static void ggml_cpu_profile_json_aggregates(
+        const char * key,
+        const struct ggml_cpu_profile_aggregate * values,
+        int count,
+        int max_items) {
+    ggml_cpu_profile_json_append("\"%s\":[", key);
+    const int n = max_items > 0 && count > max_items ? max_items : count;
+    for (int i = 0; i < n; ++i) {
+        const struct ggml_cpu_profile_aggregate * agg = &values[i];
+        ggml_cpu_profile_json_append(
+            "%s{\"name\":\"%s\",\"node_count\":%" PRId64 ",\"duration_us\":%" PRId64 ",\"duration_ms\":%.3f,\"elements\":%" PRId64 ",\"bytes\":%" PRId64 "}",
+            i == 0 ? "" : ",",
+            agg->name,
+            agg->node_count,
+            agg->duration_us,
+            (double) agg->duration_us / 1000.0,
+            agg->elements,
+            agg->bytes);
+    }
+    ggml_cpu_profile_json_append("]");
+}
+
+void ggml_backend_cpu_profile_start(void) {
+    free(g_cpu_profile.json);
+    memset(&g_cpu_profile, 0, sizeof(g_cpu_profile));
+    g_cpu_profile.enabled = true;
+}
+
+const char * ggml_backend_cpu_profile_stop_json(void) {
+    g_cpu_profile.enabled = false;
+
+    qsort(g_cpu_profile.ops, (size_t) g_cpu_profile.op_count, sizeof(g_cpu_profile.ops[0]), ggml_cpu_profile_cmp_aggregate);
+    qsort(g_cpu_profile.categories, (size_t) g_cpu_profile.category_count, sizeof(g_cpu_profile.categories[0]), ggml_cpu_profile_cmp_aggregate);
+    qsort(g_cpu_profile.node_names, (size_t) g_cpu_profile.node_name_count, sizeof(g_cpu_profile.node_names[0]), ggml_cpu_profile_cmp_aggregate);
+    qsort(g_cpu_profile.signatures, (size_t) g_cpu_profile.signature_count, sizeof(g_cpu_profile.signatures[0]), ggml_cpu_profile_cmp_signature);
+
+    free(g_cpu_profile.json);
+    g_cpu_profile.json = NULL;
+    g_cpu_profile.json_len = 0;
+    g_cpu_profile.json_cap = 0;
+
+    ggml_cpu_profile_json_append(
+        "{\"profile_kind\":\"ggml_cpu_backend_operator_profile\","
+        "\"timing_unit\":\"us\","
+        "\"instrumentation\":\"cpu_backend_node_wall_time\","
+        "\"note\":\"Recorded inside the CPU backend on worker 0. Each node duration includes the normal inter-node threadpool barrier wait, but no ggml eval callback is installed.\","
+        "\"node_count\":%" PRId64 ","
+        "\"total_us\":%" PRId64 ","
+        "\"total_ms\":%.3f,",
+        g_cpu_profile.node_count,
+        g_cpu_profile.duration_us,
+        (double) g_cpu_profile.duration_us / 1000.0);
+
+    ggml_cpu_profile_json_aggregates("operators", g_cpu_profile.ops, g_cpu_profile.op_count, 0);
+    ggml_cpu_profile_json_append(",");
+    ggml_cpu_profile_json_aggregates("operator_categories", g_cpu_profile.categories, g_cpu_profile.category_count, 0);
+    ggml_cpu_profile_json_append(",");
+    ggml_cpu_profile_json_aggregates("top_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 32);
+    ggml_cpu_profile_json_append(",\"mul_mat_signatures\":[");
+    for (int i = 0; i < g_cpu_profile.signature_count; ++i) {
+        const struct ggml_cpu_profile_signature * sig = &g_cpu_profile.signatures[i];
+        ggml_cpu_profile_json_append(
+            "%s{\"node_count\":%" PRId64 ",\"duration_us\":%" PRId64 ",\"duration_ms\":%.3f,\"elements\":%" PRId64 ",\"bytes\":%" PRId64 ",",
+            i == 0 ? "" : ",",
+            sig->node_count,
+            sig->duration_us,
+            (double) sig->duration_us / 1000.0,
+            sig->elements,
+            sig->bytes);
+        ggml_cpu_profile_json_tensor("src0", &sig->src0);
+        ggml_cpu_profile_json_append(",");
+        ggml_cpu_profile_json_tensor("src1", &sig->src1);
+        ggml_cpu_profile_json_append(",");
+        ggml_cpu_profile_json_tensor("dst", &sig->dst);
+        ggml_cpu_profile_json_append("}");
+    }
+    ggml_cpu_profile_json_append("]}");
+
+    return g_cpu_profile.json;
+}
+
 static thread_ret_t ggml_graph_compute_thread(void * data) {
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
     struct ggml_threadpool    * tp    = state->threadpool;
@@ -2886,8 +3296,13 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.threadpool=*/ tp,
     };
 
+    struct ggml_tensor * profile_pending_node = NULL;
+    int64_t profile_pending_start_us = 0;
+
     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
+        const bool profile_node = state->ith == 0 && ggml_cpu_profile_enabled();
+        const int64_t profile_start_us = profile_node ? ggml_time_us() : 0;
 
         ggml_compute_forward(&params, node);
 
@@ -2899,10 +3314,19 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
+            if (profile_node) {
+                ggml_cpu_profile_record_node(node, ggml_time_us() - profile_start_us);
+            }
+        } else if (profile_node) {
+            profile_pending_node = node;
+            profile_pending_start_us = profile_start_us;
         }
     }
 
     ggml_barrier(state->threadpool);
+    if (state->ith == 0 && ggml_cpu_profile_enabled() && profile_pending_node != NULL) {
+        ggml_cpu_profile_record_node(profile_pending_node, ggml_time_us() - profile_pending_start_us);
+    }
 
     return 0;
 }

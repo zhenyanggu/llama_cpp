@@ -632,7 +632,6 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         return finalize_status(GGML_STATUS_ALLOC_FAILED);
     }
 
-    std::vector<int8_t> packed_activation;
     std::unordered_map<npu_activation_tile_key, std::vector<int8_t>, npu_activation_tile_key_hash> activation_tile_cache;
     const float activation_scale = plan.activation_quant.scale;
     const bool use_aicas_w8a8 = plan.aicas_w8a8.valid;
@@ -743,6 +742,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             }
         } else {
             const int64_t activation_pack_start_us = collect_stage_profile ? ggml_time_us() : 0;
+            auto inserted = activation_tile_cache.try_emplace(activation_key);
+            std::vector<int8_t> & cached_activation = inserted.first->second;
             if (!npu_pack_activation_tile_static_asym_i8(
                         plan.src1,
                         exec_tile.n0,
@@ -752,7 +753,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         activation_scale,
                         plan.activation_quant.zero_point_u8,
                         plan.aicas_w8a8.smooth_scale.empty() ? nullptr : &plan.aicas_w8a8.smooth_scale,
-                        &packed_activation,
+                        &cached_activation,
                         error)) {
                 const int64_t activation_pack_us = collect_stage_profile ? (ggml_time_us() - activation_pack_start_us) : 0;
                 if (collect_stage_profile) {
@@ -763,11 +764,11 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
                     profile_record.tiles.push_back(std::move(tile_record));
                 }
+                activation_tile_cache.erase(inserted.first);
                 cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
-            const auto inserted = activation_tile_cache.emplace(activation_key, packed_activation);
-            packed_activation_view = &inserted.first->second;
+            packed_activation_view = &cached_activation;
             if (collect_stage_profile) {
                 const int64_t activation_pack_us = ggml_time_us() - activation_pack_start_us;
                 exec_summary.delta.activation_pack_calls += 1;
@@ -1377,7 +1378,22 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             if (fold_output_reconstruction) {
                 const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
                 const size_t tile_elems = static_cast<size_t>(exec_tile.n * exec_tile.m);
-                if (raw_acc_mvout) {
+                const bool output_is_final_f32 =
+                    !raw_acc_mvout &&
+                    !apply_output_compensation &&
+                    (tile_uses_bias || output_has_bias_in_accumulator || plan.bias == nullptr);
+                const bool fast_output_copy = output_is_final_f32 && npu_dst_is_dense_f32(plan.dst);
+                if (fast_output_copy) {
+                    const float * acc_f32 = reinterpret_cast<const float *>(acc_buf);
+                    for (int64_t n = 0; n < exec_tile.n; ++n) {
+                        float * dst_row = reinterpret_cast<float *>(
+                            static_cast<char *>(plan.dst->data) +
+                            (exec_tile.n0 + n) * plan.dst->nb[1] +
+                            exec_tile.m0 * sizeof(float));
+                        const float * acc_row = acc_f32 + static_cast<size_t>(n * exec_tile.m);
+                        std::memcpy(dst_row, acc_row, static_cast<size_t>(exec_tile.m * sizeof(float)));
+                    }
+                } else if (raw_acc_mvout) {
                     acc_raw_values_host.resize(tile_elems);
                     std::memcpy(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
                     if (npu_should_dump_tile(layer_id, static_cast<int64_t>(exec_tile_idx))) {
@@ -1393,15 +1409,17 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     acc_scaled_values.resize(tile_elems);
                     std::memcpy(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
                 }
-                npu_prepare_bias_tile_f32_exec(
-                    (tile_uses_bias || output_has_bias_in_accumulator) ? nullptr : plan.bias,
-                    exec_tile.m0,
-                    exec_tile.n0,
-                    exec_tile.m,
-                    exec_tile.n,
-                    bias_tile_values);
+                if (!fast_output_copy) {
+                    npu_prepare_bias_tile_f32_exec(
+                        (tile_uses_bias || output_has_bias_in_accumulator) ? nullptr : plan.bias,
+                        exec_tile.m0,
+                        exec_tile.n0,
+                        exec_tile.m,
+                        exec_tile.n,
+                        bias_tile_values);
+                }
 
-                if (npu_dst_is_dense_f32(plan.dst)) {
+                if (!fast_output_copy && npu_dst_is_dense_f32(plan.dst)) {
                     for (int64_t n = 0; n < exec_tile.n; ++n) {
                         float * dst_row = reinterpret_cast<float *>(
                             static_cast<char *>(plan.dst->data) +
@@ -1443,7 +1461,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                             dst_row[idx] = value;
                         }
                     }
-                } else {
+                } else if (!fast_output_copy) {
                     for (int64_t n = 0; n < exec_tile.n; ++n) {
                         const float * acc_row = raw_acc_mvout
                             ? nullptr
