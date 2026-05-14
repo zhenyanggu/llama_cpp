@@ -1036,6 +1036,11 @@ enum class clip_mmproj_attn_precision_scope {
     block,
 };
 
+enum class clip_aicas_bfp16m_exp_mode {
+    kblock,
+    per_channel,
+};
+
 static const char * clip_mmproj_attn_precision_name(clip_mmproj_attn_precision mode) {
     switch (mode) {
         case clip_mmproj_attn_precision::f32:
@@ -1060,6 +1065,17 @@ static const char * clip_mmproj_attn_precision_scope_name(clip_mmproj_attn_preci
     }
 
     return "core";
+}
+
+static const char * clip_aicas_bfp16m_exp_mode_name(clip_aicas_bfp16m_exp_mode mode) {
+    switch (mode) {
+        case clip_aicas_bfp16m_exp_mode::kblock:
+            return "kblock";
+        case clip_aicas_bfp16m_exp_mode::per_channel:
+            return "per_channel";
+    }
+
+    return "kblock";
 }
 
 static clip_mmproj_attn_precision clip_get_mmproj_attn_precision() {
@@ -1092,6 +1108,19 @@ static clip_mmproj_attn_precision_scope clip_get_mmproj_attn_precision_scope() {
 
     throw std::runtime_error(string_format(
         "invalid AICAS_MMPROJ_ATTN_PRECISION_SCOPE=%s; expected one of: core, block", env));
+}
+
+static clip_aicas_bfp16m_exp_mode clip_get_bfp16m_exp_mode() {
+    const char * env = std::getenv("AICAS_MMPROJ_BFP16M_EXP_MODE");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "kblock") == 0) {
+        return clip_aicas_bfp16m_exp_mode::kblock;
+    }
+    if (std::strcmp(env, "per_channel") == 0 || std::strcmp(env, "per-channel") == 0) {
+        return clip_aicas_bfp16m_exp_mode::per_channel;
+    }
+
+    throw std::runtime_error(string_format(
+        "invalid AICAS_MMPROJ_BFP16M_EXP_MODE=%s; expected one of: kblock, per_channel", env));
 }
 
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
@@ -1197,6 +1226,7 @@ struct clip_aicas_w8a8_kernel_userdata {
 
 struct clip_aicas_bfp16m_userdata {
     int64_t k_block = 64;
+    clip_aicas_bfp16m_exp_mode exp_mode = clip_aicas_bfp16m_exp_mode::kblock;
 };
 
 static int64_t clip_get_mmproj_bfp16m_k_block() {
@@ -2126,6 +2156,7 @@ struct clip_ctx {
     clip_mmproj_attn_precision aicas_mmproj_attn_precision = clip_mmproj_attn_precision::f32;
     clip_mmproj_attn_precision_scope aicas_mmproj_attn_precision_scope = clip_mmproj_attn_precision_scope::core;
     int64_t aicas_mmproj_bfp16m_k_block = 64;
+    clip_aicas_bfp16m_exp_mode aicas_bfp16m_exp_mode = clip_aicas_bfp16m_exp_mode::kblock;
     std::string aicas_dequant_stats_path;
     mutable clip_aicas_dequant_diag_counters aicas_dequant_stats;
     std::string aicas_act_stats_path;
@@ -2169,7 +2200,9 @@ struct clip_ctx {
         aicas_mmproj_attn_precision = clip_get_mmproj_attn_precision();
         aicas_mmproj_attn_precision_scope = clip_get_mmproj_attn_precision_scope();
         aicas_mmproj_bfp16m_k_block = clip_get_mmproj_bfp16m_k_block();
+        aicas_bfp16m_exp_mode = clip_get_bfp16m_exp_mode();
         aicas_bfp16m_userdata.k_block = aicas_mmproj_bfp16m_k_block;
+        aicas_bfp16m_userdata.exp_mode = aicas_bfp16m_exp_mode;
         if (aicas_dequant_sim_mode != clip_aicas_dequant_sim_mode::off) {
             LOG_INF("%s: AICAS mmproj dequant simulation enabled: %s\n",
                 __func__,
@@ -2182,8 +2215,8 @@ struct clip_ctx {
                 clip_mmproj_attn_precision_scope_name(aicas_mmproj_attn_precision_scope));
         }
         if (aicas_mmproj_attn_precision == clip_mmproj_attn_precision::bfp16m) {
-            LOG_INF("%s: AICAS mmproj BFP16-M k_block=%" PRId64 "\n",
-                __func__, aicas_mmproj_bfp16m_k_block);
+            LOG_INF("%s: AICAS mmproj BFP16-M k_block=%" PRId64 " exp_mode=%s\n",
+                __func__, aicas_mmproj_bfp16m_k_block, clip_aicas_bfp16m_exp_mode_name(aicas_bfp16m_exp_mode));
         }
         if (const char * stats_path = std::getenv("AICAS_MMPROJ_DEQUANT_STATS_FILE")) {
             aicas_dequant_stats_path = stats_path;
@@ -2682,6 +2715,11 @@ static inline int16_t clip_bfp16m_quant_value(float value, int exp) {
     return (int16_t) q;
 }
 
+static inline int8_t clip_bfp16m_exp_to_i8(int exp) {
+    return (int8_t) std::max<int>(std::numeric_limits<int8_t>::min(),
+        std::min<int>(std::numeric_limits<int8_t>::max(), exp));
+}
+
 static inline int64_t clip_rshift_rne_i64(int64_t value, int shift) {
     if (shift <= 0 || value == 0) {
         return value;
@@ -2774,12 +2812,15 @@ static void clip_bfp16m_mul_mat_f32(
     GGML_ASSERT(dst->ne[3] == b->ne[3]);
 
     const int64_t k_total = a->ne[0];
-    const int64_t k_block = std::max<int64_t>(1, cfg->k_block);
+    const int64_t configured_k_block = std::max<int64_t>(1, cfg->k_block);
+    const int64_t exp_block = cfg->exp_mode == clip_aicas_bfp16m_exp_mode::per_channel
+        ? k_total
+        : configured_k_block;
     if (ith != 0) {
         return;
     }
 
-    const int64_t n_kb = (k_total + k_block - 1) / k_block;
+    const int64_t n_kb = (k_total + exp_block - 1) / exp_block;
     const int64_t a_e_stride_row = n_kb;
     const int64_t a_e_stride_i2 = a->ne[1] * a_e_stride_row;
     const int64_t a_e_stride_i3 = a->ne[2] * a_e_stride_i2;
@@ -2794,22 +2835,23 @@ static void clip_bfp16m_mul_mat_f32(
     const int64_t b_q_stride_i2 = b->ne[1] * b_q_stride_col;
     const int64_t b_q_stride_i3 = b->ne[2] * b_q_stride_i2;
 
-    std::vector<int> a_exp((size_t) (a->ne[3] * a_e_stride_i3));
+    std::vector<int8_t> a_exp((size_t) (a->ne[3] * a_e_stride_i3));
     std::vector<int16_t> a_q((size_t) (a->ne[3] * a_q_stride_i3));
-    std::vector<int> b_exp((size_t) (b->ne[3] * b_e_stride_i3));
+    std::vector<int8_t> b_exp((size_t) (b->ne[3] * b_e_stride_i3));
     std::vector<int16_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
 
     for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
         for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
             for (int64_t row = 0; row < a->ne[1]; ++row) {
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
-                    const int64_t k0 = kb * k_block;
-                    const int64_t k1 = std::min(k_total, k0 + k_block);
+                    const int64_t k0 = kb * exp_block;
+                    const int64_t k1 = std::min(k_total, k0 + exp_block);
                     const int exp = clip_bfp16m_block_exp_for_a(a, row, i2, i3, k0, k1);
-                    a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp;
+                    const int8_t exp_i8 = clip_bfp16m_exp_to_i8(exp);
+                    a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
                         a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
-                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(a, k, row, i2, i3), exp);
+                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(a, k, row, i2, i3), (int) exp_i8);
                     }
                 }
             }
@@ -2820,13 +2862,14 @@ static void clip_bfp16m_mul_mat_f32(
         for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
             for (int64_t col = 0; col < b->ne[1]; ++col) {
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
-                    const int64_t k0 = kb * k_block;
-                    const int64_t k1 = std::min(k_total, k0 + k_block);
+                    const int64_t k0 = kb * exp_block;
+                    const int64_t k1 = std::min(k_total, k0 + exp_block);
                     const int exp = clip_bfp16m_block_exp_for_b(b, col, i2, i3, k0, k1);
-                    b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp;
+                    const int8_t exp_i8 = clip_bfp16m_exp_to_i8(exp);
+                    b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
                         b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
-                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(b, k, col, i2, i3), exp);
+                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(b, k, col, i2, i3), (int) exp_i8);
                     }
                 }
             }
@@ -2850,8 +2893,8 @@ static void clip_bfp16m_mul_mat_f32(
         int acc_exp = 0;
         int64_t acc = 0;
         for (int64_t kb = 0; kb < n_kb; ++kb) {
-            const int64_t k0 = kb * k_block;
-            const int64_t k1 = std::min(k_total, k0 + k_block);
+            const int64_t k0 = kb * exp_block;
+            const int64_t k1 = std::min(k_total, k0 + exp_block);
             const int e_a = a_exp[(size_t) (a_i3 * a_e_stride_i3 + a_i2 * a_e_stride_i2 + row * a_e_stride_row + kb)];
             const int e_b = b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)];
             const int partial_exp = e_a + e_b;

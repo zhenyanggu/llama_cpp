@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variants", default="bf16,f16", help="Comma-separated candidate precisions")
     parser.add_argument("--bfp16m-k-block", type=int, default=64, help="K block size for BFP16-M matmul simulation")
     parser.add_argument(
+        "--bfp16m-exp-mode",
+        choices=["kblock", "per_channel"],
+        default="kblock",
+        help="BFP16-M exponent metadata mode",
+    )
+    parser.add_argument(
         "--scope",
         choices=["core", "block"],
         default="core",
@@ -202,12 +208,14 @@ def run_eval(
     env["AICAS_MMPROJ_ATTN_PRECISION"] = precision
     env["AICAS_MMPROJ_ATTN_PRECISION_SCOPE"] = args.scope
     env["AICAS_MMPROJ_BFP16M_K_BLOCK"] = str(args.bfp16m_k_block)
+    env["AICAS_MMPROJ_BFP16M_EXP_MODE"] = args.bfp16m_exp_mode
     log_path = output_dir / "eval.log"
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(cmd) + "\n")
         log.write(f"AICAS_MMPROJ_ATTN_PRECISION={precision}\n\n")
         log.write(f"AICAS_MMPROJ_ATTN_PRECISION_SCOPE={args.scope}\n\n")
         log.write(f"AICAS_MMPROJ_BFP16M_K_BLOCK={args.bfp16m_k_block}\n\n")
+        log.write(f"AICAS_MMPROJ_BFP16M_EXP_MODE={args.bfp16m_exp_mode}\n\n")
         log.flush()
         subprocess.run(cmd, cwd=ROOT_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
 
@@ -231,6 +239,7 @@ def write_markdown_summary(path: Path, payload: dict[str, Any]) -> None:
         f"- image_root: `{payload['image_root']}`",
         f"- scope: `{payload.get('scope', 'core')}`",
         f"- bfp16m_k_block: `{payload.get('bfp16m_k_block', 64)}`",
+        f"- bfp16m_exp_mode: `{payload.get('bfp16m_exp_mode', 'kblock')}`",
         f"- max_drop_30: `{payload['max_drop_30']}`",
         "",
         "## Results",
@@ -291,6 +300,7 @@ def main() -> int:
         "variants": variants,
         "scope": args.scope,
         "bfp16m_k_block": args.bfp16m_k_block,
+        "bfp16m_exp_mode": args.bfp16m_exp_mode,
         "max_drop_30": args.max_drop_30,
         "gate_30": [],
         "eval_100": [],
