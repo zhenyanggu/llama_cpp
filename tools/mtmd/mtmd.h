@@ -205,6 +205,10 @@ MTMD_API int32_t mtmd_encode(mtmd_context * ctx,
 MTMD_API int32_t mtmd_encode_chunk(mtmd_context * ctx,
                                    const mtmd_input_chunk * chunk);
 
+// Optional JSON summary for the most recent non-text encode pass.
+// The pointer remains valid until the next mtmd_encode_chunk() call or mtmd_free().
+MTMD_API const char * mtmd_get_last_mmproj_summary_json(mtmd_context * ctx);
+
 // get output embeddings from the last encode pass
 // the reading size (in bytes) is equal to:
 // llama_model_n_embd(model) * mtmd_input_chunk_get_n_tokens(chunk) * sizeof(float)

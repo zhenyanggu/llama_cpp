@@ -103,6 +103,7 @@ struct mtmd_context {
     bool print_timings;
     int n_threads;
     std::string media_marker;
+    std::string last_mmproj_summary_json;
     const int n_embd_text;
 
     // these are not token, but strings used to mark the beginning and end of image/audio embeddings
@@ -741,6 +742,7 @@ int32_t mtmd_tokenize(mtmd_context * ctx,
 }
 
 int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
+    ctx->last_mmproj_summary_json.clear();
     if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {
         LOG_WRN("mtmd_encode_chunk has no effect for text chunks\n");
         return 0;
@@ -749,7 +751,11 @@ int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
             LOG_ERR("%s: model does not support vision input\n", __func__);
             return 1;
         }
-        return mtmd_encode(ctx, chunk->tokens_image.get());
+        const int32_t ret = mtmd_encode(ctx, chunk->tokens_image.get());
+        if (const char * summary = clip_last_mmproj_summary_json(ctx->ctx_v)) {
+            ctx->last_mmproj_summary_json = summary;
+        }
+        return ret;
     } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
         if (!ctx->ctx_a) {
             LOG_ERR("%s: model does not support audio input\n", __func__);
@@ -762,11 +768,21 @@ int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
             ctx->n_threads,
             &chunk->tokens_audio->batch_f32,
             ctx->image_embd_v.data());
+        if (const char * summary = clip_last_mmproj_summary_json(ctx->ctx_a)) {
+            ctx->last_mmproj_summary_json = summary;
+        }
         return ok ? 0 : 1;
     }
 
     LOG_ERR("%s: unknown chunk type %d\n", __func__, (int)chunk->type);
     return 1;
+}
+
+const char * mtmd_get_last_mmproj_summary_json(mtmd_context * ctx) {
+    if (ctx == nullptr || ctx->last_mmproj_summary_json.empty()) {
+        return nullptr;
+    }
+    return ctx->last_mmproj_summary_json.c_str();
 }
 
 int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens) {

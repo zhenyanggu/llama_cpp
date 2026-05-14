@@ -3,6 +3,7 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "ggml-cpu.h"
 #include "arg.h" // common_remote_get_content
 #include "base64.hpp"
 #include "mtmd.h"
@@ -24,6 +25,8 @@
 #include <nlohmann/json.hpp>
 
 #include <random>
+#include <algorithm>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -63,7 +66,19 @@ static bool server_mtmd_profile_enabled() {
     return !path.empty();
 }
 
+static bool server_mtmd_cpu_op_profile_enabled() {
+    const char * env = std::getenv("LLAMA_MTMD_CPU_OP_PROFILE");
+    return env != nullptr && env[0] != '\0' && std::string(env) != "0";
+}
+
 struct server_mtmd_prefill_profile {
+    struct mmproj_category_aggregate {
+        int64_t node_count = 0;
+        int64_t duration_us = 0;
+        int64_t elements = 0;
+        int64_t bytes = 0;
+    };
+
     bool enabled = false;
     bool has_media = false;
     int64_t media_chunk_count = 0;
@@ -74,6 +89,8 @@ struct server_mtmd_prefill_profile {
     int64_t mmproj_encode_us = 0;
     int64_t media_decode_us = 0;
     int64_t media_process_us = 0;
+    std::vector<json> mmproj_encode_details;
+    std::vector<json> cpu_backend_profile_details;
 #ifdef GGML_USE_NPU
     ggml_npu_profile_summary npu = {};
 #endif
@@ -89,6 +106,8 @@ struct server_mtmd_prefill_profile {
         mmproj_encode_us = 0;
         media_decode_us = 0;
         media_process_us = 0;
+        mmproj_encode_details.clear();
+        cpu_backend_profile_details.clear();
 #ifdef GGML_USE_NPU
         npu = {};
 #endif
@@ -98,7 +117,9 @@ struct server_mtmd_prefill_profile {
             const mtmd_input_chunk * chunk,
             int64_t encode_us,
             int64_t decode_us,
-            int64_t total_us
+            int64_t total_us,
+            const char * mmproj_summary_json,
+            const char * cpu_backend_profile_json
 #ifdef GGML_USE_NPU
             , const ggml_npu_profile_summary & npu_summary
 #endif
@@ -120,6 +141,19 @@ struct server_mtmd_prefill_profile {
             image_chunk_count += 1;
         } else if (type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
             audio_chunk_count += 1;
+        }
+
+        if (mmproj_summary_json != nullptr && mmproj_summary_json[0] != '\0') {
+            json detail = json::parse(mmproj_summary_json, nullptr, false);
+            if (!detail.is_discarded()) {
+                mmproj_encode_details.push_back(std::move(detail));
+            }
+        }
+        if (cpu_backend_profile_json != nullptr && cpu_backend_profile_json[0] != '\0') {
+            json detail = json::parse(cpu_backend_profile_json, nullptr, false);
+            if (!detail.is_discarded()) {
+                cpu_backend_profile_details.push_back(std::move(detail));
+            }
         }
 
 #ifdef GGML_USE_NPU
@@ -173,6 +207,123 @@ struct server_mtmd_prefill_profile {
         npu.runtime_mvout_calls += npu_summary.runtime_mvout_calls;
         npu.runtime_layout_calls += npu_summary.runtime_layout_calls;
 #endif
+    }
+
+    json aggregate_mmproj_phase_us() const {
+        std::map<std::string, int64_t> phases;
+        for (const json & detail : mmproj_encode_details) {
+            if (!detail.contains("phases") || !detail["phases"].is_object()) {
+                continue;
+            }
+            for (auto it = detail["phases"].begin(); it != detail["phases"].end(); ++it) {
+                if (it.value().is_number_integer()) {
+                    phases[it.key()] += it.value().get<int64_t>();
+                }
+            }
+        }
+
+        json out = json::object();
+        for (const auto & kv : phases) {
+            out[kv.first] = kv.second;
+        }
+        return out;
+    }
+
+    int64_t aggregate_mmproj_known_profile_overhead_us() const {
+        int64_t overhead_us = 0;
+        for (const json & detail : mmproj_encode_details) {
+            if (detail.contains("known_profile_overhead_us") && detail["known_profile_overhead_us"].is_number_integer()) {
+                overhead_us += detail["known_profile_overhead_us"].get<int64_t>();
+            }
+        }
+        return overhead_us;
+    }
+
+    json aggregate_mmproj_cpu_operator_categories() const {
+        std::map<std::string, mmproj_category_aggregate> categories;
+        for (const json & detail : mmproj_encode_details) {
+            if (!detail.contains("graph") ||
+                    !detail["graph"].contains("cpu_operator_categories") ||
+                    !detail["graph"]["cpu_operator_categories"].is_array()) {
+                continue;
+            }
+
+            for (const json & item : detail["graph"]["cpu_operator_categories"]) {
+                if (!item.contains("name") || !item["name"].is_string()) {
+                    continue;
+                }
+                const std::string name = item["name"].get<std::string>();
+                auto & dst = categories[name];
+                dst.node_count += item.value("node_count", 0);
+                dst.duration_us += item.value("duration_us", 0);
+                dst.elements += item.value("elements", 0);
+                dst.bytes += item.value("bytes", 0);
+            }
+        }
+
+        std::vector<std::pair<std::string, mmproj_category_aggregate>> sorted(categories.begin(), categories.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+            if (a.second.bytes != b.second.bytes) {
+                return a.second.bytes > b.second.bytes;
+            }
+            if (a.second.elements != b.second.elements) {
+                return a.second.elements > b.second.elements;
+            }
+            return a.first < b.first;
+        });
+
+        json out = json::array();
+        for (const auto & kv : sorted) {
+            out.push_back({
+                {"name", kv.first},
+                {"node_count", kv.second.node_count},
+                {"elements", kv.second.elements},
+                {"bytes", kv.second.bytes},
+            });
+        }
+        return out;
+    }
+
+    json aggregate_cpu_backend_operator_categories() const {
+        std::map<std::string, mmproj_category_aggregate> categories;
+        for (const json & detail : cpu_backend_profile_details) {
+            if (!detail.contains("operator_categories") || !detail["operator_categories"].is_array()) {
+                continue;
+            }
+
+            for (const json & item : detail["operator_categories"]) {
+                if (!item.contains("name") || !item["name"].is_string()) {
+                    continue;
+                }
+                const std::string name = item["name"].get<std::string>();
+                auto & dst = categories[name];
+                dst.node_count += item.value("node_count", 0);
+                dst.duration_us += item.value("duration_us", 0);
+                dst.elements += item.value("elements", 0);
+                dst.bytes += item.value("bytes", 0);
+            }
+        }
+
+        std::vector<std::pair<std::string, mmproj_category_aggregate>> sorted(categories.begin(), categories.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+            if (a.second.duration_us != b.second.duration_us) {
+                return a.second.duration_us > b.second.duration_us;
+            }
+            return a.first < b.first;
+        });
+
+        json out = json::array();
+        for (const auto & kv : sorted) {
+            out.push_back({
+                {"name", kv.first},
+                {"node_count", kv.second.node_count},
+                {"duration_us", kv.second.duration_us},
+                {"duration_ms", static_cast<double>(kv.second.duration_us) / 1000.0},
+                {"elements", kv.second.elements},
+                {"bytes", kv.second.bytes},
+            });
+        }
+        return out;
     }
 
     json to_json(
@@ -266,12 +417,22 @@ struct server_mtmd_prefill_profile {
                 {"encode_us", mmproj_encode_us},
                 {"decode_us", media_decode_us},
                 {"total_chunk_us", media_process_us},
+                {"encode_details", mmproj_encode_details},
+                {"cpu_backend_profile_details", cpu_backend_profile_details},
             }},
             {"npu", npu_json},
             {"derived", {
                 {"npu_host_us", static_cast<int64_t>(npu_host_us)},
                 {"npu_total_node_us", static_cast<int64_t>(npu_total_node_us)},
                 {"mmproj_residual_cpu_us", static_cast<int64_t>(residual_cpu_us)},
+                {"mmproj_residual_cpu_detail", {
+                    {"kind", "non_intrusive_phase_timing_and_graph_categories"},
+                    {"note", "This splits the residual by coarse mmproj phases and scheduled CPU graph categories. CPU operator categories are node/byte counts, not exact per-operator runtime."},
+                    {"known_profile_overhead_us", aggregate_mmproj_known_profile_overhead_us()},
+                    {"phase_wall_time_us", aggregate_mmproj_phase_us()},
+                    {"cpu_operator_categories", aggregate_mmproj_cpu_operator_categories()},
+                    {"cpu_backend_operator_categories", aggregate_cpu_backend_operator_categories()},
+                }},
                 {"prefill_minus_mmproj_us", static_cast<int64_t>(std::max(0.0, prefill_total_us - static_cast<double>(mmproj_encode_us)))},
             }},
         };
@@ -1609,8 +1770,15 @@ public:
 #endif
 
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
+            const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
+            if (collect_cpu_backend_profile) {
+                ggml_backend_cpu_profile_start();
+            }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
+            const char * cpu_backend_profile_json =
+                collect_cpu_backend_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+            const char * mmproj_summary_json = collect_profile ? mtmd_get_last_mmproj_summary_json(mctx) : nullptr;
 
 #ifdef GGML_USE_NPU
             if (profile != nullptr && profile->enabled) {
@@ -1637,7 +1805,9 @@ public:
                         chunk.get(),
                         encode_us,
                         decode_us,
-                        ggml_time_us() - process_start_us
+                        ggml_time_us() - process_start_us,
+                        mmproj_summary_json,
+                        cpu_backend_profile_json
 #ifdef GGML_USE_NPU
                         , npu_summary
 #endif
