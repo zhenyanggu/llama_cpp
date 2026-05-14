@@ -1024,6 +1024,76 @@ enum class clip_aicas_dequant_sim_mode {
     scale_shift_fp_reconstruct,
 };
 
+enum class clip_mmproj_attn_precision {
+    f32,
+    f16,
+    bf16,
+    bfp16m,
+};
+
+enum class clip_mmproj_attn_precision_scope {
+    core,
+    block,
+};
+
+static const char * clip_mmproj_attn_precision_name(clip_mmproj_attn_precision mode) {
+    switch (mode) {
+        case clip_mmproj_attn_precision::f32:
+            return "f32";
+        case clip_mmproj_attn_precision::f16:
+            return "f16";
+        case clip_mmproj_attn_precision::bf16:
+            return "bf16";
+        case clip_mmproj_attn_precision::bfp16m:
+            return "bfp16m";
+    }
+
+    return "f32";
+}
+
+static const char * clip_mmproj_attn_precision_scope_name(clip_mmproj_attn_precision_scope scope) {
+    switch (scope) {
+        case clip_mmproj_attn_precision_scope::core:
+            return "core";
+        case clip_mmproj_attn_precision_scope::block:
+            return "block";
+    }
+
+    return "core";
+}
+
+static clip_mmproj_attn_precision clip_get_mmproj_attn_precision() {
+    const char * env = std::getenv("AICAS_MMPROJ_ATTN_PRECISION");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "f32") == 0) {
+        return clip_mmproj_attn_precision::f32;
+    }
+    if (std::strcmp(env, "f16") == 0) {
+        return clip_mmproj_attn_precision::f16;
+    }
+    if (std::strcmp(env, "bf16") == 0) {
+        return clip_mmproj_attn_precision::bf16;
+    }
+    if (std::strcmp(env, "bfp16m") == 0 || std::strcmp(env, "bfp16-m") == 0) {
+        return clip_mmproj_attn_precision::bfp16m;
+    }
+
+    throw std::runtime_error(string_format(
+        "invalid AICAS_MMPROJ_ATTN_PRECISION=%s; expected one of: f32, f16, bf16, bfp16m", env));
+}
+
+static clip_mmproj_attn_precision_scope clip_get_mmproj_attn_precision_scope() {
+    const char * env = std::getenv("AICAS_MMPROJ_ATTN_PRECISION_SCOPE");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "core") == 0) {
+        return clip_mmproj_attn_precision_scope::core;
+    }
+    if (std::strcmp(env, "block") == 0) {
+        return clip_mmproj_attn_precision_scope::block;
+    }
+
+    throw std::runtime_error(string_format(
+        "invalid AICAS_MMPROJ_ATTN_PRECISION_SCOPE=%s; expected one of: core, block", env));
+}
+
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
     switch (mode) {
         case clip_aicas_dequant_sim_mode::off:
@@ -1124,6 +1194,43 @@ struct clip_aicas_w8a8_kernel_userdata {
     clip_aicas_dequant_sim_mode mode = clip_aicas_dequant_sim_mode::off;
     clip_aicas_dequant_diag_counters * stats = nullptr;
 };
+
+struct clip_aicas_bfp16m_userdata {
+    int64_t k_block = 64;
+};
+
+static int64_t clip_get_mmproj_bfp16m_k_block() {
+    constexpr int64_t default_k_block = 64;
+    const char * env = std::getenv("AICAS_MMPROJ_BFP16M_K_BLOCK");
+    if (env == nullptr || env[0] == '\0') {
+        return default_k_block;
+    }
+
+    const long parsed = std::strtol(env, nullptr, 10);
+    if (parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+        return parsed;
+    }
+
+    LOG_WRN("%s: ignoring invalid AICAS_MMPROJ_BFP16M_K_BLOCK=%s, using default=%" PRId64 "\n",
+            __func__, env, default_k_block);
+    return default_k_block;
+}
+
+static void clip_bfp16m_quant_dequant_f32(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata);
+
+static void clip_bfp16m_mul_mat_f32(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        int ith,
+        int nth,
+        void * userdata);
 
 static void clip_record_aicas_dequant_result(
         clip_aicas_dequant_diag_counters * stats,
@@ -2016,6 +2123,9 @@ struct clip_ctx {
     std::vector<ggml_tensor *> debug_dump_w8a8_tensors;
     bool aicas_w8a8_debug = false;
     clip_aicas_dequant_sim_mode aicas_dequant_sim_mode = clip_aicas_dequant_sim_mode::off;
+    clip_mmproj_attn_precision aicas_mmproj_attn_precision = clip_mmproj_attn_precision::f32;
+    clip_mmproj_attn_precision_scope aicas_mmproj_attn_precision_scope = clip_mmproj_attn_precision_scope::core;
+    int64_t aicas_mmproj_bfp16m_k_block = 64;
     std::string aicas_dequant_stats_path;
     mutable clip_aicas_dequant_diag_counters aicas_dequant_stats;
     std::string aicas_act_stats_path;
@@ -2024,6 +2134,7 @@ struct clip_ctx {
     mutable std::unordered_map<std::string, clip_aicas_activation_stats> aicas_act_stats;
     mutable std::unordered_map<std::string, clip_aicas_activation_observer> aicas_act_observers;
     mutable std::unordered_map<std::string, std::unique_ptr<clip_aicas_w8a8_kernel_userdata>> aicas_w8a8_kernel_userdata_map;
+    mutable clip_aicas_bfp16m_userdata aicas_bfp16m_userdata;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -2055,10 +2166,24 @@ struct clip_ctx {
         profiler.init_from_env();
         aicas_w8a8_debug = std::getenv("AICAS_MMPROJ_W8A8_DEBUG") != nullptr;
         aicas_dequant_sim_mode = clip_get_dequant_sim_mode();
+        aicas_mmproj_attn_precision = clip_get_mmproj_attn_precision();
+        aicas_mmproj_attn_precision_scope = clip_get_mmproj_attn_precision_scope();
+        aicas_mmproj_bfp16m_k_block = clip_get_mmproj_bfp16m_k_block();
+        aicas_bfp16m_userdata.k_block = aicas_mmproj_bfp16m_k_block;
         if (aicas_dequant_sim_mode != clip_aicas_dequant_sim_mode::off) {
             LOG_INF("%s: AICAS mmproj dequant simulation enabled: %s\n",
                 __func__,
                 clip_dequant_sim_mode_name(aicas_dequant_sim_mode));
+        }
+        if (aicas_mmproj_attn_precision != clip_mmproj_attn_precision::f32) {
+            LOG_INF("%s: AICAS mmproj attention precision enabled: %s scope=%s\n",
+                __func__,
+                clip_mmproj_attn_precision_name(aicas_mmproj_attn_precision),
+                clip_mmproj_attn_precision_scope_name(aicas_mmproj_attn_precision_scope));
+        }
+        if (aicas_mmproj_attn_precision == clip_mmproj_attn_precision::bfp16m) {
+            LOG_INF("%s: AICAS mmproj BFP16-M k_block=%" PRId64 "\n",
+                __func__, aicas_mmproj_bfp16m_k_block);
         }
         if (const char * stats_path = std::getenv("AICAS_MMPROJ_DEQUANT_STATS_FILE")) {
             aicas_dequant_stats_path = stats_path;
@@ -2473,6 +2598,287 @@ static void clip_collect_activation_f32_passthrough(
         (const float *) a->data,
         (size_t) a->ne[0],
         (size_t) ggml_nelements(a) / (size_t) a->ne[0]);
+}
+
+static void clip_bfp16m_quant_dequant_f32(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(nth);
+
+    const auto * cfg = static_cast<const clip_aicas_bfp16m_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const int64_t k_block = std::max<int64_t>(1, cfg->k_block);
+    const int64_t ne0 = a->ne[0];
+    const int64_t ne1 = a->ne[1];
+    const int64_t ne2 = a->ne[2];
+    const int64_t ne3 = a->ne[3];
+
+    for (int64_t i3 = 0; i3 < ne3; ++i3) {
+        for (int64_t i2 = 0; i2 < ne2; ++i2) {
+            for (int64_t i1 = 0; i1 < ne1; ++i1) {
+                for (int64_t k0 = 0; k0 < ne0; k0 += k_block) {
+                    const int64_t k1 = std::min(ne0, k0 + k_block);
+                    float max_abs = 0.0f;
+                    for (int64_t i0 = k0; i0 < k1; ++i0) {
+                        const float v = *(const float *) ((const char *) a->data +
+                            i0 * a->nb[0] + i1 * a->nb[1] + i2 * a->nb[2] + i3 * a->nb[3]);
+                        max_abs = std::max(max_abs, std::fabs(v));
+                    }
+
+                    const int exp = max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+                    const float scale = std::ldexp(1.0f, exp);
+                    const float inv_scale = 1.0f / scale;
+
+                    for (int64_t i0 = k0; i0 < k1; ++i0) {
+                        const float v = *(const float *) ((const char *) a->data +
+                            i0 * a->nb[0] + i1 * a->nb[1] + i2 * a->nb[2] + i3 * a->nb[3]);
+                        long q = std::lrint((double) v * inv_scale);
+                        q = std::max<long>(-32768, std::min<long>(32767, q));
+                        *(float *) ((char *) dst->data +
+                            i0 * dst->nb[0] + i1 * dst->nb[1] + i2 * dst->nb[2] + i3 * dst->nb[3]) =
+                            (float) q * scale;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static inline float clip_tensor_get_f32_4d(
+        const struct ggml_tensor * t,
+        int64_t i0,
+        int64_t i1,
+        int64_t i2,
+        int64_t i3) {
+    return *(const float *) ((const char *) t->data +
+        i0 * t->nb[0] + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3]);
+}
+
+static inline void clip_tensor_set_f32_4d(
+        struct ggml_tensor * t,
+        int64_t i0,
+        int64_t i1,
+        int64_t i2,
+        int64_t i3,
+        float value) {
+    *(float *) ((char *) t->data +
+        i0 * t->nb[0] + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3]) = value;
+}
+
+static inline int16_t clip_bfp16m_quant_value(float value, int exp) {
+    const double scaled = std::ldexp((double) value, -exp);
+    long q = std::lrint(scaled);
+    q = std::max<long>(-32768, std::min<long>(32767, q));
+    return (int16_t) q;
+}
+
+static inline int64_t clip_rshift_rne_i64(int64_t value, int shift) {
+    if (shift <= 0 || value == 0) {
+        return value;
+    }
+    if (shift >= 64) {
+        return 0;
+    }
+
+    const bool neg = value < 0;
+    const uint64_t abs_v = neg
+        ? (uint64_t) (-(value + 1)) + 1
+        : (uint64_t) value;
+    const uint64_t q = abs_v >> shift;
+    const uint64_t rem_mask = (UINT64_C(1) << shift) - 1;
+    const uint64_t rem = abs_v & rem_mask;
+    const uint64_t half = UINT64_C(1) << (shift - 1);
+    uint64_t rounded = q;
+    if (rem > half || (rem == half && (q & 1) != 0)) {
+        rounded += 1;
+    }
+
+    if (neg && rounded == (UINT64_C(1) << 63)) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    if (rounded > (uint64_t) std::numeric_limits<int64_t>::max()) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    const int64_t signed_rounded = (int64_t) rounded;
+    return neg ? -signed_rounded : signed_rounded;
+}
+
+static inline int64_t clip_saturating_add_i64(int64_t a, int64_t b) {
+    if (b > 0 && a > std::numeric_limits<int64_t>::max() - b) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (b < 0 && a < std::numeric_limits<int64_t>::min() - b) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return a + b;
+}
+
+static int clip_bfp16m_block_exp_for_a(
+        const struct ggml_tensor * a,
+        int64_t row,
+        int64_t a_i2,
+        int64_t a_i3,
+        int64_t k0,
+        int64_t k1) {
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(a, k, row, a_i2, a_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static int clip_bfp16m_block_exp_for_b(
+        const struct ggml_tensor * b,
+        int64_t col,
+        int64_t b_i2,
+        int64_t b_i3,
+        int64_t k0,
+        int64_t k1) {
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(b, k, col, b_i2, b_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static void clip_bfp16m_mul_mat_f32(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+    GGML_UNUSED(nth);
+
+    const auto * cfg = static_cast<const clip_aicas_bfp16m_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    GGML_ASSERT(dst->ne[0] == a->ne[1]);
+    GGML_ASSERT(dst->ne[1] == b->ne[1]);
+    GGML_ASSERT(dst->ne[2] == b->ne[2]);
+    GGML_ASSERT(dst->ne[3] == b->ne[3]);
+
+    const int64_t k_total = a->ne[0];
+    const int64_t k_block = std::max<int64_t>(1, cfg->k_block);
+    if (ith != 0) {
+        return;
+    }
+
+    const int64_t n_kb = (k_total + k_block - 1) / k_block;
+    const int64_t a_e_stride_row = n_kb;
+    const int64_t a_e_stride_i2 = a->ne[1] * a_e_stride_row;
+    const int64_t a_e_stride_i3 = a->ne[2] * a_e_stride_i2;
+    const int64_t a_q_stride_row = k_total;
+    const int64_t a_q_stride_i2 = a->ne[1] * a_q_stride_row;
+    const int64_t a_q_stride_i3 = a->ne[2] * a_q_stride_i2;
+
+    const int64_t b_e_stride_col = n_kb;
+    const int64_t b_e_stride_i2 = b->ne[1] * b_e_stride_col;
+    const int64_t b_e_stride_i3 = b->ne[2] * b_e_stride_i2;
+    const int64_t b_q_stride_col = k_total;
+    const int64_t b_q_stride_i2 = b->ne[1] * b_q_stride_col;
+    const int64_t b_q_stride_i3 = b->ne[2] * b_q_stride_i2;
+
+    std::vector<int> a_exp((size_t) (a->ne[3] * a_e_stride_i3));
+    std::vector<int16_t> a_q((size_t) (a->ne[3] * a_q_stride_i3));
+    std::vector<int> b_exp((size_t) (b->ne[3] * b_e_stride_i3));
+    std::vector<int16_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
+
+    for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+            for (int64_t row = 0; row < a->ne[1]; ++row) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * k_block;
+                    const int64_t k1 = std::min(k_total, k0 + k_block);
+                    const int exp = clip_bfp16m_block_exp_for_a(a, row, i2, i3, k0, k1);
+                    a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
+                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(a, k, row, i2, i3), exp);
+                    }
+                }
+            }
+        }
+    }
+
+    for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+            for (int64_t col = 0; col < b->ne[1]; ++col) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * k_block;
+                    const int64_t k1 = std::min(k_total, k0 + k_block);
+                    const int exp = clip_bfp16m_block_exp_for_b(b, col, i2, i3, k0, k1);
+                    b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
+                            clip_bfp16m_quant_value(clip_tensor_get_f32_4d(b, k, col, i2, i3), exp);
+                    }
+                }
+            }
+        }
+    }
+
+    const int64_t total = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
+    for (int64_t index = 0; index < total; ++index) {
+        int64_t rem = index;
+        const int64_t row = rem % dst->ne[0];
+        rem /= dst->ne[0];
+        const int64_t col = rem % dst->ne[1];
+        rem /= dst->ne[1];
+        const int64_t i2 = rem % dst->ne[2];
+        rem /= dst->ne[2];
+        const int64_t i3 = rem;
+        const int64_t a_i2 = i2 % a->ne[2];
+        const int64_t a_i3 = i3 % a->ne[3];
+
+        bool have_acc = false;
+        int acc_exp = 0;
+        int64_t acc = 0;
+        for (int64_t kb = 0; kb < n_kb; ++kb) {
+            const int64_t k0 = kb * k_block;
+            const int64_t k1 = std::min(k_total, k0 + k_block);
+            const int e_a = a_exp[(size_t) (a_i3 * a_e_stride_i3 + a_i2 * a_e_stride_i2 + row * a_e_stride_row + kb)];
+            const int e_b = b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)];
+            const int partial_exp = e_a + e_b;
+
+            int64_t partial = 0;
+            for (int64_t k = k0; k < k1; ++k) {
+                const int16_t qa = a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + k)];
+                const int16_t qb = b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)];
+                partial += (int32_t) qa * (int32_t) qb;
+            }
+
+            if (!have_acc) {
+                acc = partial;
+                acc_exp = partial_exp;
+                have_acc = true;
+                continue;
+            }
+
+            if (partial_exp > acc_exp) {
+                acc = clip_rshift_rne_i64(acc, partial_exp - acc_exp);
+                acc_exp = partial_exp;
+            }
+            acc = clip_saturating_add_i64(acc, clip_rshift_rne_i64(partial, acc_exp - partial_exp));
+        }
+
+        clip_tensor_set_f32_4d(dst, row, col, i2, i3, (float) std::ldexp((double) acc, acc_exp));
+    }
 }
 
 struct clip_graph {
@@ -4058,6 +4464,62 @@ private:
         return cur;
     }
 
+    ggml_tensor * cast_mmproj_attn_tensor(ggml_tensor * tensor) const {
+        ggml_type target_type = GGML_TYPE_F32;
+        switch (ctx->aicas_mmproj_attn_precision) {
+            case clip_mmproj_attn_precision::f32:
+                return tensor;
+            case clip_mmproj_attn_precision::f16:
+                target_type = GGML_TYPE_F16;
+                break;
+            case clip_mmproj_attn_precision::bf16:
+                target_type = GGML_TYPE_BF16;
+                break;
+            case clip_mmproj_attn_precision::bfp16m:
+                return tensor;
+        }
+
+        if (tensor->type == target_type) {
+            return tensor;
+        }
+
+        return ggml_cast(ctx0, tensor, target_type);
+    }
+
+    ggml_tensor * build_mmproj_attn_mul_mat(ggml_tensor * a, ggml_tensor * b) const {
+        if (ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp16m) {
+            return ggml_mul_mat(ctx0, cast_mmproj_attn_tensor(a), cast_mmproj_attn_tensor(b));
+        }
+
+        GGML_ASSERT(a->type == GGML_TYPE_F32);
+        GGML_ASSERT(b->type == GGML_TYPE_F32);
+        GGML_ASSERT(a->ne[0] == b->ne[0]);
+        GGML_ASSERT(b->ne[2] % a->ne[2] == 0);
+        GGML_ASSERT(b->ne[3] % a->ne[3] == 0);
+
+        ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
+        return ggml_map_custom3(
+            ctx0,
+            out_template,
+            a,
+            b,
+            clip_bfp16m_mul_mat_f32,
+            1,
+            &ctx->aicas_bfp16m_userdata);
+    }
+
+    ggml_tensor * cast_mmproj_attn_tensor_f32(ggml_tensor * tensor) const {
+        if (tensor->type == GGML_TYPE_F32) {
+            return tensor;
+        }
+        return ggml_cast(ctx0, tensor, GGML_TYPE_F32);
+    }
+
+    bool should_cast_mmproj_attn_block() const {
+        return ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::f32 &&
+            ctx->aicas_mmproj_attn_precision_scope == clip_mmproj_attn_precision_scope::block;
+    }
+
     ggml_tensor * build_attn(
             ggml_tensor * wo,
             ggml_tensor * wo_b,
@@ -4072,6 +4534,12 @@ private:
         ggml_build_forward_expand(gf, q_cur);
         ggml_build_forward_expand(gf, k_cur);
         ggml_build_forward_expand(gf, v_cur);
+
+        if (should_cast_mmproj_attn_block()) {
+            q_cur = cast_mmproj_attn_tensor(q_cur);
+            k_cur = cast_mmproj_attn_tensor(k_cur);
+            v_cur = cast_mmproj_attn_tensor(v_cur);
+        }
 
         ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);
         //cb(q, "q", il);
@@ -4091,15 +4559,18 @@ private:
             const auto n_head   = q->ne[2];
             // const auto n_kv     = k->ne[1]; // for flash attention
 
-            ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+            ggml_tensor * kq = build_mmproj_attn_mul_mat(k, q);
             // F32 may not needed for vision encoders?
             // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
             kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
 
-            ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
+            ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq);
             cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
             cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
+            if (should_cast_mmproj_attn_block()) {
+                cur = cast_mmproj_attn_tensor_f32(cast_mmproj_attn_tensor(cur));
+            }
         }
 
         cb(cur, "kqv_out", il);
