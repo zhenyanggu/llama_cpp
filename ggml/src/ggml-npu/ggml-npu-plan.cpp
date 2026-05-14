@@ -3,18 +3,24 @@
 #include "ggml-npu-tiling.h"
 #include "npu_runtime.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ggml_npu {
+
+using json = nlohmann::ordered_json;
 
 struct npu_static_quant_entry {
     std::string key;
@@ -56,6 +62,33 @@ struct npu_preloaded_weight_cache {
     std::unordered_map<std::string, npu_preloaded_weight_tensor_entry> entries;
 };
 
+struct npu_shape_table_hint {
+    bool valid = false;
+    int64_t tm = 0;
+    int64_t tn = 0;
+    int64_t tk = 0;
+    std::string source;
+};
+
+struct npu_shape_table_entry {
+    std::string weight_name;
+    int64_t m = -1;
+    int64_t n = -1;
+    int64_t k = -1;
+    int64_t tm = 0;
+    int64_t tn = 0;
+    int64_t tk = 0;
+    bool bias_present = false;
+    bool has_bias_present = false;
+    bool enabled = true;
+};
+
+struct npu_shape_table {
+    bool loaded = false;
+    std::string path;
+    std::vector<npu_shape_table_entry> entries;
+};
+
 static npu_static_quant_table & npu_get_static_quant_table() {
     static npu_static_quant_table table;
     return table;
@@ -69,6 +102,129 @@ static npu_aicas_w8a8_table & npu_get_aicas_w8a8_table() {
 static npu_preloaded_weight_cache & npu_get_preloaded_weight_cache() {
     static npu_preloaded_weight_cache cache;
     return cache;
+}
+
+static std::string npu_env_string(const char * key) {
+    const char * value = std::getenv(key);
+    return value ? value : "";
+}
+
+static npu_shape_table & npu_get_shape_table() {
+    static npu_shape_table table;
+    if (table.loaded) {
+        return table;
+    }
+
+    table.loaded = true;
+    table.path = npu_env_string("GGML_NPU_SHAPE_TABLE_JSON");
+    if (table.path.empty()) {
+        return table;
+    }
+
+    std::ifstream in(table.path);
+    if (!in) {
+        std::fprintf(stderr, "%s: failed to open GGML_NPU_SHAPE_TABLE_JSON=%s\n", __func__, table.path.c_str());
+        return table;
+    }
+
+    json root;
+    try {
+        in >> root;
+    } catch (const std::exception & e) {
+        std::fprintf(stderr, "%s: failed to parse %s: %s\n", __func__, table.path.c_str(), e.what());
+        return table;
+    }
+
+    const json * entries_json = nullptr;
+    if (root.is_array()) {
+        entries_json = &root;
+    } else if (root.is_object() && root.contains("entries") && root["entries"].is_array()) {
+        entries_json = &root["entries"];
+    }
+    if (entries_json == nullptr) {
+        std::fprintf(stderr, "%s: shape table %s has no entries array\n", __func__, table.path.c_str());
+        return table;
+    }
+
+    for (const json & item : *entries_json) {
+        if (!item.is_object()) {
+            continue;
+        }
+        npu_shape_table_entry entry;
+        entry.weight_name = item.value("weight_name", std::string());
+        entry.m = item.value("m", int64_t(-1));
+        entry.n = item.value("n", int64_t(-1));
+        entry.k = item.value("k", int64_t(-1));
+        entry.tm = item.value("tm", int64_t(0));
+        entry.tn = item.value("tn", int64_t(0));
+        entry.tk = item.value("tk", int64_t(0));
+        entry.enabled = item.value("enabled", true);
+        if (item.contains("bias_present") && item["bias_present"].is_boolean()) {
+            entry.bias_present = item["bias_present"].get<bool>();
+            entry.has_bias_present = true;
+        }
+        if (!entry.enabled || entry.weight_name.empty() ||
+                entry.m <= 0 || entry.n <= 0 || entry.k <= 0 ||
+                entry.tm <= 0 || entry.tn <= 0 || entry.tk <= 0) {
+            continue;
+        }
+        table.entries.push_back(std::move(entry));
+    }
+
+    std::fprintf(stderr, "%s: loaded %zu NPU shape table entries from %s\n",
+            __func__, table.entries.size(), table.path.c_str());
+    return table;
+}
+
+static bool npu_lookup_shape_table_hint(
+        const struct ggml_tensor * src0,
+        int64_t m,
+        int64_t n,
+        int64_t k,
+        bool bias_present,
+        npu_shape_table_hint * out) {
+    if (src0 == nullptr || src0->name[0] == '\0') {
+        return false;
+    }
+    npu_shape_table & table = npu_get_shape_table();
+    if (table.path.empty() || table.entries.empty()) {
+        return false;
+    }
+    for (const npu_shape_table_entry & entry : table.entries) {
+        if (entry.weight_name != src0->name ||
+                entry.m != m || entry.n != n || entry.k != k ||
+                (entry.has_bias_present && entry.bias_present != bias_present)) {
+            continue;
+        }
+        if (out != nullptr) {
+            out->valid = true;
+            out->tm = entry.tm;
+            out->tn = entry.tn;
+            out->tk = entry.tk;
+            out->source = table.path;
+        }
+        return true;
+    }
+    return false;
+}
+
+static std::vector<std::pair<int64_t, int64_t>> npu_shape_table_preload_tiles(const struct ggml_tensor * src0) {
+    std::vector<std::pair<int64_t, int64_t>> result;
+    if (src0 == nullptr || src0->name[0] == '\0') {
+        return result;
+    }
+    npu_shape_table & table = npu_get_shape_table();
+    if (table.path.empty() || table.entries.empty()) {
+        return result;
+    }
+    for (const npu_shape_table_entry & entry : table.entries) {
+        if (entry.weight_name != src0->name || entry.tm <= 0 || entry.tk <= 0) {
+            continue;
+        }
+        result.push_back({ entry.tm, entry.tk });
+        break;
+    }
+    return result;
 }
 
 static int32_t npu_float_to_q8_24(float scale) {
@@ -207,30 +363,45 @@ bool npu_preload_aicas_w8a8_tensor(const struct ggml_tensor * src0, std::string 
     const int64_t k_total = src0->ne[0];
     std::vector<npu_preloaded_weight_pack_entry> packs;
     std::vector<std::vector<int8_t>> packed_bytes;
+    std::vector<std::pair<int64_t, int64_t>> preload_tiles = npu_shape_table_preload_tiles(src0);
+    const bool shape_table_enabled = !npu_get_shape_table().path.empty();
+    if (shape_table_enabled && preload_tiles.empty()) {
+        return true;
+    }
+    if (preload_tiles.empty()) {
+        preload_tiles.push_back({config.sa_cols, config.stage2_k_block});
+    }
 
-    for (int64_t m0 = 0; m0 < m_total; m0 += config.sa_cols) {
-        const int64_t m = std::min<int64_t>(config.sa_cols, m_total - m0);
-        for (int64_t k0 = 0; k0 < k_total; k0 += config.stage2_k_block) {
-            const int64_t k = std::min<int64_t>(config.stage2_k_block, k_total - k0);
-            if (npu_lookup_preloaded_weight_pack(src0, m0, m, k0, k, nullptr, nullptr)) {
-                continue;
+    for (const auto & preload_tile : preload_tiles) {
+        const int64_t tile_m = preload_tile.first;
+        const int64_t tile_k = preload_tile.second;
+        if (tile_m <= 0 || tile_k <= 0) {
+            continue;
+        }
+        for (int64_t m0 = 0; m0 < m_total; m0 += tile_m) {
+            const int64_t m = std::min<int64_t>(tile_m, m_total - m0);
+            for (int64_t k0 = 0; k0 < k_total; k0 += tile_k) {
+                const int64_t k = std::min<int64_t>(tile_k, k_total - k0);
+                if (npu_lookup_preloaded_weight_pack(src0, m0, m, k0, k, nullptr, nullptr)) {
+                    continue;
+                }
+
+                std::vector<int8_t> packed;
+                if (!npu_pack_weight_tile_prequant_i8_transposed(
+                            src0,
+                            m0,
+                            m,
+                            k0,
+                            k,
+                            &packed,
+                            error)) {
+                    return false;
+                }
+
+                const size_t offset = packs.empty() ? 0 : packs.back().offset + packs.back().bytes;
+                packs.push_back({m0, m, k0, k, offset, packed.size()});
+                packed_bytes.push_back(std::move(packed));
             }
-
-            std::vector<int8_t> packed;
-            if (!npu_pack_weight_tile_prequant_i8_transposed(
-                        src0,
-                        m0,
-                        m,
-                        k0,
-                        k,
-                        &packed,
-                        error)) {
-                return false;
-            }
-
-            const size_t offset = packs.empty() ? 0 : packs.back().offset + packs.back().bytes;
-            packs.push_back({m0, m, k0, k, offset, packed.size()});
-            packed_bytes.push_back(std::move(packed));
         }
     }
 
@@ -1205,7 +1376,15 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     int64_t first_stage_tn = 0;
     int64_t first_stage_tk = 0;
     npu_gemm_tiling_result tiling;
-    if (plan.use_gemm_plan) {
+    npu_shape_table_hint shape_hint;
+    if (plan.use_gemm_plan &&
+            npu_lookup_shape_table_hint(plan.src0, plan.m, plan.n, plan.k, plan.bias != nullptr, &shape_hint)) {
+        first_stage_tm = shape_hint.tm;
+        first_stage_tn = shape_hint.tn;
+        first_stage_tk = shape_hint.tk;
+        plan.shape_table_hit = true;
+        plan.shape_table_source = shape_hint.source;
+    } else if (plan.use_gemm_plan) {
         const int64_t usable_spm = static_cast<int64_t>(plan.config.spm_bytes > plan.config.guard_bytes
             ? plan.config.spm_bytes - plan.config.guard_bytes
             : plan.config.spm_bytes);
@@ -1416,6 +1595,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         << ", macro_tn=" << first_stage_tn
         << ", macro_tk=" << plan.config.k_block
         << ", gemm_api=" << (plan.use_gemm_plan ? "gemm_plan" : "legacy_gemm")
+        << ", shape_table_hit=" << (plan.shape_table_hit ? "true" : "false")
         << ", stationary=" << (plan.use_gemm_plan ? npu_stationary_mode_name(tiling.mode) : "legacy_micro")
         << ", tiling_cost=" << (tiling.valid ? tiling.cost : 0.0)
         << ", q_data=" << (tiling.valid ? tiling.q_data : 0)

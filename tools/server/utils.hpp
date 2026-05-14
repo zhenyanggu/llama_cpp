@@ -31,6 +31,7 @@
 #include <cinttypes>
 #include <fstream>
 #include <cstdlib>
+#include <cstring>
 
 #define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
 
@@ -63,6 +64,11 @@ static bool server_mtmd_profile_enabled() {
     return !path.empty();
 }
 
+static bool server_mtmd_merge_prefill_enabled() {
+    const char * value = std::getenv("LLAMA_MTMD_MERGE_PREFILL");
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
 struct server_mtmd_prefill_profile {
     bool enabled = false;
     bool has_media = false;
@@ -74,6 +80,10 @@ struct server_mtmd_prefill_profile {
     int64_t mmproj_encode_us = 0;
     int64_t media_decode_us = 0;
     int64_t media_process_us = 0;
+    bool merged_prefill = false;
+    int64_t merged_tokens = 0;
+    int64_t text_tokens = 0;
+    int64_t merged_decode_us = 0;
 #ifdef GGML_USE_NPU
     ggml_npu_profile_summary npu = {};
 #endif
@@ -89,6 +99,10 @@ struct server_mtmd_prefill_profile {
         mmproj_encode_us = 0;
         media_decode_us = 0;
         media_process_us = 0;
+        merged_prefill = false;
+        merged_tokens = 0;
+        text_tokens = 0;
+        merged_decode_us = 0;
 #ifdef GGML_USE_NPU
         npu = {};
 #endif
@@ -175,6 +189,17 @@ struct server_mtmd_prefill_profile {
 #endif
     }
 
+    void set_merged_prefill(int64_t n_merged_tokens, int64_t n_text_tokens, int64_t decode_us) {
+        if (!enabled) {
+            return;
+        }
+
+        merged_prefill = true;
+        merged_tokens = n_merged_tokens;
+        text_tokens = n_text_tokens;
+        merged_decode_us = decode_us;
+    }
+
     json to_json(
             double prefill_total_us,
             int32_t prompt_tokens_processed,
@@ -258,6 +283,9 @@ struct server_mtmd_prefill_profile {
             {"prefill_total_us", static_cast<int64_t>(prefill_total_us)},
             {"mmproj", {
                 {"has_media", has_media},
+                {"merged_prefill", merged_prefill},
+                {"merged_tokens", merged_tokens},
+                {"text_tokens", text_tokens},
                 {"media_chunk_count", media_chunk_count},
                 {"image_chunk_count", image_chunk_count},
                 {"audio_chunk_count", audio_chunk_count},
@@ -265,6 +293,7 @@ struct server_mtmd_prefill_profile {
                 {"media_positions", media_positions},
                 {"encode_us", mmproj_encode_us},
                 {"decode_us", media_decode_us},
+                {"merged_decode_us", merged_decode_us},
                 {"total_chunk_us", media_process_us},
             }},
             {"npu", npu_json},
@@ -1424,6 +1453,21 @@ public:
         }
     }
 
+    void push_back_all_to(server_tokens & dst) const {
+        GGML_ASSERT(!has_mtmd || dst.has_mtmd);
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const llama_token tok = tokens[i];
+            if (tok != LLAMA_TOKEN_NULL) {
+                dst.push_back(tok);
+                continue;
+            }
+
+            const auto & chunk = find_chunk(i);
+            dst.push_back(chunk.get());
+            i += mtmd_input_chunk_get_n_pos(chunk.get()) - 1;
+        }
+    }
+
     // for compatibility with context shift and prompt truncation
     void insert(const llama_tokens & inp_tokens) {
         GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
@@ -1444,6 +1488,10 @@ public:
 
     size_t size() const {
         return tokens.size();
+    }
+
+    bool has_media() const {
+        return has_mtmd && !map_pos_to_media.empty();
     }
 
     bool empty() const {
@@ -1655,6 +1703,147 @@ public:
 
         n_pos_out = new_n_past;
         return 0;
+    }
+
+    bool process_merged_prefill(
+                llama_context * ctx,
+                mtmd_context * mctx,
+                int32_t seq_id,
+                llama_pos & n_pos_out,
+                int32_t & result,
+                server_mtmd_prefill_profile * profile = nullptr) const {
+        if (!server_mtmd_merge_prefill_enabled() || !has_media() || mctx == nullptr) {
+            return false;
+        }
+        if (mtmd_decode_use_mrope(mctx) || mtmd_decode_use_non_causal(mctx)) {
+            return false;
+        }
+        if (tokens.empty() || tokens.size() > (size_t) llama_n_batch(ctx)) {
+            return false;
+        }
+
+        const llama_model * model = llama_get_model(ctx);
+        const int32_t n_embd = llama_model_n_embd(model);
+        std::vector<float> embd_all(tokens.size() * (size_t) n_embd);
+
+        size_t cursor = 0;
+        int64_t text_token_count = 0;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const llama_token tok = tokens[i];
+            if (tok != LLAMA_TOKEN_NULL) {
+                float * out = embd_all.data() + cursor * (size_t) n_embd;
+                if (!llama_model_get_token_embedding(model, tok, out, n_embd)) {
+                    SRV_INF("%s", "merged prefill disabled: token embedding lookup is unsupported for this model\n");
+                    return false;
+                }
+                ++cursor;
+                ++text_token_count;
+                continue;
+            }
+
+            const auto & chunk = find_chunk(i);
+            const mtmd_input_chunk_type type = mtmd_input_chunk_get_type(chunk.get());
+            if (type != MTMD_INPUT_CHUNK_TYPE_IMAGE && type != MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+                return false;
+            }
+
+            const int32_t n_pos = mtmd_input_chunk_get_n_pos(chunk.get());
+            const int32_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk.get());
+            if (n_pos != n_tokens || i + (size_t) n_pos > tokens.size()) {
+                return false;
+            }
+
+            const char * name = type == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" : "audio";
+            const int64_t t0 = ggml_time_ms();
+            SRV_INF("encoding %s slice for merged prefill...\n", name);
+#ifdef GGML_USE_NPU
+            const bool collect_npu_summary = profile != nullptr && profile->enabled;
+            ggml_npu_profile_summary npu_summary = {};
+            if (collect_npu_summary) {
+                ggml_backend_npu_profile_summary_start();
+            }
+#endif
+            const int64_t encode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
+            result = mtmd_encode_chunk(mctx, chunk.get());
+            const int64_t encode_us = profile != nullptr && profile->enabled ? (ggml_time_us() - encode_start_us) : 0;
+#ifdef GGML_USE_NPU
+            if (collect_npu_summary) {
+                ggml_backend_npu_profile_summary_stop(&npu_summary);
+            }
+#endif
+            if (result != 0) {
+                SRV_ERR("failed to encode %s slice for merged prefill\n", name);
+                return true;
+            }
+            SRV_INF("%s slice encoded for merged prefill in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
+
+            if (profile != nullptr && profile->enabled) {
+                profile->add_chunk(
+                        chunk.get(),
+                        encode_us,
+                        0,
+                        encode_us
+#ifdef GGML_USE_NPU
+                        , npu_summary
+#endif
+                        );
+            }
+
+            float * embd = mtmd_get_output_embd(mctx);
+            if (!embd) {
+                SRV_ERR("failed to get %s embeddings for merged prefill\n", name);
+                result = -1;
+                return true;
+            }
+
+            std::copy(embd, embd + (size_t) n_tokens * n_embd, embd_all.begin() + cursor * (size_t) n_embd);
+            cursor += n_tokens;
+            i += (size_t) n_pos - 1;
+        }
+
+        if (cursor != tokens.size()) {
+            return false;
+        }
+
+        std::vector<llama_pos> pos(tokens.size());
+        std::vector<int32_t> n_seq_id(tokens.size(), 1);
+        std::vector<llama_seq_id> seq_id_0(1, seq_id);
+        std::vector<llama_seq_id *> seq_ids(tokens.size() + 1);
+        std::vector<int8_t> logits(tokens.size(), false);
+
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            pos[i] = (llama_pos) i;
+            seq_ids[i] = seq_id_0.data();
+        }
+        seq_ids[tokens.size()] = nullptr;
+        logits.back() = true;
+
+        llama_batch batch = {
+            /*n_tokens       =*/ (int32_t) tokens.size(),
+            /*tokens         =*/ nullptr,
+            /*embd           =*/ embd_all.data(),
+            /*pos            =*/ pos.data(),
+            /*n_seq_id       =*/ n_seq_id.data(),
+            /*seq_id         =*/ seq_ids.data(),
+            /*logits         =*/ logits.data(),
+        };
+
+        SRV_INF("decoding merged multimodal prefill, n_tokens = %zu\n", tokens.size());
+        const int64_t t1 = ggml_time_ms();
+        const int64_t decode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
+        result = llama_decode(ctx, batch);
+        const int64_t decode_us = profile != nullptr && profile->enabled ? (ggml_time_us() - decode_start_us) : 0;
+        if (result != 0) {
+            SRV_ERR("failed to decode merged multimodal prefill, res = %d\n", result);
+            return true;
+        }
+
+        SRV_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
+        if (profile != nullptr && profile->enabled) {
+            profile->set_merged_prefill((int64_t) tokens.size(), text_token_count, decode_us);
+        }
+        n_pos_out = (llama_pos) tokens.size();
+        return true;
     }
 };
 

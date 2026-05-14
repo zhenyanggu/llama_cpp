@@ -14,12 +14,30 @@
 #include <cmath>
 #include <cstring>
 #include <cinttypes>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <unordered_map>
 
 namespace {
+
+#ifdef GGML_USE_NPU
+extern "C" bool ggml_backend_npu_w8a8_register(
+        const char * weight_name,
+        float act_scale,
+        int32_t act_scale_q8_24,
+        int32_t act_zero_point_u8,
+        const float * weight_scale,
+        size_t weight_scale_len,
+        const int32_t * sum_w,
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len);
+#endif
 
 struct llama_text_activation_stats {
     uint64_t count = 0;
@@ -133,6 +151,220 @@ static bool llama_text_decode_awq_enabled() {
         return std::strcmp(value, "0") != 0;
     }();
     return enabled;
+}
+
+struct llama_npu_shape_key {
+    std::string weight_name;
+    int64_t m = 0;
+    int64_t n = 0;
+    int64_t k = 0;
+    bool bias_present = false;
+
+    std::string str() const {
+        return weight_name + "|m=" + std::to_string(m) +
+            "|n=" + std::to_string(n) +
+            "|k=" + std::to_string(k) +
+            "|bias=" + (bias_present ? "1" : "0");
+    }
+};
+
+struct llama_npu_shape_table_state {
+    std::once_flag load_once;
+    std::mutex mutex;
+    std::string table_path;
+    std::string record_path;
+    std::set<std::string> enabled_keys;
+    std::set<std::string> recorded_keys;
+    std::vector<std::string> recorded_entries;
+};
+
+static llama_npu_shape_table_state & llama_npu_shape_state() {
+    static llama_npu_shape_table_state state;
+    return state;
+}
+
+static bool llama_npu_json_get_string(const std::string & object, const char * key, std::string * out) {
+    const std::regex re(std::string("\"") + key + "\"\\s*:\\s*\"([^\"]*)\"");
+    std::smatch match;
+    if (!std::regex_search(object, match, re)) {
+        return false;
+    }
+    *out = match[1].str();
+    return true;
+}
+
+static int64_t llama_npu_json_get_i64(const std::string & object, const char * key, int64_t fallback) {
+    const std::regex re(std::string("\"") + key + "\"\\s*:\\s*(-?[0-9]+)");
+    std::smatch match;
+    if (!std::regex_search(object, match, re)) {
+        return fallback;
+    }
+    return std::strtoll(match[1].str().c_str(), nullptr, 10);
+}
+
+static bool llama_npu_json_get_bool(const std::string & object, const char * key, bool fallback) {
+    const std::regex re(std::string("\"") + key + "\"\\s*:\\s*(true|false)");
+    std::smatch match;
+    if (!std::regex_search(object, match, re)) {
+        return fallback;
+    }
+    return match[1].str() == "true";
+}
+
+static std::string llama_npu_json_escape(const std::string & s) {
+    std::ostringstream out;
+    for (const char c : s) {
+        switch (c) {
+            case '\\': out << "\\\\"; break;
+            case '"':  out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:   out << c; break;
+        }
+    }
+    return out.str();
+}
+
+static void llama_npu_shape_load_once() {
+    llama_npu_shape_table_state & state = llama_npu_shape_state();
+    state.table_path = std::getenv("GGML_NPU_SHAPE_TABLE_JSON") ? std::getenv("GGML_NPU_SHAPE_TABLE_JSON") : "";
+    state.record_path = std::getenv("GGML_NPU_SHAPE_RECORD_JSON") ? std::getenv("GGML_NPU_SHAPE_RECORD_JSON") : "";
+
+    if (!state.table_path.empty()) {
+        std::ifstream in(state.table_path);
+        if (in) {
+            try {
+                std::ostringstream buffer;
+                buffer << in.rdbuf();
+                const std::string text = buffer.str();
+                const std::regex object_re("\\{[^{}]*\\}");
+                for (auto it = std::sregex_iterator(text.begin(), text.end(), object_re);
+                        it != std::sregex_iterator(); ++it) {
+                    const std::string object = it->str();
+                    if (!llama_npu_json_get_bool(object, "enabled", true)) {
+                        continue;
+                    }
+                    llama_npu_shape_key key;
+                    if (!llama_npu_json_get_string(object, "weight_name", &key.weight_name)) {
+                        continue;
+                    }
+                    key.m = llama_npu_json_get_i64(object, "m", 0);
+                    key.n = llama_npu_json_get_i64(object, "n", 0);
+                    key.k = llama_npu_json_get_i64(object, "k", 0);
+                    key.bias_present = llama_npu_json_get_bool(object, "bias_present", false);
+                    if (!key.weight_name.empty() && key.m > 0 && key.n > 0 && key.k > 0) {
+                        state.enabled_keys.insert(key.str());
+                    }
+                }
+            } catch (const std::exception & e) {
+                LLAMA_LOG_WARN("%s: failed to parse GGML_NPU_SHAPE_TABLE_JSON=%s: %s\n",
+                        __func__, state.table_path.c_str(), e.what());
+            }
+        } else {
+            LLAMA_LOG_WARN("%s: failed to open GGML_NPU_SHAPE_TABLE_JSON=%s\n",
+                    __func__, state.table_path.c_str());
+        }
+    }
+}
+
+static bool llama_npu_shape_table_hit(const llama_npu_shape_key & key) {
+    llama_npu_shape_table_state & state = llama_npu_shape_state();
+    std::call_once(state.load_once, llama_npu_shape_load_once);
+    if (state.table_path.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return state.enabled_keys.find(key.str()) != state.enabled_keys.end();
+}
+
+static bool llama_npu_text_prefill_dynamic_enabled() {
+    const char * value = std::getenv("GGML_NPU_TEXT_PREFILL_DYNAMIC");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+}
+
+static void llama_npu_record_shape(
+        const llama_npu_shape_key & key,
+        const char * source,
+        const llama_aicas_text_sq_tensor & cfg) {
+    llama_npu_shape_table_state & state = llama_npu_shape_state();
+    std::call_once(state.load_once, llama_npu_shape_load_once);
+    if (state.record_path.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!state.recorded_keys.insert(key.str()).second) {
+        return;
+    }
+
+    std::ostringstream entry;
+    entry << "    {\n"
+          << "      \"weight_name\": \"" << llama_npu_json_escape(key.weight_name) << "\",\n"
+          << "      \"m\": " << key.m << ",\n"
+          << "      \"n\": " << key.n << ",\n"
+          << "      \"k\": " << key.k << ",\n"
+          << "      \"bias_present\": " << (key.bias_present ? "true" : "false") << ",\n"
+          << "      \"src_type\": \"I8\",\n"
+          << "      \"dst_type\": \"F32\",\n"
+          << "      \"quant_schema\": \"aicas_text_w8a8\",\n"
+          << "      \"act_quant_mode\": \"" << llama_npu_json_escape(cfg.act_quant_mode) << "\",\n"
+          << "      \"weight_scale_mode\": \"" << llama_npu_json_escape(cfg.weight_scale_mode) << "\",\n"
+          << "      \"source\": \"" << llama_npu_json_escape(source ? source : "text_prefill_w8a8") << "\",\n"
+          << "      \"enabled\": true,\n"
+          << "      \"tm\": 0,\n"
+          << "      \"tn\": 0,\n"
+          << "      \"tk\": 0\n"
+          << "    }";
+    state.recorded_entries.push_back(entry.str());
+
+    std::ofstream out(state.record_path);
+    if (!out) {
+        LLAMA_LOG_WARN("%s: failed to write GGML_NPU_SHAPE_RECORD_JSON=%s\n",
+                __func__, state.record_path.c_str());
+        return;
+    }
+    out << "{\n"
+        << "  \"version\": 1,\n"
+        << "  \"note\": \"Fill tm/tn/tk before using this file as GGML_NPU_SHAPE_TABLE_JSON.\",\n"
+        << "  \"entries\": [\n";
+    for (size_t i = 0; i < state.recorded_entries.size(); ++i) {
+        out << state.recorded_entries[i];
+        if (i + 1 < state.recorded_entries.size()) {
+            out << ",";
+        }
+        out << "\n";
+    }
+    out << "  ]\n"
+        << "}\n";
+}
+
+static bool llama_register_text_w8a8_for_npu(
+        const llama_npu_shape_key & key,
+        const llama_aicas_text_sq_tensor & cfg) {
+#ifdef GGML_USE_NPU
+    if (cfg.weight_scale.empty() || cfg.sum_w.empty()) {
+        return false;
+    }
+    if (cfg.act_scale <= 0.0f || cfg.act_zero_point < 0 || cfg.act_zero_point > 255) {
+        return false;
+    }
+    return ggml_backend_npu_w8a8_register(
+            key.weight_name.c_str(),
+            cfg.act_scale,
+            0,
+            cfg.act_zero_point,
+            cfg.weight_scale.data(),
+            cfg.weight_scale.size(),
+            cfg.sum_w.data(),
+            cfg.sum_w.size(),
+            cfg.smooth_scale.empty() ? nullptr : cfg.smooth_scale.data(),
+            cfg.smooth_scale.size());
+#else
+    GGML_UNUSED(key);
+    GGML_UNUSED(cfg);
+    return false;
+#endif
 }
 
 static void llama_compute_text_w8a8_mul_mat(
@@ -1110,15 +1342,37 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             cur->ne[0] == cfg.quant_tensor->ne[0] &&
             cfg.smooth_scale.size() == static_cast<size_t>(cur->ne[0]) &&
             cfg.weight_scale.size() == cfg.expected_weight_scale_len(cfg.quant_tensor->ne[1])) {
-            ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur->ne[1]);
-            res = ggml_map_custom3(
-                ctx0,
-                out_template,
-                cur,
-                cfg.quant_tensor,
-                llama_compute_text_w8a8_mul_mat,
-                GGML_N_TASKS_MAX,
-                const_cast<llama_aicas_text_sq_tensor *>(&cfg));
+            const llama_npu_shape_key npu_shape_key {
+                ggml_get_name(cfg.quant_tensor),
+                cfg.quant_tensor->ne[1],
+                cur->ne[1],
+                cur->ne[0],
+                false,
+            };
+            if (is_prefill_gemm) {
+                llama_npu_record_shape(npu_shape_key, "text_prefill_w8a8", cfg);
+            }
+            const bool npu_shape_hit = is_prefill_gemm && llama_npu_shape_table_hit(npu_shape_key);
+            const bool npu_dynamic = is_prefill_gemm && !npu_shape_hit && llama_npu_text_prefill_dynamic_enabled();
+            if ((npu_shape_hit || npu_dynamic) && llama_register_text_w8a8_for_npu(npu_shape_key, cfg)) {
+                ggml_tensor * npu_cur = cur;
+                if (!ggml_is_contiguous(npu_cur) || npu_cur->view_src != nullptr) {
+                    npu_cur = ggml_cont(ctx0, npu_cur);
+                    ggml_set_name(npu_cur, "text_w8a8_npu_cont");
+                }
+                res = ggml_mul_mat(ctx0, cfg.quant_tensor, npu_cur);
+                ggml_set_name(res, npu_shape_hit ? "text_w8a8_mul_mat_npu" : "text_w8a8_mul_mat_npu_dynamic");
+            } else {
+                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur->ne[1]);
+                res = ggml_map_custom3(
+                    ctx0,
+                    out_template,
+                    cur,
+                    cfg.quant_tensor,
+                    llama_compute_text_w8a8_mul_mat,
+                    GGML_N_TASKS_MAX,
+                    const_cast<llama_aicas_text_sq_tensor *>(&cfg));
+            }
         }
     }
 

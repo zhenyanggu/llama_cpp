@@ -23,6 +23,8 @@ Options:
   --sudo-password <password>    Board sudo password (default: 123456)
   --port <port>                 llama-server port (default: 8080)
   --threads <n>                 llama-server threads (default: 4)
+  --ubatch-size <n>             llama-server physical ubatch size (default: 1024)
+  --mtmd-backend-device <name>  MTMD_BACKEND_DEVICE for mmproj (default: NPU)
   --alias <name>                Model alias (default: smolvlm2-gguf)
   --output-dir <path>           Local results root
   --run-id <id>                 Override run id
@@ -35,6 +37,13 @@ Options:
   --throughput-profile-prompt <text>
                                 Prompt for profiled pass (default: short image description)
   --npu-profile-level <level>   GGML_NPU_PROFILE_LEVEL for profile pass (default: diagnostic)
+  --npu-shape-table <path>      Optional GGML_NPU_SHAPE_TABLE_JSON file for text W8A8 GEMM fast path
+  --npu-shape-record            Record observed text W8A8 GEMM shapes to results/npu_shape_record.json
+  --trace-ubatch                Record pre/post microbatch sizes to results/ubatch_trace.jsonl
+  --merge-prefill               Merge multimodal prompt into one embedding prefill (default)
+  --no-merge-prefill            Disable merged multimodal embedding prefill
+  --npu-text-prefill-dynamic    Enable dynamic NPU text prefill GEMM shapes (default)
+  --no-npu-text-prefill-dynamic Disable dynamic NPU text prefill GEMM shapes
   --acc-sample-mode <mode>      available|official (default: available)
   --force-sync-shared           Re-upload shared assets even if same-size files exist
   --power-path <path>           Board hwmon path
@@ -47,6 +56,7 @@ USAGE
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CODE_DIR="$REPO_DIR/AICAS2026/aicas_semi/code"
+DEFAULT_NPU_SHAPE_TABLE="$REPO_DIR/AICAS2026/aicas_semi/config/semi_npu_shapes.json"
 
 HOST="192.168.0.10"
 USER_NAME="ubuntu"
@@ -61,6 +71,8 @@ OVERLAY_APP=""
 SUDO_PASSWORD="${BOARD_SUDO_PASSWORD:-123456}"
 PORT="8080"
 THREADS="4"
+UBATCH_SIZE="1024"
+MTMD_BACKEND_DEVICE="NPU"
 MODEL_ALIAS="smolvlm2-gguf"
 OUTPUT_ROOT="$REPO_DIR/AICAS2026/aicas_semi/results/kv260"
 RUN_ID=""
@@ -70,6 +82,14 @@ THROUGHPUT_PROFILE_ONLY=0
 THROUGHPUT_PROFILE_MAX_TOKENS="1"
 THROUGHPUT_PROFILE_PROMPT="Describe this image briefly."
 NPU_PROFILE_LEVEL="diagnostic"
+NPU_SHAPE_TABLE=""
+if [ -f "$DEFAULT_NPU_SHAPE_TABLE" ]; then
+  NPU_SHAPE_TABLE="$DEFAULT_NPU_SHAPE_TABLE"
+fi
+NPU_SHAPE_RECORD=0
+TRACE_UBATCH=0
+MERGE_PREFILL=1
+NPU_TEXT_PREFILL_DYNAMIC=1
 ACC_SAMPLE_MODE="available"
 FORCE_SYNC_SHARED=0
 POWER_PATH="/sys/class/hwmon/hwmon2/power1_input"
@@ -98,6 +118,8 @@ while [ $# -gt 0 ]; do
     --sudo-password) SUDO_PASSWORD="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --threads) THREADS="$2"; shift 2 ;;
+    --ubatch-size) UBATCH_SIZE="$2"; shift 2 ;;
+    --mtmd-backend-device) MTMD_BACKEND_DEVICE="$2"; shift 2 ;;
     --alias) MODEL_ALIAS="$2"; shift 2 ;;
     --output-dir) OUTPUT_ROOT="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
@@ -108,6 +130,13 @@ while [ $# -gt 0 ]; do
     --throughput-profile-max-tokens) THROUGHPUT_PROFILE_MAX_TOKENS="$2"; shift 2 ;;
     --throughput-profile-prompt) THROUGHPUT_PROFILE_PROMPT="$2"; shift 2 ;;
     --npu-profile-level) NPU_PROFILE_LEVEL="$2"; shift 2 ;;
+    --npu-shape-table) NPU_SHAPE_TABLE="$2"; shift 2 ;;
+    --npu-shape-record) NPU_SHAPE_RECORD=1; shift ;;
+    --trace-ubatch) TRACE_UBATCH=1; shift ;;
+    --merge-prefill) MERGE_PREFILL=1; shift ;;
+    --no-merge-prefill) MERGE_PREFILL=0; shift ;;
+    --npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=1; shift ;;
+    --no-npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=0; shift ;;
     --acc-sample-mode) ACC_SAMPLE_MODE="$2"; shift 2 ;;
     --force-sync-shared) FORCE_SYNC_SHARED=1; shift ;;
     --power-path) POWER_PATH="$2"; shift 2 ;;
@@ -131,9 +160,26 @@ case "$ACC_SAMPLE_MODE" in
     ;;
 esac
 
+case "$UBATCH_SIZE" in
+  ''|*[!0-9]*)
+    echo "--ubatch-size must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$UBATCH_SIZE" -le 0 ]; then
+      echo "--ubatch-size must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 TARGET="$USER_NAME@$HOST"
 MODEL_PATH="$(realpath "$MODEL_PATH")"
 MMPROJ_PATH="$(realpath "$MMPROJ_PATH")"
+THROUGHPUT_PROFILE_PROMPT_B64="$(printf '%s' "$THROUGHPUT_PROFILE_PROMPT" | base64 -w0)"
+if [ -n "$NPU_SHAPE_TABLE" ]; then
+  NPU_SHAPE_TABLE="$(realpath "$NPU_SHAPE_TABLE")"
+fi
 mkdir -p "$OUTPUT_ROOT"
 OUTPUT_ROOT="$(realpath -m "$OUTPUT_ROOT")"
 
@@ -165,6 +211,12 @@ REMOTE_MTMD_SUMMARY="$REMOTE_RESULTS_DIR/mtmd_prefill_summary.json"
 REMOTE_NPU_PROFILE_JSON="$REMOTE_RESULTS_DIR/ggml_npu_profile.json"
 REMOTE_NPU_PROFILE_MANIFEST="$REMOTE_RESULTS_DIR/ggml_npu_profile_manifest.json"
 REMOTE_PROFILE_SERVER_LOG="$REMOTE_RUN_DIR/server_profile.log"
+REMOTE_NPU_SHAPE_TABLE=""
+if [ -n "$NPU_SHAPE_TABLE" ]; then
+  REMOTE_NPU_SHAPE_TABLE="$REMOTE_CODE_DIR/$(basename "$NPU_SHAPE_TABLE")"
+fi
+REMOTE_NPU_SHAPE_RECORD="$REMOTE_RESULTS_DIR/npu_shape_record.json"
+REMOTE_UBATCH_TRACE="$REMOTE_RESULTS_DIR/ubatch_trace.jsonl"
 
 copy_once_by_size() {
   local src="$1"
@@ -358,6 +410,9 @@ stage_remote_tree() {
   scp "${SSH_OPTS[@]}" "$CODE_DIR/"*.py "$TARGET:$REMOTE_CODE_DIR/"
   scp "${SSH_OPTS[@]}" "$LOCAL_STAGE_DIR/test2.jpg" "$LOCAL_STAGE_DIR/small.jpg" "$LOCAL_STAGE_DIR/ttft_config.remote.json" "$TARGET:$REMOTE_CODE_DIR/"
   scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/run_semi_eval.sh" "$TARGET:$REMOTE_RUN_DIR/"
+  if [ -n "$NPU_SHAPE_TABLE" ]; then
+    scp "${SSH_OPTS[@]}" "$NPU_SHAPE_TABLE" "$TARGET:$REMOTE_NPU_SHAPE_TABLE"
+  fi
 
   if [ "$RUN_ACC" -eq 1 ]; then
     ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p '$REMOTE_DATA_DIR'"
@@ -383,18 +438,21 @@ run_remote_eval() {
     if [ -n "$REMOTE_SAMPLE_JSON" ]; then
       remote_sample_flag="--sample-json '$REMOTE_SAMPLE_JSON'"
     fi
+  else
+    remote_acc_flag="--skip-acc"
   fi
 
   if [ -n "$ACC_ORI" ]; then
     remote_acc_ori_flag="--acc-ori '$ACC_ORI'"
   fi
 
-  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' PORT='$PORT' THREADS='$THREADS' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT='$THROUGHPUT_PROFILE_PROMPT' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' bash -s" <<EOF
+  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' bash -s" <<EOF
 set -euo pipefail
 
 cd "\$RUN_DIR"
 rm -f server.log server.pid
 mkdir -p results
+THROUGHPUT_PROFILE_PROMPT="\$(printf '%s' "\$THROUGHPUT_PROFILE_PROMPT_B64" | base64 -d)"
 
 cleanup() {
   if [ -f server.pid ]; then
@@ -450,12 +508,26 @@ start_server() {
   echo "\$SUDO_PASSWORD" | sudo -S pkill -f "./llama-server --host 127.0.0.1 --port \$PORT" >/dev/null 2>&1 || true
 
   local profile_env=""
+  local npu_shape_env=""
+  local ubatch_trace_env=""
+  local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
+  if [ -n "\$REMOTE_NPU_SHAPE_TABLE" ]; then
+    npu_shape_env="GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=1 GGML_NPU_SHAPE_TABLE_JSON='\$REMOTE_NPU_SHAPE_TABLE'"
+  fi
+  if [ "\$NPU_SHAPE_RECORD" = "1" ]; then
+    rm -f "\$REMOTE_NPU_SHAPE_RECORD"
+    npu_shape_env="\$npu_shape_env GGML_NPU_SHAPE_RECORD_JSON='\$REMOTE_NPU_SHAPE_RECORD'"
+  fi
   if [ "\$enable_profile" = "1" ]; then
     rm -f "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST"
     profile_env="LLAMA_MTMD_PREFILL_SUMMARY_JSON='\$REMOTE_MTMD_SUMMARY' GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL='\$NPU_PROFILE_LEVEL'"
   fi
+  if [ "\$TRACE_UBATCH" = "1" ]; then
+    rm -f "\$REMOTE_UBATCH_TRACE"
+    ubatch_trace_env="LLAMA_UBATCH_TRACE_JSONL='\$REMOTE_UBATCH_TRACE'"
+  fi
 
-  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE=NPU \$profile_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
+  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$text_prefill_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
 
   if ! wait_ready; then
     tail -n 120 "\$log_path" >&2 || true

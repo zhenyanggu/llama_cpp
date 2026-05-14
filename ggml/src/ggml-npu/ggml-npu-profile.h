@@ -68,6 +68,8 @@ struct npu_profile_node_record {
     int64_t n = 0;
     int64_t k = 0;
     bool use_aicas_w8a8 = false;
+    bool shape_table_hit = false;
+    std::string shape_table_source;
     float activation_scale = 0.0f;
     int32_t activation_zero_point = 0;
     int64_t first_stage_tm = 0;

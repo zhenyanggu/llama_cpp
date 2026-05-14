@@ -161,6 +161,8 @@ struct npu_node_plan {
     int64_t first_stage_tk = 0;
     bool use_gemm_plan = true;
     bool weight_stationary = false;
+    bool shape_table_hit = false;
+    std::string shape_table_source;
     std::vector<npu_mn_tile> mn_tiles;
     std::vector<npu_k_tile> k_tiles;
     std::vector<npu_prepacked_weight> weight_packs;

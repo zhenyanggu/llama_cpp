@@ -824,6 +824,7 @@ static void dumpProfilerReport(const char* pathOverride) {
     #define NPU_REG_LOG(offset, val, width) do {} while(0)
 #endif
 
+#define NPU_WARN(fmt, ...) fprintf(stderr, "[NPU_WARN] " fmt "\n", ##__VA_ARGS__)
 #define NPU_ERR(fmt, ...) fprintf(stderr, "[NPU_ERROR] " fmt "\n", ##__VA_ARGS__)
 
 #ifndef NPU_CAPI_TRACE
@@ -849,7 +850,8 @@ static void dumpProfilerReport(const char* pathOverride) {
 
 #define REG_MAP_OFFSET      NPU_KV260_MMAP_REGS_OFFSET
 #define REG_MAP_SIZE        NPU_KV260_REG_MMAP_SIZE
-#define DEFAULT_CMA_MAP_SIZE (256ULL * 1024ULL * 1024ULL)
+#define DEFAULT_CMA_MAP_SIZE (768ULL * 1024ULL * 1024ULL)
+#define MIN_FALLBACK_CMA_MAP_SIZE (256ULL * 1024ULL * 1024ULL)
 
 // IOCTL Commands (Must match driver)
 #define IOCTL_WAIT_IRQ      NPU_KV260_IOC_WAIT_IRQ
@@ -926,6 +928,38 @@ static uint32_t resolve_cma_request_size() {
     return static_cast<uint32_t>(size);
 }
 
+static std::vector<uint32_t> resolve_cma_request_candidates() {
+    const uint32_t requested = resolve_cma_request_size();
+    std::vector<uint32_t> candidates;
+    auto add_candidate = [&candidates](uint64_t size) {
+        if (size == 0 || size > std::numeric_limits<uint32_t>::max()) {
+            return;
+        }
+        const uint32_t size32 = static_cast<uint32_t>(size);
+        if (std::find(candidates.begin(), candidates.end(), size32) == candidates.end()) {
+            candidates.push_back(size32);
+        }
+    };
+
+    add_candidate(requested);
+
+    const uint64_t fallback_sizes[] = {
+        DEFAULT_CMA_MAP_SIZE,
+        640ULL * 1024ULL * 1024ULL,
+        512ULL * 1024ULL * 1024ULL,
+        384ULL * 1024ULL * 1024ULL,
+        MIN_FALLBACK_CMA_MAP_SIZE,
+    };
+
+    for (uint64_t size : fallback_sizes) {
+        if (size < requested) {
+            add_candidate(size);
+        }
+    }
+
+    return candidates;
+}
+
 // ==========================================
 // Lifecycle
 // ==========================================
@@ -957,10 +991,31 @@ bool NpuRuntime::init() {
         return false;
     }
 
-    // 1. 从 driver/CMA 申请 NPU 可访问的连续内存。
+    // 1. 从 driver/CMA 申请 NPU 可访问的连续内存。优先申请目标大小；
+    // 如果系统 CMA 有碎片导致大块连续申请失败，逐级降级以保持 NPU 可用。
     struct npu_kv260_buffer_request req = {};
-    req.size = resolve_cma_request_size();
-    if (ioctl(fd, NPU_KV260_IOC_ALLOC_BUFFER, &req) < 0) {
+    const std::vector<uint32_t> cma_candidates = resolve_cma_request_candidates();
+    int last_alloc_errno = 0;
+    bool cma_allocated = false;
+    for (uint32_t candidate : cma_candidates) {
+        req = {};
+        req.size = candidate;
+        if (ioctl(fd, NPU_KV260_IOC_ALLOC_BUFFER, &req) == 0) {
+            cma_allocated = true;
+            if (candidate != cma_candidates.front()) {
+                NPU_WARN("Falling back to smaller NPU CMA arena: requested %.2f MiB, allocated %.2f MiB",
+                        cma_candidates.front() / 1024.0 / 1024.0,
+                        candidate / 1024.0 / 1024.0);
+            }
+            break;
+        }
+        last_alloc_errno = errno;
+        NPU_WARN("IOCTL_ALLOC_BUFFER failed for %.2f MiB: %s",
+                candidate / 1024.0 / 1024.0,
+                std::strerror(last_alloc_errno));
+    }
+    if (!cma_allocated) {
+        errno = last_alloc_errno;
         perror("IOCTL_ALLOC_BUFFER failed");
         close(fd); fd = -1;
         return false;

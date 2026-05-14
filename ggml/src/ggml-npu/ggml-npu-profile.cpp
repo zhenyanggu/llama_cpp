@@ -261,6 +261,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"n", node.n},
         {"k", node.k},
         {"use_aicas_w8a8", node.use_aicas_w8a8},
+        {"shape_table_hit", node.shape_table_hit},
+        {"shape_table_source", node.shape_table_source.empty() ? nullptr : json(node.shape_table_source)},
         {"activation_scale", node.activation_scale},
         {"activation_zero_point", node.activation_zero_point},
         {"first_stage_tm", node.first_stage_tm},
@@ -327,6 +329,7 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"m", node.m},
         {"n", node.n},
         {"k", node.k},
+        {"shape_table_hit", node.shape_table_hit},
         {"total_node_us", node.total_node_us},
         {"accounted_us_total", node.accounted_us_total},
         {"unaccounted_us_total", node.unaccounted_us_total},
@@ -433,6 +436,8 @@ npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu
     record.n = plan.n;
     record.k = plan.k;
     record.use_aicas_w8a8 = plan.aicas_w8a8.valid;
+    record.shape_table_hit = plan.shape_table_hit;
+    record.shape_table_source = plan.shape_table_source;
     record.activation_scale = plan.activation_quant.scale;
     record.activation_zero_point = plan.activation_quant.zero_point;
     record.first_stage_tm = plan.first_stage_tm;

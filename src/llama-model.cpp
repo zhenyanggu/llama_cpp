@@ -25,6 +25,21 @@
 #include <sstream>
 #include <stdexcept>
 
+#ifdef GGML_USE_NPU
+extern "C" bool ggml_backend_npu_w8a8_register(
+        const char * weight_name,
+        float act_scale,
+        int32_t act_scale_q8_24,
+        int32_t act_zero_point_u8,
+        const float * weight_scale,
+        size_t weight_scale_len,
+        const int32_t * sum_w,
+        size_t sum_w_len,
+        const float * smooth_scale,
+        size_t smooth_scale_len);
+extern "C" bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor);
+#endif
+
 const char * llm_type_name(llm_type type) {
     switch (type) {
         case LLM_TYPE_14M:           return "14M";
@@ -6418,6 +6433,60 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             return false;
         }
     }
+
+#ifdef GGML_USE_NPU
+    if (aicas_text_sq_enabled) {
+        const char * preload_env = std::getenv("GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD");
+        const bool preload = preload_env != nullptr && preload_env[0] != '\0' && std::strcmp(preload_env, "0") != 0;
+        int registered = 0;
+        int register_failed = 0;
+        int preloaded = 0;
+        int preload_failed = 0;
+        for (const auto & kv : aicas_text_sq_tensors) {
+            const llama_aicas_text_sq_tensor & cfg = kv.second;
+            if (!cfg.enabled ||
+                    cfg.policy != "W8A8" ||
+                    cfg.quant_tensor == nullptr ||
+                    cfg.quant_tensor->type != GGML_TYPE_I8 ||
+                    cfg.act_scale <= 0.0f ||
+                    cfg.act_zero_point < 0 ||
+                    cfg.act_zero_point > 255 ||
+                    cfg.weight_scale.empty() ||
+                    cfg.sum_w.empty()) {
+                continue;
+            }
+            const bool ok = ggml_backend_npu_w8a8_register(
+                    ggml_get_name(cfg.quant_tensor),
+                    cfg.act_scale,
+                    0,
+                    cfg.act_zero_point,
+                    cfg.weight_scale.data(),
+                    cfg.weight_scale.size(),
+                    cfg.sum_w.data(),
+                    cfg.sum_w.size(),
+                    cfg.smooth_scale.empty() ? nullptr : cfg.smooth_scale.data(),
+                    cfg.smooth_scale.size());
+            if (ok) {
+                ++registered;
+                if (preload) {
+                    if (ggml_backend_npu_w8a8_preload(cfg.quant_tensor)) {
+                        ++preloaded;
+                    } else {
+                        ++preload_failed;
+                    }
+                }
+            } else {
+                ++register_failed;
+            }
+        }
+        LLAMA_LOG_INFO("%s: registered %d AICAS text W8A8 tensors for NPU (%d failed)\n",
+                __func__, registered, register_failed);
+        if (preload) {
+            LLAMA_LOG_INFO("%s: preloaded %d AICAS text W8A8 tensors into NPU CMA (%d failed)\n",
+                    __func__, preloaded, preload_failed);
+        }
+    }
+#endif
 
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
@@ -20402,6 +20471,36 @@ int32_t llama_model_n_head_kv(const llama_model * model) {
 
 int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
+}
+
+bool llama_model_get_token_embedding(const llama_model * model, llama_token token, float * out, int32_t n_embd) {
+    if (!model || !model->tok_embd || !out) {
+        return false;
+    }
+
+    const ggml_tensor * tok_embd = model->tok_embd;
+    if (n_embd != tok_embd->ne[0]) {
+        return false;
+    }
+    if (token < 0 || token >= tok_embd->ne[1]) {
+        return false;
+    }
+
+    const size_t offset = (size_t) token * tok_embd->nb[1];
+
+    switch (tok_embd->type) {
+        case GGML_TYPE_F32:
+            ggml_backend_tensor_get(tok_embd, out, offset, (size_t) n_embd * sizeof(float));
+            return true;
+        case GGML_TYPE_F16: {
+            std::vector<ggml_fp16_t> tmp(n_embd);
+            ggml_backend_tensor_get(tok_embd, tmp.data(), offset, (size_t) n_embd * sizeof(ggml_fp16_t));
+            ggml_fp16_to_fp32_row(tmp.data(), out, n_embd);
+            return true;
+        }
+        default:
+            return false;
+    }
 }
 
 uint32_t llama_model_n_cls_out(const struct llama_model * model) {
