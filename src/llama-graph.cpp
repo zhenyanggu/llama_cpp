@@ -220,6 +220,20 @@ static float llama_decode_awq_read_scale(
     }
 }
 
+static float llama_decode_awq_read_act(
+        const struct ggml_tensor * act_tensor,
+        const char * act_col,
+        int64_t i) {
+    switch (act_tensor->type) {
+        case GGML_TYPE_F32:
+            return ((const float *) act_col)[i];
+        case GGML_TYPE_F16:
+            return ggml_fp16_to_fp32(((const ggml_fp16_t *) act_col)[i]);
+        default:
+            GGML_ABORT("unsupported AICAS text decode AWQ activation tensor type");
+    }
+}
+
 static void llama_compute_text_decode_awq_mul_mat(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -255,38 +269,49 @@ static void llama_compute_text_decode_awq_mul_mat(
     GGML_ASSERT(cfg->scale_tensor->type == GGML_TYPE_F32 || cfg->scale_tensor->type == GGML_TYPE_F16);
     GGML_ASSERT(cfg->zero_tensor->type == GGML_TYPE_F32);
 
-    const int64_t cols_per_thread = (n_cols + nth - 1) / nth;
-    const int64_t col_begin = ith * cols_per_thread;
-    const int64_t col_end = std::min(n_cols, col_begin + cols_per_thread);
-    if (col_begin >= col_end) {
+    const int64_t total_tasks = n_cols * out_channels;
+    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
+    const int64_t task_begin = ith * tasks_per_thread;
+    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
+    if (task_begin >= task_end) {
         return;
     }
 
-    for (int64_t col = col_begin; col < col_end; ++col) {
+    int64_t cached_col = -1;
+    std::vector<float> act_smooth(static_cast<size_t>(k));
+
+    for (int64_t task = task_begin; task < task_end; ++task) {
+        const int64_t col = task / out_channels;
+        const int64_t j   = task % out_channels;
         const char * act_col = (const char *) b->data + col * b->nb[1];
         float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
 
-        for (int64_t j = 0; j < out_channels; ++j) {
-            const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
-            const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
-
-            float acc = 0.0f;
-            int64_t last_g = -1;
-            float group_scale = 0.0f;
+        if (cached_col != col) {
             for (int64_t i = 0; i < k; ++i) {
-                const int64_t g = i / cfg->group_size;
-                if (g != last_g) {
-                    group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
-                    last_g = g;
-                }
-                const float act_value = act_col[i] / cfg->smooth_scale[static_cast<size_t>(i)];
+                const float act_value = llama_decode_awq_read_act(b, act_col, i);
+                act_smooth[static_cast<size_t>(i)] = act_value / cfg->smooth_scale[static_cast<size_t>(i)];
+            }
+            cached_col = col;
+        }
+
+        const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
+        const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
+
+        float acc = 0.0f;
+        const int64_t groups = cfg->zero_tensor->ne[0];
+        for (int64_t g = 0; g < groups; ++g) {
+            const int64_t start = g * cfg->group_size;
+            const int64_t end = std::min(k, start + cfg->group_size);
+            const float group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
+            const float group_zero = zero_row[g];
+            for (int64_t i = start; i < end; ++i) {
                 const uint8_t packed = w_row[i / 2];
                 const float q = (float) llama_decode_awq_q4(packed, i);
-                const float w = (q - zero_row[g]) * group_scale;
-                acc += act_value * w;
+                const float w = (q - group_zero) * group_scale;
+                acc += act_smooth[static_cast<size_t>(i)] * w;
             }
-            out_col[j] = acc;
         }
+        out_col[j] = acc;
     }
 }
 
