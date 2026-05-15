@@ -1039,6 +1039,7 @@ enum class clip_mmproj_attn_precision_scope {
 enum class clip_aicas_bfp16m_exp_mode {
     kblock,
     per_channel,
+    static_per_layer,
 };
 
 static const char * clip_mmproj_attn_precision_name(clip_mmproj_attn_precision mode) {
@@ -1073,6 +1074,8 @@ static const char * clip_aicas_bfp16m_exp_mode_name(clip_aicas_bfp16m_exp_mode m
             return "kblock";
         case clip_aicas_bfp16m_exp_mode::per_channel:
             return "per_channel";
+        case clip_aicas_bfp16m_exp_mode::static_per_layer:
+            return "static_per_layer";
     }
 
     return "kblock";
@@ -1118,9 +1121,12 @@ static clip_aicas_bfp16m_exp_mode clip_get_bfp16m_exp_mode() {
     if (std::strcmp(env, "per_channel") == 0 || std::strcmp(env, "per-channel") == 0) {
         return clip_aicas_bfp16m_exp_mode::per_channel;
     }
+    if (std::strcmp(env, "static") == 0 || std::strcmp(env, "static_per_layer") == 0 || std::strcmp(env, "static-per-layer") == 0) {
+        return clip_aicas_bfp16m_exp_mode::static_per_layer;
+    }
 
     throw std::runtime_error(string_format(
-        "invalid AICAS_MMPROJ_BFP16M_EXP_MODE=%s; expected one of: kblock, per_channel", env));
+        "invalid AICAS_MMPROJ_BFP16M_EXP_MODE=%s; expected one of: kblock, per_channel, static", env));
 }
 
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
@@ -1227,6 +1233,9 @@ struct clip_aicas_w8a8_kernel_userdata {
 struct clip_aicas_bfp16m_userdata {
     int64_t k_block = 64;
     clip_aicas_bfp16m_exp_mode exp_mode = clip_aicas_bfp16m_exp_mode::kblock;
+    bool static_exp = false;
+    int static_exp_a = 0;
+    int static_exp_b = 0;
 };
 
 static int64_t clip_get_mmproj_bfp16m_k_block() {
@@ -2187,6 +2196,7 @@ struct clip_ctx {
     mutable std::unordered_map<std::string, clip_aicas_activation_observer> aicas_act_observers;
     mutable std::unordered_map<std::string, std::unique_ptr<clip_aicas_w8a8_kernel_userdata>> aicas_w8a8_kernel_userdata_map;
     mutable clip_aicas_bfp16m_userdata aicas_bfp16m_userdata;
+    mutable std::vector<std::unique_ptr<clip_aicas_bfp16m_userdata>> aicas_bfp16m_node_userdata;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -2788,11 +2798,15 @@ static inline int64_t clip_saturating_add_i64(int64_t a, int64_t b) {
 
 static int clip_bfp16m_block_exp_for_a(
         const struct ggml_tensor * a,
+        const clip_aicas_bfp16m_userdata * cfg,
         int64_t row,
         int64_t a_i2,
         int64_t a_i3,
         int64_t k0,
         int64_t k1) {
+    if (cfg != nullptr && cfg->static_exp) {
+        return cfg->static_exp_a;
+    }
     float max_abs = 0.0f;
     for (int64_t k = k0; k < k1; ++k) {
         max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(a, k, row, a_i2, a_i3)));
@@ -2802,11 +2816,15 @@ static int clip_bfp16m_block_exp_for_a(
 
 static int clip_bfp16m_block_exp_for_b(
         const struct ggml_tensor * b,
+        const clip_aicas_bfp16m_userdata * cfg,
         int64_t col,
         int64_t b_i2,
         int64_t b_i3,
         int64_t k0,
         int64_t k1) {
+    if (cfg != nullptr && cfg->static_exp) {
+        return cfg->static_exp_b;
+    }
     float max_abs = 0.0f;
     for (int64_t k = k0; k < k1; ++k) {
         max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(b, k, col, b_i2, b_i3)));
@@ -2838,7 +2856,8 @@ static void clip_bfp16m_mul_mat_f32(
 
     const int64_t k_total = a->ne[0];
     const int64_t configured_k_block = std::max<int64_t>(1, cfg->k_block);
-    const int64_t exp_block = cfg->exp_mode == clip_aicas_bfp16m_exp_mode::per_channel
+    const int64_t exp_block = (cfg->exp_mode == clip_aicas_bfp16m_exp_mode::per_channel ||
+            cfg->exp_mode == clip_aicas_bfp16m_exp_mode::static_per_layer)
         ? k_total
         : configured_k_block;
     if (ith != 0) {
@@ -2871,7 +2890,7 @@ static void clip_bfp16m_mul_mat_f32(
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
                     const int64_t k0 = kb * exp_block;
                     const int64_t k1 = std::min(k_total, k0 + exp_block);
-                    const int exp = clip_bfp16m_block_exp_for_a(a, row, i2, i3, k0, k1);
+                    const int exp = clip_bfp16m_block_exp_for_a(a, cfg, row, i2, i3, k0, k1);
                     const int8_t exp_i8 = clip_bfp16m_exp_to_i8(exp);
                     a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
@@ -2889,7 +2908,7 @@ static void clip_bfp16m_mul_mat_f32(
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
                     const int64_t k0 = kb * exp_block;
                     const int64_t k1 = std::min(k_total, k0 + exp_block);
-                    const int exp = clip_bfp16m_block_exp_for_b(b, col, i2, i3, k0, k1);
+                    const int exp = clip_bfp16m_block_exp_for_b(b, cfg, col, i2, i3, k0, k1);
                     const int8_t exp_i8 = clip_bfp16m_exp_to_i8(exp);
                     b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
@@ -4576,6 +4595,46 @@ private:
             &ctx->aicas_bfp16m_userdata);
     }
 
+    clip_aicas_bfp16m_userdata * make_static_mmproj_attn_bfp16m_userdata(
+            int il,
+            bool pv_matmul) const {
+        auto node_cfg = std::make_unique<clip_aicas_bfp16m_userdata>(ctx->aicas_bfp16m_userdata);
+        if (ctx->aicas_bfp16m_exp_mode == clip_aicas_bfp16m_exp_mode::static_per_layer && il >= 0 && il < 12) {
+            static const int q_exp[12] = {-12, -11, -11, -11, -12, -11, -11, -11, -11, -11, -11, -11};
+            static const int k_exp[12] = {-12, -11, -11, -11, -12, -11, -11, -11, -11, -11, -11, -11};
+            static const int v_exp[12] = {-12, -13, -12, -12, -12, -12, -12, -12, -12, -12, -12, -12};
+            static const int p_exp[12] = {-15, -15, -15, -15, -15, -15, -15, -15, -15, -15, -15, -15};
+            node_cfg->static_exp = true;
+            node_cfg->static_exp_a = pv_matmul ? v_exp[il] : k_exp[il];
+            node_cfg->static_exp_b = pv_matmul ? p_exp[il] : q_exp[il];
+        }
+        clip_aicas_bfp16m_userdata * ptr = node_cfg.get();
+        ctx->aicas_bfp16m_node_userdata.push_back(std::move(node_cfg));
+        return ptr;
+    }
+
+    ggml_tensor * build_mmproj_attn_mul_mat(ggml_tensor * a, ggml_tensor * b, int il, bool pv_matmul) const {
+        if (ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp16m) {
+            return ggml_mul_mat(ctx0, cast_mmproj_attn_tensor(a), cast_mmproj_attn_tensor(b));
+        }
+
+        GGML_ASSERT(a->type == GGML_TYPE_F32);
+        GGML_ASSERT(b->type == GGML_TYPE_F32);
+        GGML_ASSERT(a->ne[0] == b->ne[0]);
+        GGML_ASSERT(b->ne[2] % a->ne[2] == 0);
+        GGML_ASSERT(b->ne[3] % a->ne[3] == 0);
+
+        ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
+        return ggml_map_custom3(
+            ctx0,
+            out_template,
+            a,
+            b,
+            clip_bfp16m_mul_mat_f32,
+            1,
+            make_static_mmproj_attn_bfp16m_userdata(il, pv_matmul));
+    }
+
     ggml_tensor * cast_mmproj_attn_tensor_f32(ggml_tensor * tensor) const {
         if (tensor->type == GGML_TYPE_F32) {
             return tensor;
@@ -4638,7 +4697,7 @@ private:
             const auto n_head   = q->ne[2];
             // const auto n_kv     = k->ne[1]; // for flash attention
 
-            ggml_tensor * kq = build_mmproj_attn_mul_mat(k, q);
+            ggml_tensor * kq = build_mmproj_attn_mul_mat(k, q, il, false);
             // F32 may not needed for vision encoders?
             // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
@@ -4647,7 +4706,7 @@ private:
                 kq = maybe_observe_mmproj_activation(kq, (il >= 0 ? string_format("mmproj.attn.%d.p_for_pv", il) : "mmproj.attn.resampler.p_for_pv").c_str());
             }
 
-            ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq);
+            ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq, il, true);
             cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
             cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
             if (should_cast_mmproj_attn_block()) {
