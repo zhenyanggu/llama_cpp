@@ -1749,6 +1749,10 @@ struct clip_aicas_activation_stats {
     std::vector<float> per_channel_min;
     std::vector<float> per_channel_max;
     std::vector<float> per_channel_absmax;
+    std::vector<uint64_t> record_counts;
+    std::vector<float> record_absmax;
+    std::vector<float> record_min_abs_nonzero;
+    std::vector<int> record_bfp16m_exp;
 
     void ensure_channel_buffers(size_t channels) {
         if (channels == 0) {
@@ -1774,15 +1778,22 @@ struct clip_aicas_activation_stats {
 
         const size_t n = channels * cols;
         count += n;
+        float rec_absmax = 0.0f;
+        float rec_min_abs_nonzero = std::numeric_limits<float>::infinity();
         for (size_t col = 0; col < cols; ++col) {
             const float * col_ptr = data + col * channels;
             for (size_t ch = 0; ch < channels; ++ch) {
                 const float v = col_ptr[ch];
+                const float av = std::fabs(v);
                 min = std::min(min, v);
                 max = std::max(max, v);
                 per_channel_min[ch] = std::min(per_channel_min[ch], v);
                 per_channel_max[ch] = std::max(per_channel_max[ch], v);
-                per_channel_absmax[ch] = std::max(per_channel_absmax[ch], std::fabs(v));
+                per_channel_absmax[ch] = std::max(per_channel_absmax[ch], av);
+                rec_absmax = std::max(rec_absmax, av);
+                if (av > 0.0f) {
+                    rec_min_abs_nonzero = std::min(rec_min_abs_nonzero, av);
+                }
 
                 if (sample_limit == 0) {
                     continue;
@@ -1803,6 +1814,16 @@ struct clip_aicas_activation_stats {
                 }
             }
         }
+
+        int rec_exp = 0;
+        if (rec_absmax > 0.0f && std::isfinite(rec_absmax)) {
+            rec_exp = (int) std::ceil(std::log2((double) rec_absmax / 32767.0));
+        }
+        record_counts.push_back((uint64_t) n);
+        record_absmax.push_back(rec_absmax);
+        record_min_abs_nonzero.push_back(
+            std::isfinite(rec_min_abs_nonzero) ? rec_min_abs_nonzero : 0.0f);
+        record_bfp16m_exp.push_back(rec_exp);
     }
 };
 
@@ -2516,6 +2537,10 @@ struct clip_ctx {
                     {"per_channel_min", stats.per_channel_min},
                     {"per_channel_max", stats.per_channel_max},
                     {"per_channel_absmax", stats.per_channel_absmax},
+                    {"record_counts", stats.record_counts},
+                    {"record_absmax", stats.record_absmax},
+                    {"record_min_abs_nonzero", stats.record_min_abs_nonzero},
+                    {"record_bfp16m_exp", stats.record_bfp16m_exp},
                     {"samples", stats.samples},
                     {"sample_channels", stats.sample_channels},
                 });
@@ -4585,13 +4610,24 @@ private:
         }
 
         ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);
+        if (!ctx->aicas_act_stats_path.empty()) {
+            q = ggml_cont(ctx0, q);
+            q = maybe_observe_mmproj_activation(q, (il >= 0 ? string_format("mmproj.attn.%d.q_for_qk", il) : "mmproj.attn.resampler.q_for_qk").c_str());
+        }
         //cb(q, "q", il);
 
         ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
+        if (!ctx->aicas_act_stats_path.empty()) {
+            k = ggml_cont(ctx0, k);
+            k = maybe_observe_mmproj_activation(k, (il >= 0 ? string_format("mmproj.attn.%d.k_for_qk", il) : "mmproj.attn.resampler.k_for_qk").c_str());
+        }
         //cb(k, "k", il);
 
         ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
         v = ggml_cont(ctx0, v);
+        if (!ctx->aicas_act_stats_path.empty()) {
+            v = maybe_observe_mmproj_activation(v, (il >= 0 ? string_format("mmproj.attn.%d.v_for_pv", il) : "mmproj.attn.resampler.v_for_pv").c_str());
+        }
         //cb(k, "v", il);
 
         ggml_tensor * cur;
@@ -4607,6 +4643,9 @@ private:
             // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
             kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
+            if (!ctx->aicas_act_stats_path.empty()) {
+                kq = maybe_observe_mmproj_activation(kq, (il >= 0 ? string_format("mmproj.attn.%d.p_for_pv", il) : "mmproj.attn.resampler.p_for_pv").c_str());
+            }
 
             ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq);
             cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
