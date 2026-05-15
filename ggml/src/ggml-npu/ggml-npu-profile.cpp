@@ -78,7 +78,12 @@ static double pct(double numerator, double denominator) {
 }
 
 static double profile_accounted_us(const npu_profile_node_record & node) {
-    return node.activation_pack_us_total +
+    return node.setup_runtime_us_total +
+        node.setup_validate_us_total +
+        node.setup_buffer_alloc_us_total +
+        node.setup_cache_alloc_us_total +
+        node.setup_profile_begin_us_total +
+        node.activation_pack_us_total +
         node.host_copy_activation_us_total +
         node.host_copy_weight_us_total +
         node.bias_prepare_us_total +
@@ -296,6 +301,11 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"bias_bytes_total", node.bias_bytes_total},
         {"acc_readback_bytes_total", node.acc_readback_bytes_total},
         {"output_write_bytes_total", node.output_write_bytes_total},
+        {"setup_runtime_us_total", node.setup_runtime_us_total},
+        {"setup_validate_us_total", node.setup_validate_us_total},
+        {"setup_buffer_alloc_us_total", node.setup_buffer_alloc_us_total},
+        {"setup_cache_alloc_us_total", node.setup_cache_alloc_us_total},
+        {"setup_profile_begin_us_total", node.setup_profile_begin_us_total},
         {"activation_pack_us_total", node.activation_pack_us_total},
         {"host_copy_activation_us_total", node.host_copy_activation_us_total},
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
@@ -330,6 +340,31 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"n", node.n},
         {"k", node.k},
         {"shape_table_hit", node.shape_table_hit},
+        {"first_stage_tm", node.first_stage_tm},
+        {"first_stage_tn", node.first_stage_tn},
+        {"first_stage_tk", node.first_stage_tk},
+        {"stage2_k_block", node.stage2_k_block},
+        {"exec_tile_count", node.exec_tile_count},
+        {"weight_pack_count", node.weight_pack_count},
+        {"bias_pack_count", node.bias_pack_count},
+        {"setup_runtime_us_total", node.setup_runtime_us_total},
+        {"setup_validate_us_total", node.setup_validate_us_total},
+        {"setup_buffer_alloc_us_total", node.setup_buffer_alloc_us_total},
+        {"setup_cache_alloc_us_total", node.setup_cache_alloc_us_total},
+        {"setup_profile_begin_us_total", node.setup_profile_begin_us_total},
+        {"activation_pack_us_total", node.activation_pack_us_total},
+        {"host_copy_activation_us_total", node.host_copy_activation_us_total},
+        {"host_copy_weight_us_total", node.host_copy_weight_us_total},
+        {"bias_prepare_us_total", node.bias_prepare_us_total},
+        {"dma_in_pair_us_total", node.dma_in_pair_us_total},
+        {"dma_in_bias_us_total", node.dma_in_bias_us_total},
+        {"gemm_us_total", node.gemm_us_total},
+        {"dma_out_us_total", node.dma_out_us_total},
+        {"postprocess_us_total", node.postprocess_us_total},
+        {"packed_activation_bytes_total", node.packed_activation_bytes_total},
+        {"copied_weight_bytes_total", node.copied_weight_bytes_total},
+        {"acc_readback_bytes_total", node.acc_readback_bytes_total},
+        {"output_write_bytes_total", node.output_write_bytes_total},
         {"total_node_us", node.total_node_us},
         {"accounted_us_total", node.accounted_us_total},
         {"unaccounted_us_total", node.unaccounted_us_total},
@@ -506,6 +541,11 @@ void npu_profile_flush() {
     }
 
     double total_us = 0.0;
+    double total_setup_runtime_us = 0.0;
+    double total_setup_validate_us = 0.0;
+    double total_setup_buffer_alloc_us = 0.0;
+    double total_setup_cache_alloc_us = 0.0;
+    double total_setup_profile_begin_us = 0.0;
     double total_activation_pack_us = 0.0;
     double total_host_copy_activation_us = 0.0;
     double total_host_copy_weight_us = 0.0;
@@ -535,6 +575,11 @@ void npu_profile_flush() {
     int64_t total_gemm_plan_calls = 0;
     for (const auto & node : snapshot) {
         total_us += node.total_node_us;
+        total_setup_runtime_us += node.setup_runtime_us_total;
+        total_setup_validate_us += node.setup_validate_us_total;
+        total_setup_buffer_alloc_us += node.setup_buffer_alloc_us_total;
+        total_setup_cache_alloc_us += node.setup_cache_alloc_us_total;
+        total_setup_profile_begin_us += node.setup_profile_begin_us_total;
         total_activation_pack_us += node.activation_pack_us_total;
         total_host_copy_activation_us += node.host_copy_activation_us_total;
         total_host_copy_weight_us += node.host_copy_weight_us_total;
@@ -604,6 +649,11 @@ void npu_profile_flush() {
         {"recorded_node_count", node_records.size()},
         {"summary", {
             {"total_node_us", total_us},
+            {"total_setup_runtime_us", total_setup_runtime_us},
+            {"total_setup_validate_us", total_setup_validate_us},
+            {"total_setup_buffer_alloc_us", total_setup_buffer_alloc_us},
+            {"total_setup_cache_alloc_us", total_setup_cache_alloc_us},
+            {"total_setup_profile_begin_us", total_setup_profile_begin_us},
             {"total_activation_pack_us", total_activation_pack_us},
             {"total_host_copy_activation_us", total_host_copy_activation_us},
             {"total_host_copy_weight_us", total_host_copy_weight_us},
@@ -733,6 +783,11 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.acc_readback_bytes_total += delta.acc_readback_bytes_total;
     summary.output_write_bytes_total += delta.output_write_bytes_total;
     summary.total_node_us += delta.total_node_us;
+    summary.setup_runtime_us_total += delta.setup_runtime_us_total;
+    summary.setup_validate_us_total += delta.setup_validate_us_total;
+    summary.setup_buffer_alloc_us_total += delta.setup_buffer_alloc_us_total;
+    summary.setup_cache_alloc_us_total += delta.setup_cache_alloc_us_total;
+    summary.setup_profile_begin_us_total += delta.setup_profile_begin_us_total;
     summary.activation_pack_us_total += delta.activation_pack_us_total;
     summary.host_copy_activation_us_total += delta.host_copy_activation_us_total;
     summary.host_copy_weight_us_total += delta.host_copy_weight_us_total;

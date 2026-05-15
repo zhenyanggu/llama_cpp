@@ -183,6 +183,18 @@ static bool npu_dst_is_dense_f32(const struct ggml_tensor * dst) {
         dst->nb[0] == static_cast<int64_t>(sizeof(float));
 }
 
+static bool npu_dst_f32_tile_is_contiguous(
+        const struct ggml_tensor * dst,
+        int64_t m0,
+        int64_t m,
+        int64_t n) {
+    return npu_dst_is_dense_f32(dst) &&
+        m0 == 0 &&
+        m == dst->ne[0] &&
+        dst->nb[1] == static_cast<size_t>(dst->ne[0]) * sizeof(float) &&
+        n > 0;
+}
+
 static void npu_prepare_bias_tile_f32_exec(
         const struct ggml_tensor * bias,
         int64_t m0,
@@ -535,6 +547,11 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         if (collect_stage_profile) {
             exec_summary.delta.total_node_us = ggml_time_us() - node_start_us;
             exec_summary.delta.accounted_us_total =
+                exec_summary.delta.setup_runtime_us_total +
+                exec_summary.delta.setup_validate_us_total +
+                exec_summary.delta.setup_buffer_alloc_us_total +
+                exec_summary.delta.setup_cache_alloc_us_total +
+                exec_summary.delta.setup_profile_begin_us_total +
                 exec_summary.delta.activation_pack_us_total +
                 exec_summary.delta.host_copy_activation_us_total +
                 exec_summary.delta.host_copy_weight_us_total +
@@ -569,6 +586,11 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.bias_bytes_total = exec_summary.delta.bias_bytes_total;
             profile_record.acc_readback_bytes_total = exec_summary.delta.acc_readback_bytes_total;
             profile_record.output_write_bytes_total = exec_summary.delta.output_write_bytes_total;
+            profile_record.setup_runtime_us_total = exec_summary.delta.setup_runtime_us_total;
+            profile_record.setup_validate_us_total = exec_summary.delta.setup_validate_us_total;
+            profile_record.setup_buffer_alloc_us_total = exec_summary.delta.setup_buffer_alloc_us_total;
+            profile_record.setup_cache_alloc_us_total = exec_summary.delta.setup_cache_alloc_us_total;
+            profile_record.setup_profile_begin_us_total = exec_summary.delta.setup_profile_begin_us_total;
             profile_record.activation_pack_us_total = exec_summary.delta.activation_pack_us_total;
             profile_record.host_copy_activation_us_total = exec_summary.delta.host_copy_activation_us_total;
             profile_record.host_copy_weight_us_total = exec_summary.delta.host_copy_weight_us_total;
@@ -601,16 +623,30 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 plan.bias ? "yes" : "no",
                 plan.summary.c_str());
     }
+    const int64_t setup_runtime_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (!npu_ensure_runtime(error)) {
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_runtime_us_total += ggml_time_us() - setup_runtime_start_us;
+        }
         return finalize_status(GGML_STATUS_FAILED);
+    }
+    if (collect_stage_profile) {
+        exec_summary.delta.setup_runtime_us_total += ggml_time_us() - setup_runtime_start_us;
     }
 
     std::string aot_reason;
+    const int64_t setup_validate_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (!npu_plan_is_aot_stable(plan, &aot_reason)) {
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_validate_us_total += ggml_time_us() - setup_validate_start_us;
+        }
         if (error) {
             *error = "AOT plan invalid: " + aot_reason;
         }
         return finalize_status(GGML_STATUS_FAILED);
+    }
+    if (collect_stage_profile) {
+        exec_summary.delta.setup_validate_us_total += ggml_time_us() - setup_validate_start_us;
     }
 
     const int64_t max_n = plan.use_gemm_plan ? plan.first_stage_tn : plan.config.sa_rows;
@@ -625,11 +661,18 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     void * bias_cache_buf = nullptr;
     void * scale_cache_buf = nullptr;
 
+    const int64_t setup_buffer_alloc_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (!npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_k), &activation_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_m * sizeof(int32_t)), &acc_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_m * sizeof(int32_t)), &bias_buf, error)) {
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_buffer_alloc_us_total += ggml_time_us() - setup_buffer_alloc_start_us;
+        }
         cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, nullptr, nullptr);
         return finalize_status(GGML_STATUS_ALLOC_FAILED);
+    }
+    if (collect_stage_profile) {
+        exec_summary.delta.setup_buffer_alloc_us_total += ggml_time_us() - setup_buffer_alloc_start_us;
     }
 
     std::unordered_map<npu_activation_tile_key, std::vector<int8_t>, npu_activation_tile_key_hash> activation_tile_cache;
@@ -670,15 +713,25 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     std::vector<float> bias_tile_values;
     std::vector<int32_t> bias_values;
 
+    const int64_t setup_cache_alloc_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (use_bias_cache &&
         !npu_allocate_runtime_buffer(static_cast<size_t>(plan.config.layout.bias_cache.bytes), &bias_cache_buf, error)) {
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_cache_alloc_us_total += ggml_time_us() - setup_cache_alloc_start_us;
+        }
         cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, nullptr, nullptr);
         return finalize_status(GGML_STATUS_ALLOC_FAILED);
     }
     if (use_scale_cache &&
         !npu_allocate_runtime_buffer(static_cast<size_t>(plan.config.layout.scale_cache.bytes), &scale_cache_buf, error)) {
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_cache_alloc_us_total += ggml_time_us() - setup_cache_alloc_start_us;
+        }
         cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, nullptr);
         return finalize_status(GGML_STATUS_ALLOC_FAILED);
+    }
+    if (collect_stage_profile) {
+        exec_summary.delta.setup_cache_alloc_us_total += ggml_time_us() - setup_cache_alloc_start_us;
     }
 
     activation_tile_cache.reserve(plan.exec_tiles.size());
@@ -694,8 +747,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     bool loaded_activation_valid = false;
     int32_t loaded_weight_pack_index = -1;
     if (collect_runtime_profile) {
+        const int64_t setup_profile_begin_start_us = collect_stage_profile ? ggml_time_us() : 0;
         npu_profile_begin(layer_id);
         runtime_profile_started = true;
+        if (collect_stage_profile) {
+            exec_summary.delta.setup_profile_begin_us_total += ggml_time_us() - setup_profile_begin_start_us;
+        }
     }
 
     for (size_t exec_tile_idx = 0; exec_tile_idx < plan.exec_tiles.size(); ++exec_tile_idx) {
@@ -1385,13 +1442,23 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 const bool fast_output_copy = output_is_final_f32 && npu_dst_is_dense_f32(plan.dst);
                 if (fast_output_copy) {
                     const float * acc_f32 = reinterpret_cast<const float *>(acc_buf);
-                    for (int64_t n = 0; n < exec_tile.n; ++n) {
-                        float * dst_row = reinterpret_cast<float *>(
+                    if (npu_dst_f32_tile_is_contiguous(plan.dst, exec_tile.m0, exec_tile.m, exec_tile.n)) {
+                        float * dst_tile = reinterpret_cast<float *>(
                             static_cast<char *>(plan.dst->data) +
-                            (exec_tile.n0 + n) * plan.dst->nb[1] +
-                            exec_tile.m0 * sizeof(float));
-                        const float * acc_row = acc_f32 + static_cast<size_t>(n * exec_tile.m);
-                        std::memcpy(dst_row, acc_row, static_cast<size_t>(exec_tile.m * sizeof(float)));
+                            exec_tile.n0 * plan.dst->nb[1]);
+                        std::memcpy(
+                            dst_tile,
+                            acc_f32,
+                            static_cast<size_t>(exec_tile.n * exec_tile.m * sizeof(float)));
+                    } else {
+                        for (int64_t n = 0; n < exec_tile.n; ++n) {
+                            float * dst_row = reinterpret_cast<float *>(
+                                static_cast<char *>(plan.dst->data) +
+                                (exec_tile.n0 + n) * plan.dst->nb[1] +
+                                exec_tile.m0 * sizeof(float));
+                            const float * acc_row = acc_f32 + static_cast<size_t>(n * exec_tile.m);
+                            std::memcpy(dst_row, acc_row, static_cast<size_t>(exec_tile.m * sizeof(float)));
+                        }
                     }
                 } else if (raw_acc_mvout) {
                     acc_raw_values_host.resize(tile_elems);

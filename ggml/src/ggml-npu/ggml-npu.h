@@ -38,6 +38,11 @@ typedef struct ggml_npu_profile_summary {
     int64_t acc_readback_bytes_total;
     int64_t output_write_bytes_total;
     int64_t total_node_us;
+    int64_t setup_runtime_us_total;
+    int64_t setup_validate_us_total;
+    int64_t setup_buffer_alloc_us_total;
+    int64_t setup_cache_alloc_us_total;
+    int64_t setup_profile_begin_us_total;
     int64_t activation_pack_us_total;
     int64_t host_copy_activation_us_total;
     int64_t host_copy_weight_us_total;

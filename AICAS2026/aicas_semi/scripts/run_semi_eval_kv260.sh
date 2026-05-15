@@ -510,6 +510,7 @@ start_server() {
   local profile_env=""
   local npu_shape_env=""
   local ubatch_trace_env=""
+  local npu_runtime_env="GGML_NPU_EAGER_INIT=1"
   local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
   if [ -n "\$REMOTE_NPU_SHAPE_TABLE" ]; then
     npu_shape_env="GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=1 GGML_NPU_SHAPE_TABLE_JSON='\$REMOTE_NPU_SHAPE_TABLE'"
@@ -527,7 +528,7 @@ start_server() {
     ubatch_trace_env="LLAMA_UBATCH_TRACE_JSONL='\$REMOTE_UBATCH_TRACE'"
   fi
 
-  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$text_prefill_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
+  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
 
   if ! wait_ready; then
     tail -n 120 "\$log_path" >&2 || true

@@ -109,6 +109,14 @@ static int8_t npu_quantize_i8(float value, float scale) {
     return static_cast<int8_t>(q);
 }
 
+static int8_t npu_quantize_u8_payload(float shifted) {
+    int32_t q = static_cast<int32_t>(std::lrint(shifted));
+    q = std::max(0, std::min(255, q));
+    // Keep raw uint8 payload in memory; GEMM asymmetric_activations
+    // path will apply the fixed -128 in hardware.
+    return static_cast<int8_t>(q);
+}
+
 std::vector<float> npu_compute_weight_output_scales(
         const struct ggml_tensor * src0,
         int64_t m0,
@@ -183,16 +191,101 @@ bool npu_pack_activation_tile_static_asym_i8(
     const float inv_scale = scale > 0.0f ? (1.0f / scale) : 0.0f;
     const float zp = static_cast<float>(zero_point_u8);
     if (smooth_scale != nullptr && !smooth_scale->empty()) {
+        const float * smooth = smooth_scale->data() + static_cast<size_t>(k0);
+        if (src1->type == GGML_TYPE_F32 && src1->nb[0] == static_cast<int64_t>(sizeof(float))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const float * row = reinterpret_cast<const float *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(row[k] * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
+        if (src1->type == GGML_TYPE_F16 && src1->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const ggml_fp16_t * row = reinterpret_cast<const ggml_fp16_t *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    const float v = ggml_fp16_to_fp32(row[k]);
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(v * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
+        if (src1->type == GGML_TYPE_I8 && src1->nb[0] == static_cast<int64_t>(sizeof(int8_t))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const int8_t * row = reinterpret_cast<const int8_t *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    const float v = static_cast<float>(row[k]);
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(v * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
         for (int64_t n = 0; n < n_rows; ++n) {
             for (int64_t k = 0; k < k_cols; ++k) {
                 const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
                 const float fused_multiplier = (*smooth_scale)[static_cast<size_t>(k0 + k)];
-                const float shifted = v * fused_multiplier + zp;
-                int32_t q = static_cast<int32_t>(std::lrint(shifted));
-                q = std::max(0, std::min(255, q));
-                // Keep raw uint8 payload in memory; GEMM asymmetric_activations
-                // path will apply the fixed -128 in hardware.
-                (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q);
+                (*packed)[static_cast<size_t>(n * k_cols + k)] =
+                    npu_quantize_u8_payload(v * fused_multiplier + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_F32 && src1->nb[0] == static_cast<int64_t>(sizeof(float))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const float * row = reinterpret_cast<const float *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(row[k] * inv_scale + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_F16 && src1->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const ggml_fp16_t * row = reinterpret_cast<const ggml_fp16_t *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                const float v = ggml_fp16_to_fp32(row[k]);
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(v * inv_scale + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_I8 && src1->nb[0] == static_cast<int64_t>(sizeof(int8_t))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const int8_t * row = reinterpret_cast<const int8_t *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_cols);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                const float v = static_cast<float>(row[k]);
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(v * inv_scale + zp);
             }
         }
         return true;
@@ -201,11 +294,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         for (int64_t k = 0; k < k_cols; ++k) {
             const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
             const float shifted = v * inv_scale + zp;
-            int32_t q = static_cast<int32_t>(std::lrint(shifted));
-            q = std::max(0, std::min(255, q));
-            // Keep raw uint8 payload in memory; GEMM asymmetric_activations
-            // path will apply the fixed -128 in hardware.
-            (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q);
+            (*packed)[static_cast<size_t>(n * k_cols + k)] = npu_quantize_u8_payload(shifted);
         }
     }
     return true;
