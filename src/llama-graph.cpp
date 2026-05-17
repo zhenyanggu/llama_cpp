@@ -135,6 +135,302 @@ static bool llama_text_decode_awq_enabled() {
     return enabled;
 }
 
+static bool llama_text_prefill_attn_bfp16m_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_ATTN_BFP16M");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int64_t llama_text_prefill_bfp16m_k_block() {
+    static const int64_t k_block = []() {
+        constexpr int64_t default_k_block = 64;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_BFP16M_K_BLOCK");
+        if (value == nullptr || value[0] == '\0') {
+            return default_k_block;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            return (int64_t) parsed;
+        }
+        return default_k_block;
+    }();
+    return k_block;
+}
+
+struct llama_text_bfp16m_userdata {
+    int64_t k_block = 64;
+};
+
+static inline float llama_tensor_get_f32_4d(
+        const struct ggml_tensor * tensor,
+        int64_t i0,
+        int64_t i1,
+        int64_t i2,
+        int64_t i3) {
+    const char * ptr = (const char *) tensor->data +
+        i0 * tensor->nb[0] + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
+    switch (tensor->type) {
+        case GGML_TYPE_F32:
+            return *(const float *) ptr;
+        case GGML_TYPE_F16:
+            return ggml_fp16_to_fp32(*(const ggml_fp16_t *) ptr);
+        default:
+            GGML_ABORT("unsupported AICAS text BFP16-M tensor type");
+    }
+}
+
+static inline void llama_tensor_set_f32_4d(
+        struct ggml_tensor * tensor,
+        int64_t i0,
+        int64_t i1,
+        int64_t i2,
+        int64_t i3,
+        float value) {
+    char * ptr = (char *) tensor->data +
+        i0 * tensor->nb[0] + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
+    GGML_ASSERT(tensor->type == GGML_TYPE_F32);
+    *(float *) ptr = value;
+}
+
+static inline int16_t llama_bfp16m_quant_value(float value, int exp) {
+    const float scaled = std::ldexp(value, -exp);
+    long q = lrintf(scaled);
+    q = std::max<long>(-32768, std::min<long>(32767, q));
+    return (int16_t) q;
+}
+
+static inline int8_t llama_bfp16m_exp_to_i8(int exp) {
+    return (int8_t) std::max<int>(-128, std::min<int>(127, exp));
+}
+
+static inline int64_t llama_bfp16m_rshift_rne_i64(int64_t value, int shift) {
+    if (shift <= 0) {
+        return value;
+    }
+    if (shift >= 63) {
+        return value < 0 ? -1 : 0;
+    }
+
+    const bool neg = value < 0;
+    uint64_t abs_value = neg ? (uint64_t) (-(value + 1)) + 1 : (uint64_t) value;
+    const uint64_t base = abs_value >> shift;
+    const uint64_t rem_mask = (UINT64_C(1) << shift) - 1;
+    const uint64_t rem = abs_value & rem_mask;
+    const uint64_t half = UINT64_C(1) << (shift - 1);
+    uint64_t rounded = base;
+    if (rem > half || (rem == half && (base & 1))) {
+        ++rounded;
+    }
+
+    if (!neg) {
+        return rounded > (uint64_t) std::numeric_limits<int64_t>::max()
+            ? std::numeric_limits<int64_t>::max()
+            : (int64_t) rounded;
+    }
+    if (rounded >= (UINT64_C(1) << 63)) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return -(int64_t) rounded;
+}
+
+static inline int64_t llama_bfp16m_saturating_add_i64(int64_t a, int64_t b) {
+    if (b > 0 && a > std::numeric_limits<int64_t>::max() - b) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    if (b < 0 && a < std::numeric_limits<int64_t>::min() - b) {
+        return std::numeric_limits<int64_t>::min();
+    }
+    return a + b;
+}
+
+static int llama_bfp16m_block_exp_for_a(
+        const struct ggml_tensor * a,
+        int64_t row,
+        int64_t a_i2,
+        int64_t a_i3,
+        int64_t k0,
+        int64_t k1) {
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(a, k, row, a_i2, a_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static int llama_bfp16m_block_exp_for_b(
+        const struct ggml_tensor * b,
+        int64_t col,
+        int64_t b_i2,
+        int64_t b_i3,
+        int64_t k0,
+        int64_t k1) {
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(b, k, col, b_i2, b_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static void llama_compute_text_bfp16m_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+    GGML_UNUSED(nth);
+
+    const auto * cfg = static_cast<const llama_text_bfp16m_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32 || a->type == GGML_TYPE_F16);
+    GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    GGML_ASSERT(dst->ne[0] == a->ne[1]);
+    GGML_ASSERT(dst->ne[1] == b->ne[1]);
+    GGML_ASSERT(dst->ne[2] == b->ne[2]);
+    GGML_ASSERT(dst->ne[3] == b->ne[3]);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const int64_t k_total = a->ne[0];
+    const int64_t exp_block = std::max<int64_t>(1, cfg->k_block);
+    const int64_t n_kb = (k_total + exp_block - 1) / exp_block;
+    const int64_t a_e_stride_row = n_kb;
+    const int64_t a_e_stride_i2 = a->ne[1] * a_e_stride_row;
+    const int64_t a_e_stride_i3 = a->ne[2] * a_e_stride_i2;
+    const int64_t a_q_stride_row = k_total;
+    const int64_t a_q_stride_i2 = a->ne[1] * a_q_stride_row;
+    const int64_t a_q_stride_i3 = a->ne[2] * a_q_stride_i2;
+
+    const int64_t b_e_stride_col = n_kb;
+    const int64_t b_e_stride_i2 = b->ne[1] * b_e_stride_col;
+    const int64_t b_e_stride_i3 = b->ne[2] * b_e_stride_i2;
+    const int64_t b_q_stride_col = k_total;
+    const int64_t b_q_stride_i2 = b->ne[1] * b_q_stride_col;
+    const int64_t b_q_stride_i3 = b->ne[2] * b_q_stride_i2;
+
+    std::vector<int8_t> a_exp((size_t) (a->ne[3] * a_e_stride_i3));
+    std::vector<int16_t> a_q((size_t) (a->ne[3] * a_q_stride_i3));
+    std::vector<int8_t> b_exp((size_t) (b->ne[3] * b_e_stride_i3));
+    std::vector<int16_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
+
+    for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+            for (int64_t row = 0; row < a->ne[1]; ++row) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * exp_block;
+                    const int64_t k1 = std::min(k_total, k0 + exp_block);
+                    const int exp = llama_bfp16m_block_exp_for_a(a, row, i2, i3, k0, k1);
+                    const int8_t exp_i8 = llama_bfp16m_exp_to_i8(exp);
+                    a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp_i8;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
+                            llama_bfp16m_quant_value(llama_tensor_get_f32_4d(a, k, row, i2, i3), (int) exp_i8);
+                    }
+                }
+            }
+        }
+    }
+
+    for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+            for (int64_t col = 0; col < b->ne[1]; ++col) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * exp_block;
+                    const int64_t k1 = std::min(k_total, k0 + exp_block);
+                    const int exp = llama_bfp16m_block_exp_for_b(b, col, i2, i3, k0, k1);
+                    const int8_t exp_i8 = llama_bfp16m_exp_to_i8(exp);
+                    b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp_i8;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
+                            llama_bfp16m_quant_value(llama_tensor_get_f32_4d(b, k, col, i2, i3), (int) exp_i8);
+                    }
+                }
+            }
+        }
+    }
+
+    const int64_t total = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
+    for (int64_t index = 0; index < total; ++index) {
+        int64_t rem = index;
+        const int64_t row = rem % dst->ne[0];
+        rem /= dst->ne[0];
+        const int64_t col = rem % dst->ne[1];
+        rem /= dst->ne[1];
+        const int64_t i2 = rem % dst->ne[2];
+        rem /= dst->ne[2];
+        const int64_t i3 = rem;
+        const int64_t a_i2 = i2 % a->ne[2];
+        const int64_t a_i3 = i3 % a->ne[3];
+
+        bool have_acc = false;
+        int acc_exp = 0;
+        int64_t acc = 0;
+        for (int64_t kb = 0; kb < n_kb; ++kb) {
+            const int64_t k0 = kb * exp_block;
+            const int64_t k1 = std::min(k_total, k0 + exp_block);
+            const int e_a = a_exp[(size_t) (a_i3 * a_e_stride_i3 + a_i2 * a_e_stride_i2 + row * a_e_stride_row + kb)];
+            const int e_b = b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)];
+            const int partial_exp = e_a + e_b;
+
+            int64_t partial = 0;
+            for (int64_t k = k0; k < k1; ++k) {
+                const int16_t qa = a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + k)];
+                const int16_t qb = b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)];
+                partial += (int32_t) qa * (int32_t) qb;
+            }
+
+            if (!have_acc) {
+                acc = partial;
+                acc_exp = partial_exp;
+                have_acc = true;
+                continue;
+            }
+
+            if (partial_exp > acc_exp) {
+                acc = llama_bfp16m_rshift_rne_i64(acc, partial_exp - acc_exp);
+                acc_exp = partial_exp;
+            }
+            acc = llama_bfp16m_saturating_add_i64(acc, llama_bfp16m_rshift_rne_i64(partial, acc_exp - partial_exp));
+        }
+
+        llama_tensor_set_f32_4d(dst, row, col, i2, i3, (float) std::ldexp((double) acc, acc_exp));
+    }
+}
+
+static ggml_tensor * llama_build_text_bfp16m_mul_mat(
+        ggml_context * ctx0,
+        ggml_tensor * a,
+        ggml_tensor * b) {
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    GGML_ASSERT(b->ne[2] % a->ne[2] == 0);
+    GGML_ASSERT(b->ne[3] % a->ne[3] == 0);
+
+    ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
+    static llama_text_bfp16m_userdata cfg = {
+        /*.k_block =*/ llama_text_prefill_bfp16m_k_block(),
+    };
+    return ggml_map_custom3(
+            ctx0,
+            out_template,
+            a,
+            b,
+            llama_compute_text_bfp16m_mul_mat,
+            1,
+            &cfg);
+}
+
 static void llama_compute_text_w8a8_mul_mat(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -1972,12 +2268,23 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
-        ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
+        const bool use_text_prefill_bfp16m =
+            n_tokens > 1 &&
+            kq_b == nullptr &&
+            sinks == nullptr &&
+            v_mla == nullptr &&
+            llama_text_prefill_attn_bfp16m_enabled();
+
+        ggml_tensor * kq = use_text_prefill_bfp16m
+            ? llama_build_text_bfp16m_mul_mat(ctx0, k, q)
+            : ggml_mul_mat(ctx0, k, q);
         cb(kq, "kq", il);
 
         // note: this op tends to require high floating point range
         //       while for some models F16 is enough, for others it is not, so we default to F32 here
-        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+        if (!use_text_prefill_bfp16m) {
+            ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+        }
 
         if (arch == LLM_ARCH_GROK) {
             // need to do the following:
@@ -2016,7 +2323,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cb(v, "v_cont", il);
         }
 
-        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
+        ggml_tensor * kqv = use_text_prefill_bfp16m
+            ? llama_build_text_bfp16m_mul_mat(ctx0, v, kq)
+            : ggml_mul_mat(ctx0, v, kq);
         cb(kqv, "kqv", il);
 
         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
