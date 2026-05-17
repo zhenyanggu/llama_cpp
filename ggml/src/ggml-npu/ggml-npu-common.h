@@ -19,6 +19,16 @@ constexpr size_t NPU_DEFAULT_ACC_BYTES = 512u * 1024u;
 constexpr size_t NPU_DEFAULT_GUARD_BYTES = 4u * 1024u;
 constexpr uint32_t NPU_SPM_ALIGNMENT = 32;
 constexpr uint32_t NPU_ACC_ALIGNMENT = 4;
+constexpr int64_t NPU_GEMM_PLAN_ADDR_ALIGNMENT = 16;
+constexpr int64_t NPU_GEMM_PLAN_STRIDE_ALIGNMENT = 16;
+
+constexpr int64_t npu_align_up_i64(int64_t value, int64_t alignment) {
+    return alignment <= 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+
+constexpr bool npu_is_aligned_i64(int64_t value, int64_t alignment) {
+    return alignment <= 0 || (value % alignment) == 0;
+}
 
 enum class npu_memory_space {
     spm,
@@ -97,6 +107,10 @@ struct npu_exec_tile {
     bool writes_output = false;
     int32_t weight_pack_index = -1;
     int32_t bias_pack_index = -1;
+    int64_t a_stride = 0;
+    int64_t b_stride = 0;
+    int64_t out_stride = 0;
+    int64_t bias_stride = 0;
 };
 
 struct npu_activation_quant_config {
@@ -126,6 +140,7 @@ struct npu_prepacked_weight {
     int64_t m = 0;
     int64_t k0 = 0;
     int64_t k = 0;
+    int64_t stride_m = 0;
     std::vector<float> scales;
     std::vector<int8_t> packed;
     mutable void * cma_packed = nullptr;

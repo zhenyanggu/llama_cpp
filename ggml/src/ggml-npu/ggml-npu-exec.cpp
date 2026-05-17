@@ -654,6 +654,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     const int64_t max_k = plan.use_gemm_plan
         ? plan.config.k_block
         : std::min<int64_t>(plan.config.k_block, plan.config.stage2_k_block);
+    const int64_t max_k_stride = npu_align_up_i64(max_k, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
 
     void * activation_buf = nullptr;
     void * acc_buf = nullptr;
@@ -662,7 +663,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     void * scale_cache_buf = nullptr;
 
     const int64_t setup_buffer_alloc_start_us = collect_stage_profile ? ggml_time_us() : 0;
-    if (!npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_k), &activation_buf, error) ||
+    if (!npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_k_stride), &activation_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_m * sizeof(int32_t)), &acc_buf, error) ||
         !npu_allocate_runtime_buffer(static_cast<size_t>(max_n * max_m * sizeof(int32_t)), &bias_buf, error)) {
         if (collect_stage_profile) {
@@ -807,6 +808,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         exec_tile.n,
                         exec_tile.k0,
                         exec_tile.k,
+                        exec_tile.a_stride,
                         activation_scale,
                         plan.activation_quant.zero_point_u8,
                         plan.aicas_w8a8.smooth_scale.empty() ? nullptr : &plan.aicas_w8a8.smooth_scale,
@@ -900,7 +902,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         const MvinConfig activation_mvin_cfg {
             activation_buf,
             plan.config.layout.activation.offset,
-            static_cast<uint32_t>(exec_tile.n * exec_tile.k - 1),
+            static_cast<uint32_t>(packed_activation_view->size() - 1),
             0,
             0,
             0,
@@ -933,14 +935,14 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 static_cast<int64_t>(exec_tile_idx),
                 "act_q",
                 packed_activation_view->data(),
-                static_cast<size_t>(exec_tile.n * exec_tile.k));
+                packed_activation_view->size());
             npu_dump_tile_blob(
                 dump_dir,
                 layer_id,
                 static_cast<int64_t>(exec_tile_idx),
                 "wgt_q",
                 packed_weight.packed.data(),
-                static_cast<size_t>(exec_tile.k * exec_tile.m));
+                packed_weight.packed.size());
             npu_dump_tile_blob(
                 dump_dir,
                 layer_id,
@@ -953,7 +955,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         const MvinConfig weight_mvin_cfg {
             packed_weight.cma_packed,
             plan.config.layout.weight.offset,
-            static_cast<uint32_t>(exec_tile.k * exec_tile.m - 1),
+            static_cast<uint32_t>(packed_weight.packed.size() - 1),
             0,
             0,
             0,
@@ -1223,10 +1225,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 /*block_m=*/static_cast<uint16_t>(exec_tile.n),
                 /*block_n=*/static_cast<uint16_t>(exec_tile.m),
                 /*block_k=*/static_cast<uint16_t>(exec_tile.k),
-                /*a_stride=*/static_cast<uint16_t>(exec_tile.k),
-                /*b_stride=*/static_cast<uint16_t>(exec_tile.m),
-                /*out_stride=*/static_cast<uint16_t>(exec_tile.m),
-                /*bias_stride=*/static_cast<uint16_t>(exec_tile.m),
+                /*a_stride=*/static_cast<uint16_t>(exec_tile.a_stride),
+                /*b_stride=*/static_cast<uint16_t>(exec_tile.b_stride),
+                /*out_stride=*/static_cast<uint16_t>(exec_tile.out_stride),
+                /*bias_stride=*/static_cast<uint16_t>(exec_tile.bias_stride),
                 /*have_bias=*/use_hardware_bias,
                 /*is_accumulate=*/use_accumulate,
                 /*asymmetric_activations=*/hardware_asymmetric_activations);
@@ -1410,7 +1412,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 plan.config.layout.output_accumulator.offset,
                 static_cast<uint32_t>(exec_tile.m - 1),
                 static_cast<uint32_t>(exec_tile.n - 1),
-                static_cast<uint16_t>(exec_tile.m),
+                static_cast<uint16_t>(exec_tile.out_stride),
                 static_cast<uint32_t>(exec_tile.m),
                 raw_acc_mvout ? 1 : 3,
                 1,

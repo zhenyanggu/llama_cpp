@@ -27,6 +27,14 @@
 // - MVOUT precision follows API input.
 // API behavior is adjusted per current hardware contract.
 
+namespace {
+constexpr uint32_t kSpmVectorAlignmentBytes = 16;
+
+bool is_spm_aligned(uint32_t value) {
+    return (value & (kSpmVectorAlignmentBytes - 1u)) == 0;
+}
+}
+
 // ==========================================
 // Profiling
 // ==========================================
@@ -1138,6 +1146,19 @@ uint32_t NpuRuntime::read_dma_busy_mask(bool is_mvin) {
         : REG_GET_FIELD(DMA_STATUS, MVOUT_BUSY, raw_status);
 }
 
+void NpuRuntime::check_spm_unaligned_status(const char* where) {
+    const uint32_t low = reg_read(RegOffset::DMA_STATUS);
+    const uint32_t sources = REG_GET_FIELD(DMA_STATUS, SPM_UNALIGNED_SOURCES, low);
+    const uint32_t count = reg_read(RegOffset::DMA_STATUS + 4);
+    if (sources != 0 || count != 0) {
+        std::ostringstream oss;
+        oss << where << ": hardware reported non-16B-aligned SPM access"
+            << " sources=0x" << std::hex << sources
+            << " count=" << std::dec << count;
+        throw std::runtime_error(oss.str());
+    }
+}
+
 void NpuRuntime::validate_dma_id(uint32_t dma_id) const {
     if (dma_id >= DMA_CHANNEL_COUNT) {
         throw std::runtime_error(std::string("Invalid DMA id ") + std::to_string(dma_id));
@@ -1163,6 +1184,18 @@ void NpuRuntime::validate_mvin_dma_cfg(uint32_t dma_id, const MvinConfig& cfg) c
     if (uses_acc_path) {
         throw std::runtime_error("DMA0/1 only support direct DRAM->SPM MVIN");
     }
+    if (!is_spm_aligned(cfg.sram_addr)) {
+        std::ostringstream oss;
+        oss << "DRAM->SPM MVIN requires 16-byte aligned SPM address, got 0x"
+            << std::hex << cfg.sram_addr;
+        throw std::runtime_error(oss.str());
+    }
+    if (cfg.row_num > 0 && !is_spm_aligned(cfg.sram_stride)) {
+        std::ostringstream oss;
+        oss << "DRAM->SPM MVIN requires 16-byte aligned SPM stride, got "
+            << std::dec << cfg.sram_stride;
+        throw std::runtime_error(oss.str());
+    }
 }
 
 void NpuRuntime::validate_mvout_dma_cfg(uint32_t dma_id, const MvoutConfig& cfg) const {
@@ -1176,6 +1209,18 @@ void NpuRuntime::validate_mvout_dma_cfg(uint32_t dma_id, const MvoutConfig& cfg)
     }
     if (uses_acc_path) {
         throw std::runtime_error("DMA0/1 only support direct SPM->DRAM MVOUT");
+    }
+    if (!is_spm_aligned(cfg.sram_addr)) {
+        std::ostringstream oss;
+        oss << "SPM->DRAM MVOUT requires 16-byte aligned SPM address, got 0x"
+            << std::hex << cfg.sram_addr;
+        throw std::runtime_error(oss.str());
+    }
+    if (cfg.row_num > 0 && !is_spm_aligned(cfg.sram_stride)) {
+        std::ostringstream oss;
+        oss << "SPM->DRAM MVOUT requires 16-byte aligned SPM stride, got "
+            << std::dec << cfg.sram_stride;
+        throw std::runtime_error(oss.str());
     }
 }
 
@@ -1402,6 +1447,7 @@ void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
     run_mvout_async(dma_id, cfg);
     NPU_TIMER_SECTION_BEGIN("run_mvout(wait_irq)")
     wait_irq();
+    check_spm_unaligned_status("run_gemm_plan");
     NPU_TIMER_SECTION_END()
 }
 
@@ -1578,12 +1624,14 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
 
 void NpuRuntime::wait_mvin(uint32_t dma_mask) {
     wait_dma_idle(true, dma_mask);
+    check_spm_unaligned_status("wait_mvin");
     release_mvin_staging(dma_mask);
     ack_irq(BIT_START_DMA_MVIN);
 }
 
 void NpuRuntime::wait_mvout(uint32_t dma_mask) {
     wait_dma_idle(false, dma_mask);
+    check_spm_unaligned_status("wait_mvout");
     ack_irq(BIT_START_DMA_MVOUT);
 }
 
@@ -2003,6 +2051,18 @@ void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
     }
     if (cfg.block_k > kPlanTileKMax) {
         throw std::runtime_error("run_gemm_plan: block K exceeds current RTL plan limit");
+    }
+    if (!is_spm_aligned(cfg.a_addr) || !is_spm_aligned(cfg.b_addr)) {
+        std::ostringstream oss;
+        oss << "run_gemm_plan: SPM A/B base addresses must be 16-byte aligned, got A=0x"
+            << std::hex << cfg.a_addr << " B=0x" << cfg.b_addr;
+        throw std::runtime_error(oss.str());
+    }
+    if (!is_spm_aligned(cfg.a_stride) || !is_spm_aligned(cfg.b_stride)) {
+        std::ostringstream oss;
+        oss << "run_gemm_plan: SPM A/B strides must be 16-byte aligned, got A="
+            << std::dec << cfg.a_stride << " B=" << cfg.b_stride;
+        throw std::runtime_error(oss.str());
     }
 
     NPU_TIMER_SECTION_BEGIN("run_gemm_plan(reg_write)")

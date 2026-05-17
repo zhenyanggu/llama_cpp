@@ -387,12 +387,14 @@ bool npu_preload_aicas_w8a8_tensor(const struct ggml_tensor * src0, std::string 
                 }
 
                 std::vector<int8_t> packed;
+                const int64_t m_stride = npu_align_up_i64(m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
                 if (!npu_pack_weight_tile_prequant_i8_transposed(
                             src0,
                             m0,
                             m,
                             k0,
                             k,
+                            m_stride,
                             &packed,
                             error)) {
                     return false;
@@ -997,8 +999,10 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     const int64_t tile_k = plan->use_gemm_plan
         ? plan->config.k_block
         : std::min<int64_t>(plan->config.k_block, plan->config.stage2_k_block);
+    const int64_t tile_k_stride = npu_align_up_i64(tile_k, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
+    const int64_t tile_m_stride = npu_align_up_i64(tile_m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
 
-    const uint32_t act_bytes = static_cast<uint32_t>(tile_n * tile_k);
+    const uint32_t act_bytes = static_cast<uint32_t>(tile_n * tile_k_stride);
     uint32_t act_offset = npu_align_u32(0, NPU_SPM_ALIGNMENT);
     uint32_t weight_offset = 0;
     size_t env_act_offset = 0;
@@ -1010,7 +1014,7 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     if (npu_env_to_size("GGML_NPU_WEIGHT_OFFSET", &env_weight_offset)) {
         weight_offset = npu_align_u32(static_cast<uint32_t>(env_weight_offset), NPU_SPM_ALIGNMENT);
     }
-    const uint32_t weight_bytes = static_cast<uint32_t>(tile_m * tile_k);
+    const uint32_t weight_bytes = static_cast<uint32_t>(tile_m_stride * tile_k);
 
     const uint32_t act_end = act_offset + act_bytes;
     const uint32_t weight_end = weight_offset + weight_bytes;
@@ -1034,39 +1038,39 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         return false;
     }
 
-    const uint32_t acc_bytes = static_cast<uint32_t>(tile_n * tile_m * sizeof(int32_t));
+    const uint32_t acc_bytes = static_cast<uint32_t>(tile_n * tile_m_stride * sizeof(int32_t));
     const uint32_t bias_acc_bytes = plan->bias != nullptr || plan->aicas_w8a8.valid
-        ? npu_align_u32(static_cast<uint32_t>(tile_m * sizeof(int32_t)), NPU_ACC_ALIGNMENT)
+        ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(int32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
         : 0;
     const uint32_t bias_cache_bytes = 0;
     const uint32_t scale_cache_bytes =
         (plan->aicas_w8a8.valid && plan->aicas_w8a8.weight_scale.size() > 1)
-        ? npu_align_u32(static_cast<uint32_t>(tile_m * sizeof(uint32_t)), NPU_ACC_ALIGNMENT)
+        ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(uint32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
         : 0;
-    uint32_t output_acc_offset = npu_align_u32(0, NPU_ACC_ALIGNMENT);
-    uint32_t scratch_acc_offset = npu_align_u32(output_acc_offset + acc_bytes, NPU_ACC_ALIGNMENT);
-    uint32_t bias_acc_offset = npu_align_u32(scratch_acc_offset + acc_bytes, NPU_ACC_ALIGNMENT);
-    uint32_t bias_cache_offset = npu_align_u32(bias_acc_offset + bias_acc_bytes, NPU_ACC_ALIGNMENT);
-    uint32_t scale_cache_offset = npu_align_u32(bias_cache_offset + bias_cache_bytes, NPU_ACC_ALIGNMENT);
+    uint32_t output_acc_offset = npu_align_u32(0, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    uint32_t scratch_acc_offset = npu_align_u32(output_acc_offset + acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    uint32_t bias_acc_offset = npu_align_u32(scratch_acc_offset + acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    uint32_t bias_cache_offset = npu_align_u32(bias_acc_offset + bias_acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    uint32_t scale_cache_offset = npu_align_u32(bias_cache_offset + bias_cache_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     size_t env_bias_acc_offset = 0;
     size_t env_output_acc_offset = 0;
     size_t env_scratch_acc_offset = 0;
     size_t env_bias_cache_offset = 0;
     size_t env_scale_cache_offset = 0;
     if (npu_env_to_size("GGML_NPU_OUTPUT_ACC_OFFSET", &env_output_acc_offset)) {
-        output_acc_offset = npu_align_u32(static_cast<uint32_t>(env_output_acc_offset), NPU_ACC_ALIGNMENT);
+        output_acc_offset = npu_align_u32(static_cast<uint32_t>(env_output_acc_offset), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_SCRATCH_ACC_OFFSET", &env_scratch_acc_offset)) {
-        scratch_acc_offset = npu_align_u32(static_cast<uint32_t>(env_scratch_acc_offset), NPU_ACC_ALIGNMENT);
+        scratch_acc_offset = npu_align_u32(static_cast<uint32_t>(env_scratch_acc_offset), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_BIAS_ACC_OFFSET", &env_bias_acc_offset)) {
-        bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_ACC_ALIGNMENT);
+        bias_acc_offset = npu_align_u32(static_cast<uint32_t>(env_bias_acc_offset), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_BIAS_CACHE_OFFSET", &env_bias_cache_offset)) {
-        bias_cache_offset = npu_align_u32(static_cast<uint32_t>(env_bias_cache_offset), NPU_ACC_ALIGNMENT);
+        bias_cache_offset = npu_align_u32(static_cast<uint32_t>(env_bias_cache_offset), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     }
     if (npu_env_to_size("GGML_NPU_SCALE_CACHE_OFFSET", &env_scale_cache_offset)) {
-        scale_cache_offset = npu_align_u32(static_cast<uint32_t>(env_scale_cache_offset), NPU_ACC_ALIGNMENT);
+        scale_cache_offset = npu_align_u32(static_cast<uint32_t>(env_scale_cache_offset), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     }
     const uint32_t bias_acc_end = bias_acc_offset + bias_acc_bytes;
     const uint32_t scratch_acc_end = scratch_acc_offset + acc_bytes;
@@ -1171,6 +1175,7 @@ static int32_t npu_find_or_create_weight_pack(
     packed.m = m;
     packed.k0 = k0;
     packed.k = k;
+    packed.stride_m = npu_align_up_i64(m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
     if (plan->aicas_w8a8.valid) {
         if (m0 < 0 || m < 0) {
             if (error) {
@@ -1197,6 +1202,7 @@ static int32_t npu_find_or_create_weight_pack(
                     m,
                     k0,
                     k,
+                    packed.stride_m,
                     &packed.packed,
                     error)) {
             return -1;
@@ -1209,6 +1215,7 @@ static int32_t npu_find_or_create_weight_pack(
                     m,
                     k0,
                     k,
+                    packed.stride_m,
                     packed.scales.data(),
                     &packed.packed,
                     error)) {
@@ -1558,6 +1565,13 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         }
     }
 
+    for (npu_exec_tile & exec_tile : plan.exec_tiles) {
+        exec_tile.a_stride = npu_align_up_i64(exec_tile.k, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
+        exec_tile.b_stride = npu_align_up_i64(exec_tile.m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
+        exec_tile.out_stride = npu_align_up_i64(exec_tile.m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
+        exec_tile.bias_stride = exec_tile.out_stride;
+    }
+
     npu_build_weight_column_sum_q(&plan);
 
     const bool should_pack_bias =
@@ -1654,6 +1668,34 @@ bool npu_plan_is_aot_stable(const npu_node_plan & plan, std::string * reason) {
             *reason = "静态量化参数 scale 非法";
         }
         return false;
+    }
+
+    const auto aligned_addr = [](uint32_t addr) {
+        return npu_is_aligned_i64(static_cast<int64_t>(addr), NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    };
+    if (!aligned_addr(plan.config.layout.activation.offset) ||
+        !aligned_addr(plan.config.layout.weight.offset) ||
+        !aligned_addr(plan.config.layout.output_accumulator.offset) ||
+        (plan.use_gemm_plan && !aligned_addr(plan.config.layout.scratch_accumulator.offset)) ||
+        (plan.config.layout.bias_accumulator.bytes != 0 && !aligned_addr(plan.config.layout.bias_accumulator.offset)) ||
+        (plan.config.layout.bias_cache.bytes != 0 && !aligned_addr(plan.config.layout.bias_cache.offset)) ||
+        (plan.config.layout.scale_cache.bytes != 0 && !aligned_addr(plan.config.layout.scale_cache.offset))) {
+        if (reason) {
+            *reason = "GEMM plan base address is not 16-byte aligned";
+        }
+        return false;
+    }
+
+    for (const npu_exec_tile & tile : plan.exec_tiles) {
+        if (!npu_is_aligned_i64(tile.a_stride, NPU_GEMM_PLAN_STRIDE_ALIGNMENT) ||
+            !npu_is_aligned_i64(tile.b_stride, NPU_GEMM_PLAN_STRIDE_ALIGNMENT) ||
+            !npu_is_aligned_i64(tile.out_stride, NPU_GEMM_PLAN_STRIDE_ALIGNMENT) ||
+            !npu_is_aligned_i64(tile.bias_stride, NPU_GEMM_PLAN_STRIDE_ALIGNMENT)) {
+            if (reason) {
+                *reason = "GEMM plan stride is not 16-byte aligned";
+            }
+            return false;
+        }
     }
 
     // AOT-stable here means all geometry, memory offsets and static activation

@@ -354,6 +354,7 @@ private:
     void reg_write64(uint32_t offset, uint64_t val);
     uint32_t reg_read(uint32_t offset);
     uint32_t read_dma_busy_mask(bool is_mvin);
+    void check_spm_unaligned_status(const char* where);
     
     // ----------------------------------------------------
     // 【优化】影子寄存器逻辑

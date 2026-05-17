@@ -32,6 +32,7 @@ bool npu_pack_activation_tile_dynamic_tensor_i8(
         int64_t n_rows,
         int64_t k0,
         int64_t k_cols,
+        int64_t k_stride,
         float scale,
         uint8_t zero_point_u8,
         std::vector<int8_t> * packed,
@@ -43,6 +44,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         int64_t n_rows,
         int64_t k0,
         int64_t k_cols,
+        int64_t k_stride,
         float scale,
         int32_t zero_point,
         const std::vector<float> * smooth_scale,
@@ -55,6 +57,7 @@ bool npu_pack_weight_tile_fixed_i8_transposed(
         int64_t m_cols,
         int64_t k0,
         int64_t k_rows,
+        int64_t m_stride,
         const float * col_scales,
         std::vector<int8_t> * packed,
         std::string * error);
@@ -65,6 +68,7 @@ bool npu_pack_weight_tile_prequant_i8_transposed(
         int64_t m_cols,
         int64_t k0,
         int64_t k_rows,
+        int64_t m_stride,
         std::vector<int8_t> * packed,
         std::string * error);
 

@@ -100,7 +100,7 @@ static bool run_case(ggml_type type, const char * label) {
     std::vector<int8_t> actual;
     std::string error;
     if (!ggml_npu::npu_pack_activation_tile_static_asym_i8(
-                tensor, n0, n_rows, k0, k_cols, scale, zero_point_u8, nullptr, &actual, &error)) {
+                tensor, n0, n_rows, k0, k_cols, k_cols, scale, zero_point_u8, nullptr, &actual, &error)) {
         std::fprintf(stderr, "%s no-smooth pack failed: %s\n", label, error.c_str());
         return false;
     }
@@ -116,7 +116,7 @@ static bool run_case(ggml_type type, const char * label) {
     }
     actual.clear();
     if (!ggml_npu::npu_pack_activation_tile_static_asym_i8(
-                tensor, n0, n_rows, k0, k_cols, scale, zero_point_u8, &smooth, &actual, &error)) {
+                tensor, n0, n_rows, k0, k_cols, k_cols, scale, zero_point_u8, &smooth, &actual, &error)) {
         std::fprintf(stderr, "%s smooth pack failed: %s\n", label, error.c_str());
         return false;
     }
