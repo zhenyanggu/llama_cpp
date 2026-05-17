@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-summary", default="AICAS/artifacts/text_decode_awq_pack_summary.json")
     parser.add_argument("--min-scale", type=float, default=1e-8)
     parser.add_argument("--scale-dtype", choices=["f32", "f16"], default="f32")
+    parser.add_argument(
+        "--override-group-size",
+        type=int,
+        default=None,
+        help="Override the AWQ group size stored in the policy before packing.",
+    )
     return parser.parse_args()
 
 
@@ -121,6 +127,11 @@ def quantize_groupwise_q4(
 def main() -> int:
     args = parse_args()
     layers = load_policy(args.policy)
+    if args.override_group_size is not None:
+        if args.override_group_size <= 0:
+            raise RuntimeError("--override-group-size must be positive")
+        for layer in layers:
+            layer.group_size = args.override_group_size
     reader = gguf.GGUFReader(args.input_gguf, "r")
     source_reader = gguf.GGUFReader(args.source_weights_gguf, "r")
     source_tensor_map = {tensor.name: tensor for tensor in source_reader.tensors}
@@ -142,6 +153,7 @@ def main() -> int:
         "source_weights_gguf": os.path.abspath(args.source_weights_gguf),
         "policy": os.path.abspath(args.policy),
         "scale_dtype": args.scale_dtype,
+        "override_group_size": args.override_group_size,
         "layers": [],
     }
 
