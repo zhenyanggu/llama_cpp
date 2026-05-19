@@ -11,10 +11,12 @@
 #include "llama-memory-recurrent.h"
 
 #include <cassert>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cinttypes>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <mutex>
 #include <unordered_map>
@@ -90,6 +92,13 @@ struct llama_text_activation_observer {
     std::string tensor_name;
 };
 
+static inline float llama_tensor_get_f32_4d(
+        const struct ggml_tensor * tensor,
+        int64_t i0,
+        int64_t i1,
+        int64_t i2,
+        int64_t i3);
+
 enum class llama_text_act_collect_mode {
     prefill,
     decode,
@@ -146,6 +155,17 @@ static bool llama_text_prefill_attn_bfp16m_enabled() {
     return enabled;
 }
 
+static bool llama_text_prefill_attn_bfp8m_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_ATTN_BFP8M");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 static int64_t llama_text_prefill_bfp16m_k_block() {
     static const int64_t k_block = []() {
         constexpr int64_t default_k_block = 64;
@@ -163,8 +183,315 @@ static int64_t llama_text_prefill_bfp16m_k_block() {
     return k_block;
 }
 
+enum class llama_bfp16m_exp_mode {
+    kblock,
+    static_tensor,
+};
+
+static llama_bfp16m_exp_mode llama_text_prefill_bfp16m_exp_mode() {
+    static const llama_bfp16m_exp_mode mode = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_BFP16M_EXP_MODE");
+        if (value == nullptr || value[0] == '\0' || std::strcmp(value, "kblock") == 0) {
+            return llama_bfp16m_exp_mode::kblock;
+        }
+        if (std::strcmp(value, "static_tensor") == 0 || std::strcmp(value, "static-tensor") == 0 ||
+                std::strcmp(value, "static_per_tensor") == 0 || std::strcmp(value, "static-per-tensor") == 0 ||
+                std::strcmp(value, "per_tensor") == 0 || std::strcmp(value, "per-tensor") == 0) {
+            return llama_bfp16m_exp_mode::static_tensor;
+        }
+        return llama_bfp16m_exp_mode::kblock;
+    }();
+    return mode;
+}
+
+static int llama_text_prefill_bfp16m_static_exp(const char * env_name, int default_exp) {
+    const char * value = std::getenv(env_name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_exp;
+    }
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end != value && *end == '\0' && parsed >= -128 && parsed <= 127) {
+        return (int) parsed;
+    }
+    return default_exp;
+}
+
+static int64_t llama_text_prefill_bfp8m_k_block() {
+    static const int64_t k_block = []() {
+        const int64_t default_k_block = llama_text_prefill_bfp16m_k_block();
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_BFP8M_K_BLOCK");
+        if (value == nullptr || value[0] == '\0') {
+            return default_k_block;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            return (int64_t) parsed;
+        }
+        return default_k_block;
+    }();
+    return k_block;
+}
+
+enum class llama_bfp8m_scale_mode {
+    block,
+    tensor,
+    tile,
+};
+
+static llama_bfp8m_scale_mode llama_text_prefill_bfp8m_scale_mode() {
+    static const llama_bfp8m_scale_mode mode = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_BFP8M_SCALE_MODE");
+        if (value == nullptr || value[0] == '\0' || std::strcmp(value, "block") == 0) {
+            return llama_bfp8m_scale_mode::block;
+        }
+        if (std::strcmp(value, "tensor") == 0 || std::strcmp(value, "per_tensor") == 0 ||
+                std::strcmp(value, "per-tensor") == 0 || std::strcmp(value, "static_tensor") == 0 ||
+                std::strcmp(value, "static-per-tensor") == 0) {
+            return llama_bfp8m_scale_mode::tensor;
+        }
+        if (std::strcmp(value, "tile") == 0 || std::strcmp(value, "tile32") == 0 ||
+                std::strcmp(value, "systolic_tile") == 0 || std::strcmp(value, "systolic-tile") == 0) {
+            return llama_bfp8m_scale_mode::tile;
+        }
+        return llama_bfp8m_scale_mode::block;
+    }();
+    return mode;
+}
+
+static int64_t llama_text_prefill_bfp8m_tile() {
+    static const int64_t tile = []() {
+        constexpr int64_t default_tile = 32;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_BFP8M_TILE");
+        if (value == nullptr || value[0] == '\0') {
+            value = std::getenv("AICAS_BFP8M_TILE");
+        }
+        if (value == nullptr || value[0] == '\0') {
+            return default_tile;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            return (int64_t) parsed;
+        }
+        return default_tile;
+    }();
+    return tile;
+}
+
 struct llama_text_bfp16m_userdata {
     int64_t k_block = 64;
+    llama_bfp16m_exp_mode exp_mode = llama_bfp16m_exp_mode::kblock;
+    bool pv_matmul = false;
+    int static_exp_a = 0;
+    int static_exp_b = 0;
+};
+
+static llama_text_bfp16m_userdata llama_make_text_bfp16m_userdata(bool pv_matmul) {
+    llama_text_bfp16m_userdata cfg;
+    cfg.k_block = llama_text_prefill_bfp16m_k_block();
+    cfg.exp_mode = llama_text_prefill_bfp16m_exp_mode();
+    cfg.pv_matmul = pv_matmul;
+    if (cfg.exp_mode == llama_bfp16m_exp_mode::static_tensor) {
+        const int q_exp = llama_text_prefill_bfp16m_static_exp("AICAS_TEXT_PREFILL_BFP16M_Q_EXP", -11);
+        const int k_exp = llama_text_prefill_bfp16m_static_exp("AICAS_TEXT_PREFILL_BFP16M_K_EXP", -11);
+        const int v_exp = llama_text_prefill_bfp16m_static_exp("AICAS_TEXT_PREFILL_BFP16M_V_EXP", -12);
+        const int p_exp = llama_text_prefill_bfp16m_static_exp("AICAS_TEXT_PREFILL_BFP16M_P_EXP", -15);
+        cfg.static_exp_a = pv_matmul ? v_exp : k_exp;
+        cfg.static_exp_b = pv_matmul ? p_exp : q_exp;
+    }
+    return cfg;
+}
+
+static std::string llama_text_attn_dist_stats_path() {
+    static const std::string path = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_ATTN_DIST_FILE");
+        return value == nullptr ? std::string() : std::string(value);
+    }();
+    return path;
+}
+
+static int64_t llama_text_attn_dist_k_block() {
+    static const int64_t k_block = []() {
+        constexpr int64_t default_k_block = 64;
+        const char * value = std::getenv("AICAS_ATTN_DIST_K_BLOCK");
+        if (value == nullptr || value[0] == '\0') {
+            return default_k_block;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            return (int64_t) parsed;
+        }
+        return default_k_block;
+    }();
+    return k_block;
+}
+
+static void llama_write_float_array_json(std::ostream & out, const std::vector<float> & values) {
+    out << '[';
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ',';
+        }
+        out << values[i];
+    }
+    out << ']';
+}
+
+static void llama_record_attn_tensor_dist(
+        const char * scope,
+        const char * op,
+        const char * tensor_role,
+        const struct ggml_tensor * tensor,
+        bool a_layout) {
+    const std::string path = llama_text_attn_dist_stats_path();
+    if (path.empty() || tensor == nullptr) {
+        return;
+    }
+
+    float min_v = std::numeric_limits<float>::infinity();
+    float max_v = -std::numeric_limits<float>::infinity();
+    float absmax = 0.0f;
+    double sum = 0.0;
+    double sum_abs = 0.0;
+    double sum_sq = 0.0;
+    uint64_t count = 0;
+    std::vector<float> abs_samples;
+    std::vector<float> top_abs;
+    const uint64_t total = (uint64_t) tensor->ne[0] * (uint64_t) tensor->ne[1] *
+        (uint64_t) tensor->ne[2] * (uint64_t) tensor->ne[3];
+    const uint64_t sample_stride = std::max<uint64_t>(1, total / 8192);
+
+    for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for (int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                for (int64_t i0 = 0; i0 < tensor->ne[0]; ++i0) {
+                    const float v = llama_tensor_get_f32_4d(tensor, i0, i1, i2, i3);
+                    const float av = std::fabs(v);
+                    min_v = std::min(min_v, v);
+                    max_v = std::max(max_v, v);
+                    absmax = std::max(absmax, av);
+                    sum += v;
+                    sum_abs += av;
+                    sum_sq += (double) v * (double) v;
+                    if (count % sample_stride == 0) {
+                        abs_samples.push_back(av);
+                    }
+                    if (top_abs.size() < 16) {
+                        top_abs.push_back(av);
+                        if (top_abs.size() == 16) {
+                            std::make_heap(top_abs.begin(), top_abs.end(), std::greater<float>());
+                        }
+                    } else if (av > top_abs.front()) {
+                        std::pop_heap(top_abs.begin(), top_abs.end(), std::greater<float>());
+                        top_abs.back() = av;
+                        std::push_heap(top_abs.begin(), top_abs.end(), std::greater<float>());
+                    }
+                    ++count;
+                }
+            }
+        }
+    }
+    if (top_abs.size() == 16) {
+        std::sort_heap(top_abs.begin(), top_abs.end(), std::greater<float>());
+    }
+    std::sort(top_abs.begin(), top_abs.end(), std::greater<float>());
+
+    uint64_t tensor_bfp8_zero = 0;
+    uint64_t tensor_bfp8_sat = 0;
+    const double tensor_scale = absmax > 0.0f ? (double) absmax / 127.0 : 0.0;
+    if (tensor_scale > 0.0) {
+        for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+                for (int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                    for (int64_t i0 = 0; i0 < tensor->ne[0]; ++i0) {
+                        const double q_abs = std::fabs(std::lrint((double) llama_tensor_get_f32_4d(tensor, i0, i1, i2, i3) / tensor_scale));
+                        tensor_bfp8_zero += q_abs == 0.0;
+                        tensor_bfp8_sat += q_abs >= 127.0;
+                    }
+                }
+            }
+        }
+    }
+
+    const int64_t k_total = tensor->ne[0];
+    const int64_t block = std::max<int64_t>(1, llama_text_attn_dist_k_block());
+    std::vector<float> block_absmax;
+    uint64_t block_bfp8_zero = 0;
+    uint64_t block_bfp8_sat = 0;
+    for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for (int64_t row_col = 0; row_col < tensor->ne[1]; ++row_col) {
+                for (int64_t k0 = 0; k0 < k_total; k0 += block) {
+                    const int64_t k1 = std::min(k_total, k0 + block);
+                    float bmax = 0.0f;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        const float v = a_layout
+                            ? llama_tensor_get_f32_4d(tensor, k, row_col, i2, i3)
+                            : llama_tensor_get_f32_4d(tensor, k, row_col, i2, i3);
+                        bmax = std::max(bmax, std::fabs(v));
+                    }
+                    block_absmax.push_back(bmax);
+                    const double block_scale = bmax > 0.0f ? (double) bmax / 127.0 : 0.0;
+                    if (block_scale == 0.0) {
+                        continue;
+                    }
+                    for (int64_t k = k0; k < k1; ++k) {
+                        const double q_abs = std::fabs(std::lrint((double) llama_tensor_get_f32_4d(tensor, k, row_col, i2, i3) / block_scale));
+                        block_bfp8_zero += q_abs == 0.0;
+                        block_bfp8_sat += q_abs >= 127.0;
+                    }
+                }
+            }
+        }
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(path, std::ios::app | std::ios::binary);
+    if (!out.is_open()) {
+        LLAMA_LOG_ERROR("%s: failed to open text attention dist file: %s\n", __func__, path.c_str());
+        return;
+    }
+    out << std::setprecision(9)
+        << "{\"schema\":\"aicas.attn_tensor_dist.v1\""
+        << ",\"scope\":\"" << scope << "\""
+        << ",\"op\":\"" << op << "\""
+        << ",\"tensor\":\"" << tensor_role << "\""
+        << ",\"shape\":[" << tensor->ne[0] << ',' << tensor->ne[1] << ',' << tensor->ne[2] << ',' << tensor->ne[3] << ']'
+        << ",\"count\":" << count
+        << ",\"min\":" << min_v
+        << ",\"max\":" << max_v
+        << ",\"absmax\":" << absmax
+        << ",\"mean\":" << (count > 0 ? sum / (double) count : 0.0)
+        << ",\"mean_abs\":" << (count > 0 ? sum_abs / (double) count : 0.0)
+        << ",\"rms\":" << (count > 0 ? std::sqrt(sum_sq / (double) count) : 0.0)
+        << ",\"bfp8_tensor_scale\":" << tensor_scale
+        << ",\"bfp8_tensor_zero_count\":" << tensor_bfp8_zero
+        << ",\"bfp8_tensor_sat_count\":" << tensor_bfp8_sat
+        << ",\"bfp8_block_k\":" << block
+        << ",\"bfp8_block_zero_count\":" << block_bfp8_zero
+        << ",\"bfp8_block_sat_count\":" << block_bfp8_sat
+        << ",\"abs_samples\":";
+    llama_write_float_array_json(out, abs_samples);
+    out << ",\"top_abs\":";
+    llama_write_float_array_json(out, top_abs);
+    out << ",\"block_absmax\":";
+    llama_write_float_array_json(out, block_absmax);
+    out << "}\n";
+}
+
+struct llama_text_bfp8m_userdata {
+    int64_t k_block = 64;
+    int64_t tile = 32;
+    llama_bfp8m_scale_mode scale_mode = llama_bfp8m_scale_mode::block;
+};
+
+struct llama_scale_shift32 {
+    int32_t scale = 0;
+    int32_t shift = 0;
 };
 
 static inline float llama_tensor_get_f32_4d(
@@ -196,6 +523,37 @@ static inline void llama_tensor_set_f32_4d(
         i0 * tensor->nb[0] + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
     GGML_ASSERT(tensor->type == GGML_TYPE_F32);
     *(float *) ptr = value;
+}
+
+static llama_scale_shift32 llama_scale_to_scale_shift32(float scale) {
+    llama_scale_shift32 out;
+    if (!std::isfinite(scale) || scale == 0.0f) {
+        return out;
+    }
+
+    int exponent = 0;
+    const double abs_scale = std::fabs(static_cast<double>(scale));
+    const double mantissa = std::frexp(abs_scale, &exponent);
+    int64_t scale_i64 = llrint(mantissa * static_cast<double>(1ULL << 31));
+    if (scale_i64 >= (1LL << 31)) {
+        scale_i64 >>= 1;
+        exponent += 1;
+    }
+
+    if (scale_i64 > INT32_MAX) {
+        scale_i64 = INT32_MAX;
+    }
+    if (std::signbit(scale)) {
+        scale_i64 = -scale_i64;
+    }
+
+    out.scale = static_cast<int32_t>(scale_i64);
+    out.shift = exponent - 31;
+    return out;
+}
+
+static inline double llama_scale_shift32_to_double(llama_scale_shift32 scale) {
+    return std::ldexp(static_cast<double>(scale.scale), scale.shift);
 }
 
 static inline int16_t llama_bfp16m_quant_value(float value, int exp) {
@@ -251,6 +609,52 @@ static inline int64_t llama_bfp16m_saturating_add_i64(int64_t a, int64_t b) {
 
 static int llama_bfp16m_block_exp_for_a(
         const struct ggml_tensor * a,
+        const llama_text_bfp16m_userdata * cfg,
+        int64_t row,
+        int64_t a_i2,
+        int64_t a_i3,
+        int64_t k0,
+        int64_t k1) {
+    if (cfg != nullptr && cfg->exp_mode == llama_bfp16m_exp_mode::static_tensor) {
+        return cfg->static_exp_a;
+    }
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(a, k, row, a_i2, a_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static int llama_bfp16m_block_exp_for_b(
+        const struct ggml_tensor * b,
+        const llama_text_bfp16m_userdata * cfg,
+        int64_t col,
+        int64_t b_i2,
+        int64_t b_i3,
+        int64_t k0,
+        int64_t k1) {
+    if (cfg != nullptr && cfg->exp_mode == llama_bfp16m_exp_mode::static_tensor) {
+        return cfg->static_exp_b;
+    }
+    float max_abs = 0.0f;
+    for (int64_t k = k0; k < k1; ++k) {
+        max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(b, k, col, b_i2, b_i3)));
+    }
+    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+}
+
+static inline int8_t llama_bfp8m_quant_value(float value, llama_scale_shift32 scale) {
+    const double scale_f = llama_scale_shift32_to_double(scale);
+    if (scale_f == 0.0) {
+        return 0;
+    }
+    long q = std::lrint(static_cast<double>(value) / scale_f);
+    q = std::max<long>(-127, std::min<long>(127, q));
+    return static_cast<int8_t>(q);
+}
+
+static llama_scale_shift32 llama_bfp8m_block_scale_for_a(
+        const struct ggml_tensor * a,
         int64_t row,
         int64_t a_i2,
         int64_t a_i3,
@@ -260,10 +664,10 @@ static int llama_bfp16m_block_exp_for_a(
     for (int64_t k = k0; k < k1; ++k) {
         max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(a, k, row, a_i2, a_i3)));
     }
-    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+    return max_abs > 0.0f ? llama_scale_to_scale_shift32(max_abs / 127.0f) : llama_scale_shift32{};
 }
 
-static int llama_bfp16m_block_exp_for_b(
+static llama_scale_shift32 llama_bfp8m_block_scale_for_b(
         const struct ggml_tensor * b,
         int64_t col,
         int64_t b_i2,
@@ -274,7 +678,55 @@ static int llama_bfp16m_block_exp_for_b(
     for (int64_t k = k0; k < k1; ++k) {
         max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(b, k, col, b_i2, b_i3)));
     }
-    return max_abs > 0.0f ? (int) std::ceil(std::log2((double) max_abs / 32767.0)) : 0;
+    return max_abs > 0.0f ? llama_scale_to_scale_shift32(max_abs / 127.0f) : llama_scale_shift32{};
+}
+
+static llama_scale_shift32 llama_bfp8m_tensor_scale(const struct ggml_tensor * tensor) {
+    float max_abs = 0.0f;
+    for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for (int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                for (int64_t i0 = 0; i0 < tensor->ne[0]; ++i0) {
+                    max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(tensor, i0, i1, i2, i3)));
+                }
+            }
+        }
+    }
+    return max_abs > 0.0f ? llama_scale_to_scale_shift32(max_abs / 127.0f) : llama_scale_shift32{};
+}
+
+static llama_scale_shift32 llama_bfp8m_tile_scale_for_a(
+        const struct ggml_tensor * a,
+        int64_t row,
+        int64_t a_i2,
+        int64_t a_i3,
+        int64_t tile) {
+    const int64_t row0 = (row / tile) * tile;
+    const int64_t row1 = std::min<int64_t>(a->ne[1], row0 + tile);
+    float max_abs = 0.0f;
+    for (int64_t r = row0; r < row1; ++r) {
+        for (int64_t k = 0; k < a->ne[0]; ++k) {
+            max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(a, k, r, a_i2, a_i3)));
+        }
+    }
+    return max_abs > 0.0f ? llama_scale_to_scale_shift32(max_abs / 127.0f) : llama_scale_shift32{};
+}
+
+static llama_scale_shift32 llama_bfp8m_tile_scale_for_b(
+        const struct ggml_tensor * b,
+        int64_t col,
+        int64_t b_i2,
+        int64_t b_i3,
+        int64_t tile) {
+    const int64_t col0 = (col / tile) * tile;
+    const int64_t col1 = std::min<int64_t>(b->ne[1], col0 + tile);
+    float max_abs = 0.0f;
+    for (int64_t c = col0; c < col1; ++c) {
+        for (int64_t k = 0; k < b->ne[0]; ++k) {
+            max_abs = std::max(max_abs, std::fabs(llama_tensor_get_f32_4d(b, k, c, b_i2, b_i3)));
+        }
+    }
+    return max_abs > 0.0f ? llama_scale_to_scale_shift32(max_abs / 127.0f) : llama_scale_shift32{};
 }
 
 static void llama_compute_text_bfp16m_mul_mat(
@@ -302,6 +754,9 @@ static void llama_compute_text_bfp16m_mul_mat(
     if (ith != 0) {
         return;
     }
+
+    llama_record_attn_tensor_dist("text_prefill", cfg->pv_matmul ? "pv" : "qk", cfg->pv_matmul ? "v" : "k", a, true);
+    llama_record_attn_tensor_dist("text_prefill", cfg->pv_matmul ? "pv" : "qk", cfg->pv_matmul ? "p" : "q", b, false);
 
     const int64_t k_total = a->ne[0];
     const int64_t exp_block = std::max<int64_t>(1, cfg->k_block);
@@ -331,7 +786,7 @@ static void llama_compute_text_bfp16m_mul_mat(
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
                     const int64_t k0 = kb * exp_block;
                     const int64_t k1 = std::min(k_total, k0 + exp_block);
-                    const int exp = llama_bfp16m_block_exp_for_a(a, row, i2, i3, k0, k1);
+                    const int exp = llama_bfp16m_block_exp_for_a(a, cfg, row, i2, i3, k0, k1);
                     const int8_t exp_i8 = llama_bfp16m_exp_to_i8(exp);
                     a_exp[(size_t) (i3 * a_e_stride_i3 + i2 * a_e_stride_i2 + row * a_e_stride_row + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
@@ -349,7 +804,7 @@ static void llama_compute_text_bfp16m_mul_mat(
                 for (int64_t kb = 0; kb < n_kb; ++kb) {
                     const int64_t k0 = kb * exp_block;
                     const int64_t k1 = std::min(k_total, k0 + exp_block);
-                    const int exp = llama_bfp16m_block_exp_for_b(b, col, i2, i3, k0, k1);
+                    const int exp = llama_bfp16m_block_exp_for_b(b, cfg, col, i2, i3, k0, k1);
                     const int8_t exp_i8 = llama_bfp16m_exp_to_i8(exp);
                     b_exp[(size_t) (i3 * b_e_stride_i3 + i2 * b_e_stride_i2 + col * b_e_stride_col + kb)] = exp_i8;
                     for (int64_t k = k0; k < k1; ++k) {
@@ -412,21 +867,179 @@ static void llama_compute_text_bfp16m_mul_mat(
 static ggml_tensor * llama_build_text_bfp16m_mul_mat(
         ggml_context * ctx0,
         ggml_tensor * a,
-        ggml_tensor * b) {
+        ggml_tensor * b,
+        bool pv_matmul) {
     GGML_ASSERT(a->ne[0] == b->ne[0]);
     GGML_ASSERT(b->ne[2] % a->ne[2] == 0);
     GGML_ASSERT(b->ne[3] % a->ne[3] == 0);
 
     ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
-    static llama_text_bfp16m_userdata cfg = {
-        /*.k_block =*/ llama_text_prefill_bfp16m_k_block(),
-    };
+    static llama_text_bfp16m_userdata qk_cfg = llama_make_text_bfp16m_userdata(false);
+    static llama_text_bfp16m_userdata pv_cfg = llama_make_text_bfp16m_userdata(true);
+    llama_text_bfp16m_userdata * cfg = pv_matmul ? &pv_cfg : &qk_cfg;
     return ggml_map_custom3(
             ctx0,
             out_template,
             a,
             b,
             llama_compute_text_bfp16m_mul_mat,
+            1,
+            cfg);
+}
+
+static void llama_compute_text_bfp8m_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+    GGML_UNUSED(nth);
+
+    const auto * cfg = static_cast<const llama_text_bfp8m_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(a->type == GGML_TYPE_F32 || a->type == GGML_TYPE_F16);
+    GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    GGML_ASSERT(dst->ne[0] == a->ne[1]);
+    GGML_ASSERT(dst->ne[1] == b->ne[1]);
+    GGML_ASSERT(dst->ne[2] == b->ne[2]);
+    GGML_ASSERT(dst->ne[3] == b->ne[3]);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const int64_t k_total = a->ne[0];
+    const bool per_tensor_scale = cfg->scale_mode == llama_bfp8m_scale_mode::tensor;
+    const bool per_tile_scale = cfg->scale_mode == llama_bfp8m_scale_mode::tile;
+    const int64_t scale_block = (per_tensor_scale || per_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
+    const int64_t n_kb = (k_total + scale_block - 1) / scale_block;
+    const int64_t a_s_stride_row = n_kb;
+    const int64_t a_s_stride_i2 = a->ne[1] * a_s_stride_row;
+    const int64_t a_s_stride_i3 = a->ne[2] * a_s_stride_i2;
+    const int64_t a_q_stride_row = k_total;
+    const int64_t a_q_stride_i2 = a->ne[1] * a_q_stride_row;
+    const int64_t a_q_stride_i3 = a->ne[2] * a_q_stride_i2;
+
+    const int64_t b_s_stride_col = n_kb;
+    const int64_t b_s_stride_i2 = b->ne[1] * b_s_stride_col;
+    const int64_t b_s_stride_i3 = b->ne[2] * b_s_stride_i2;
+    const int64_t b_q_stride_col = k_total;
+    const int64_t b_q_stride_i2 = b->ne[1] * b_q_stride_col;
+    const int64_t b_q_stride_i3 = b->ne[2] * b_q_stride_i2;
+
+    std::vector<llama_scale_shift32> a_scale((size_t) (a->ne[3] * a_s_stride_i3));
+    std::vector<int8_t> a_q((size_t) (a->ne[3] * a_q_stride_i3));
+    std::vector<llama_scale_shift32> b_scale((size_t) (b->ne[3] * b_s_stride_i3));
+    std::vector<int8_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
+    const llama_scale_shift32 tensor_scale_a = per_tensor_scale ? llama_bfp8m_tensor_scale(a) : llama_scale_shift32{};
+    const llama_scale_shift32 tensor_scale_b = per_tensor_scale ? llama_bfp8m_tensor_scale(b) : llama_scale_shift32{};
+    const int64_t tile = std::max<int64_t>(1, cfg->tile);
+
+    for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+            for (int64_t row = 0; row < a->ne[1]; ++row) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * scale_block;
+                    const int64_t k1 = std::min(k_total, k0 + scale_block);
+                    const llama_scale_shift32 scale = per_tensor_scale
+                        ? tensor_scale_a
+                        : (per_tile_scale
+                            ? llama_bfp8m_tile_scale_for_a(a, row, i2, i3, tile)
+                            : llama_bfp8m_block_scale_for_a(a, row, i2, i3, k0, k1));
+                    a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row + kb)] = scale;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
+                            llama_bfp8m_quant_value(llama_tensor_get_f32_4d(a, k, row, i2, i3), scale);
+                    }
+                }
+            }
+        }
+    }
+
+    for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+            for (int64_t col = 0; col < b->ne[1]; ++col) {
+                for (int64_t kb = 0; kb < n_kb; ++kb) {
+                    const int64_t k0 = kb * scale_block;
+                    const int64_t k1 = std::min(k_total, k0 + scale_block);
+                    const llama_scale_shift32 scale = per_tensor_scale
+                        ? tensor_scale_b
+                        : (per_tile_scale
+                            ? llama_bfp8m_tile_scale_for_b(b, col, i2, i3, tile)
+                            : llama_bfp8m_block_scale_for_b(b, col, i2, i3, k0, k1));
+                    b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)] = scale;
+                    for (int64_t k = k0; k < k1; ++k) {
+                        b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
+                            llama_bfp8m_quant_value(llama_tensor_get_f32_4d(b, k, col, i2, i3), scale);
+                    }
+                }
+            }
+        }
+    }
+
+    const int64_t total = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
+    for (int64_t index = 0; index < total; ++index) {
+        int64_t rem = index;
+        const int64_t row = rem % dst->ne[0];
+        rem /= dst->ne[0];
+        const int64_t col = rem % dst->ne[1];
+        rem /= dst->ne[1];
+        const int64_t i2 = rem % dst->ne[2];
+        rem /= dst->ne[2];
+        const int64_t i3 = rem;
+        const int64_t a_i2 = i2 % a->ne[2];
+        const int64_t a_i3 = i3 % a->ne[3];
+
+        double acc = 0.0;
+        for (int64_t kb = 0; kb < n_kb; ++kb) {
+            const int64_t k0 = kb * scale_block;
+            const int64_t k1 = std::min(k_total, k0 + scale_block);
+            int64_t partial = 0;
+            for (int64_t k = k0; k < k1; ++k) {
+                const int8_t qa = a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + k)];
+                const int8_t qb = b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)];
+                partial += (int32_t) qa * (int32_t) qb;
+            }
+
+            const llama_scale_shift32 scale_a =
+                a_scale[(size_t) (a_i3 * a_s_stride_i3 + a_i2 * a_s_stride_i2 + row * a_s_stride_row + kb)];
+            const llama_scale_shift32 scale_b =
+                b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)];
+            const double partial_scale = std::ldexp(
+                    static_cast<double>(scale_a.scale) * static_cast<double>(scale_b.scale),
+                    scale_a.shift + scale_b.shift);
+            acc += static_cast<double>(partial) * partial_scale;
+        }
+
+        llama_tensor_set_f32_4d(dst, row, col, i2, i3, static_cast<float>(acc));
+    }
+}
+
+static ggml_tensor * llama_build_text_bfp8m_mul_mat(
+        ggml_context * ctx0,
+        ggml_tensor * a,
+        ggml_tensor * b) {
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    GGML_ASSERT(b->ne[2] % a->ne[2] == 0);
+    GGML_ASSERT(b->ne[3] % a->ne[3] == 0);
+
+    ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
+    static llama_text_bfp8m_userdata cfg = {
+        /*.k_block =*/ llama_text_prefill_bfp8m_k_block(),
+        /*.tile =*/ llama_text_prefill_bfp8m_tile(),
+        /*.scale_mode =*/ llama_text_prefill_bfp8m_scale_mode(),
+    };
+    return ggml_map_custom3(
+            ctx0,
+            out_template,
+            a,
+            b,
+            llama_compute_text_bfp8m_mul_mat,
             1,
             &cfg);
 }
@@ -2268,21 +2881,32 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
-        const bool use_text_prefill_bfp16m =
+        const bool can_use_text_prefill_custom_attn =
             n_tokens > 1 &&
             kq_b == nullptr &&
             sinks == nullptr &&
-            v_mla == nullptr &&
+            v_mla == nullptr;
+        const bool use_text_prefill_bfp8m =
+            can_use_text_prefill_custom_attn &&
+            llama_text_prefill_attn_bfp8m_enabled();
+        const bool use_text_prefill_bfp16m =
+            can_use_text_prefill_custom_attn &&
+            !use_text_prefill_bfp8m &&
             llama_text_prefill_attn_bfp16m_enabled();
 
-        ggml_tensor * kq = use_text_prefill_bfp16m
-            ? llama_build_text_bfp16m_mul_mat(ctx0, k, q)
-            : ggml_mul_mat(ctx0, k, q);
+        ggml_tensor * kq = nullptr;
+        if (use_text_prefill_bfp8m) {
+            kq = llama_build_text_bfp8m_mul_mat(ctx0, k, q);
+        } else if (use_text_prefill_bfp16m) {
+            kq = llama_build_text_bfp16m_mul_mat(ctx0, k, q, false);
+        } else {
+            kq = ggml_mul_mat(ctx0, k, q);
+        }
         cb(kq, "kq", il);
 
         // note: this op tends to require high floating point range
         //       while for some models F16 is enough, for others it is not, so we default to F32 here
-        if (!use_text_prefill_bfp16m) {
+        if (!use_text_prefill_bfp8m && !use_text_prefill_bfp16m) {
             ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
         }
 
@@ -2323,9 +2947,14 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cb(v, "v_cont", il);
         }
 
-        ggml_tensor * kqv = use_text_prefill_bfp16m
-            ? llama_build_text_bfp16m_mul_mat(ctx0, v, kq)
-            : ggml_mul_mat(ctx0, v, kq);
+        ggml_tensor * kqv = nullptr;
+        if (use_text_prefill_bfp8m) {
+            kqv = llama_build_text_bfp8m_mul_mat(ctx0, v, kq);
+        } else if (use_text_prefill_bfp16m) {
+            kqv = llama_build_text_bfp16m_mul_mat(ctx0, v, kq, true);
+        } else {
+            kqv = ggml_mul_mat(ctx0, v, kq);
+        }
         cb(kqv, "kqv", il);
 
         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA

@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-scale", type=float, default=1e-8)
     parser.add_argument("--scale-dtype", choices=["f32", "f16"], default="f32")
     parser.add_argument(
+        "--q4-mode",
+        choices=["asymmetric", "symmetric"],
+        default="asymmetric",
+        help="Groupwise int4 quantization mode. symmetric uses zero=8 and signed range [-7, 7].",
+    )
+    parser.add_argument(
         "--override-group-size",
         type=int,
         default=None,
@@ -94,6 +100,7 @@ def quantize_groupwise_q4(
     weight: np.ndarray,
     group_size: int,
     min_scale: float,
+    q4_mode: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     out_features, in_features = weight.shape
     groups = (in_features + group_size - 1) // group_size
@@ -106,11 +113,17 @@ def quantize_groupwise_q4(
             start = group * group_size
             end = min(in_features, start + group_size)
             segment = weight[row, start:end]
-            w_min = float(np.min(segment))
-            w_max = float(np.max(segment))
-            scale = max((w_max - w_min) / 15.0, min_scale)
-            zero = float(np.clip(np.round(-w_min / scale), 0, 15))
-            q = np.clip(np.round(segment / scale + zero), 0, 15).astype(np.uint8)
+            if q4_mode == "symmetric":
+                scale = max(float(np.max(np.abs(segment))) / 7.0, min_scale)
+                zero = 8.0
+                q_signed = np.clip(np.round(segment / scale), -7, 7)
+                q = (q_signed + zero).astype(np.uint8)
+            else:
+                w_min = float(np.min(segment))
+                w_max = float(np.max(segment))
+                scale = max((w_max - w_min) / 15.0, min_scale)
+                zero = float(np.clip(np.round(-w_min / scale), 0, 15))
+                q = np.clip(np.round(segment / scale + zero), 0, 15).astype(np.uint8)
             scales[row, group] = scale
             zeros[row, group] = zero
             for local_idx, qv in enumerate(q):
@@ -153,6 +166,7 @@ def main() -> int:
         "source_weights_gguf": os.path.abspath(args.source_weights_gguf),
         "policy": os.path.abspath(args.policy),
         "scale_dtype": args.scale_dtype,
+        "q4_mode": args.q4_mode,
         "override_group_size": args.override_group_size,
         "layers": [],
     }
@@ -192,7 +206,7 @@ def main() -> int:
             if source.shape != (layer.out_features, layer.in_features):
                 raise RuntimeError(f"shape mismatch for {layer.tensor_name}: {source.shape} vs expected {(layer.out_features, layer.in_features)}")
             scaled = np.asarray(source * layer.smooth_scale[np.newaxis, :], dtype=np.float32)
-            packed, scales, zeros = quantize_groupwise_q4(scaled, layer.group_size, args.min_scale)
+            packed, scales, zeros = quantize_groupwise_q4(scaled, layer.group_size, args.min_scale, args.q4_mode)
             scales_out = scales.astype(np.float16) if args.scale_dtype == "f16" else scales
 
             writer.add_tensor_info(layer.quant_tensor_name, packed.shape, packed.dtype, packed.nbytes, raw_dtype=None)
@@ -203,6 +217,7 @@ def main() -> int:
             staged.append(np.ascontiguousarray(zeros))
             entry["groups"] = int(scales.shape[1])
             entry["scale_dtype"] = args.scale_dtype
+            entry["q4_mode"] = args.q4_mode
 
         summary["layers"].append(entry)
 
