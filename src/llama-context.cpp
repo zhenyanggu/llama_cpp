@@ -8,8 +8,11 @@
 #include "llama-model.h"
 
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 
 static void llama_maybe_dump_debug_dot(const ggml_cgraph * gf, bool batched) {
@@ -28,6 +31,71 @@ static void llama_maybe_dump_debug_dot(const ggml_cgraph * gf, bool batched) {
     ggml_graph_dump_dot(gf, nullptr, path);
     LLAMA_LOG_INFO("%s: dumped %s graph to %s\n", __func__, batched ? "prefill" : "decode", path);
     dumped = true;
+}
+
+static const char * llama_ubatch_trace_path() {
+    const char * path = std::getenv("LLAMA_UBATCH_TRACE_JSONL");
+    return path != nullptr && path[0] != '\0' ? path : nullptr;
+}
+
+static uint64_t llama_ubatch_trace_next_decode_id() {
+    static std::mutex mutex;
+    static uint64_t next_id = 0;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    return ++next_id;
+}
+
+static void llama_ubatch_trace_append(const std::string & line) {
+    const char * path = llama_ubatch_trace_path();
+    if (path == nullptr) {
+        return;
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        return;
+    }
+
+    out << line << '\n';
+}
+
+static void llama_ubatch_trace_batch(
+        uint64_t decode_id,
+        uint32_t n_tokens_all,
+        uint32_t n_outputs_all,
+        uint32_t n_batch,
+        uint32_t n_ubatch,
+        bool causal_attn,
+        bool output_all) {
+    llama_ubatch_trace_append(
+            std::string("{\"event\":\"batch\"") +
+            ",\"decode_id\":" + std::to_string(decode_id) +
+            ",\"n_tokens_all\":" + std::to_string(n_tokens_all) +
+            ",\"n_outputs_all\":" + std::to_string(n_outputs_all) +
+            ",\"n_batch\":" + std::to_string(n_batch) +
+            ",\"n_ubatch\":" + std::to_string(n_ubatch) +
+            ",\"causal_attn\":" + (causal_attn ? "true" : "false") +
+            ",\"output_all\":" + (output_all ? "true" : "false") +
+            "}");
+}
+
+static void llama_ubatch_trace_ubatch(uint64_t decode_id, uint32_t ubatch_index, const llama_ubatch & ubatch) {
+    llama_ubatch_trace_append(
+            std::string("{\"event\":\"ubatch\"") +
+            ",\"decode_id\":" + std::to_string(decode_id) +
+            ",\"ubatch_index\":" + std::to_string(ubatch_index) +
+            ",\"n_tokens\":" + std::to_string(ubatch.n_tokens) +
+            ",\"n_seq_tokens\":" + std::to_string(ubatch.n_seq_tokens) +
+            ",\"n_seqs\":" + std::to_string(ubatch.n_seqs) +
+            ",\"n_seqs_unq\":" + std::to_string(ubatch.n_seqs_unq) +
+            ",\"equal_seqs\":" + (ubatch.equal_seqs() ? "true" : "false") +
+            ",\"has_token\":" + (ubatch.token != nullptr ? "true" : "false") +
+            ",\"has_embd\":" + (ubatch.embd != nullptr ? "true" : "false") +
+            "}");
 }
 
 //
@@ -1023,6 +1091,19 @@ int llama_context::decode(const llama_batch & batch_inp) {
     }
     n_queued_tokens += n_tokens_all;
 
+    const bool trace_ubatches = llama_ubatch_trace_path() != nullptr;
+    const uint64_t trace_decode_id = trace_ubatches ? llama_ubatch_trace_next_decode_id() : 0;
+    if (trace_ubatches) {
+        llama_ubatch_trace_batch(
+                trace_decode_id,
+                n_tokens_all,
+                n_outputs_all,
+                cparams.n_batch,
+                cparams.n_ubatch,
+                cparams.causal_attn,
+                output_all);
+    }
+
     // TODO: this clear of the buffer can easily be forgotten - need something better
     embd_seq.clear();
     output_swaps.clear();
@@ -1084,9 +1165,13 @@ int llama_context::decode(const llama_batch & batch_inp) {
     };
 
     int64_t n_outputs_prev = 0;
+    uint32_t trace_ubatch_index = 0;
 
     do {
         const auto & ubatch = mctx->get_ubatch();
+        if (trace_ubatches) {
+            llama_ubatch_trace_ubatch(trace_decode_id, trace_ubatch_index++, ubatch);
+        }
 
         // count the outputs in this ubatch
         {

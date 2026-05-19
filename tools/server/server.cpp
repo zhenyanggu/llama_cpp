@@ -3971,6 +3971,76 @@ struct server_context {
                     // remove the non-common part from the cache
                     slot.prompt.tokens.keep_first(slot.n_past);
 
+                    if (slot.task->type == SERVER_TASK_TYPE_COMPLETION &&
+                            slot.n_past == 0 &&
+                            batch.n_tokens == 0 &&
+                            !slot.need_embd() &&
+                            lora_get_enabled_ids(slot.lora).empty()) {
+                        int32_t merged_res = 0;
+                        llama_pos merged_n_past = 0;
+                        if (input_tokens.process_merged_prefill(ctx, mctx, slot.id, merged_n_past, merged_res, &slot.mmproj_profile)) {
+                            if (merged_res != 0) {
+                                SLT_ERR(slot, "failed to process merged multimodal prefill, res = %d\n", merged_res);
+                                send_error(slot, "failed to process merged multimodal prefill", ERROR_TYPE_SERVER);
+                                slot.release();
+                                continue;
+                            }
+
+                            metrics.on_decoded(slots);
+
+                            input_tokens.push_back_all_to(slot.prompt.tokens);
+                            slot.n_past                    = merged_n_past;
+                            slot.n_prompt_tokens_processed = merged_n_past - slot.n_prompt_tokens_cache;
+
+                            SLT_INF(slot, "prompt processing progress, n_past = %d, n_tokens = %d, progress = %f\n",
+                                    slot.n_past, (int) merged_n_past, (float) slot.n_past / slot.n_prompt_tokens());
+
+                            common_sampler_reset(slot.smpl);
+                            for (int i = 0; i < slot.n_prompt_tokens(); ++i) {
+                                llama_token id = input_tokens[i];
+                                if (id != LLAMA_TOKEN_NULL) {
+                                    common_sampler_accept(slot.smpl, id, false);
+                                }
+                            }
+
+                            slot.state     = SLOT_STATE_GENERATING;
+                            slot.n_decoded = 0;
+                            slot.i_batch   = -1;
+
+                            const int tok_idx = -1;
+                            llama_token id = common_sampler_sample(slot.smpl, ctx, tok_idx);
+
+                            common_sampler_accept(slot.smpl, id, true);
+                            slot.n_decoded += 1;
+
+                            const int64_t t_current = ggml_time_us();
+                            slot.t_start_generation = t_current;
+                            slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
+                            slot.write_mtmd_prefill_profile_summary();
+                            metrics.on_prompt_eval(slot);
+                            slot.t_token_generation = 1e-3;
+
+                            completion_token_output result;
+                            result.tok          = id;
+                            result.text_to_send = common_token_to_piece(ctx, result.tok, accept_special_token(slot, result.tok));
+                            result.prob         = 1.0f;
+
+                            if (slot.task->params.sampling.n_probs > 0) {
+                                populate_token_probs(slot, result, slot.task->params.post_sampling_probs, params_base.special, tok_idx);
+                            }
+
+                            if (!process_token(result, slot)) {
+                                slot.print_timings();
+                                send_final_response(slot);
+                                metrics.on_prediction(slot);
+                                slot.release();
+                                continue;
+                            }
+
+                            continue;
+                        }
+                    }
+
                     // check if we should process the image
                     if (slot.n_past < slot.n_prompt_tokens() && input_tokens[slot.n_past] == LLAMA_TOKEN_NULL) {
                         // process the image

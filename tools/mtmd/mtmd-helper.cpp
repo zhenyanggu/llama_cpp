@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 //#define MTMD_AUDIO_DEBUG
@@ -315,6 +317,134 @@ int32_t mtmd_helper_eval_chunk_single(mtmd_context * ctx,
     return 0;
 }
 
+static bool mtmd_helper_merge_prefill_enabled() {
+    const char * value = std::getenv("LLAMA_MTMD_MERGE_PREFILL");
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+struct mtmd_helper_merged_chunk {
+    mtmd_input_chunk_type type;
+    int32_t n_tokens;
+    const mtmd_input_chunk * chunk;
+    std::vector<float> embd;
+};
+
+static bool mtmd_helper_eval_chunks_merged(
+        mtmd_context * ctx,
+        struct llama_context * lctx,
+        const mtmd_input_chunks * chunks,
+        llama_pos n_past,
+        llama_seq_id seq_id,
+        int32_t n_batch,
+        bool logits_last,
+        llama_pos * new_n_past,
+        int32_t * result) {
+    if (mtmd_decode_use_mrope(ctx) || mtmd_decode_use_non_causal(ctx)) {
+        return false;
+    }
+
+    const size_t n_chunks = mtmd_input_chunks_size(chunks);
+    const int32_t n_tokens_total = (int32_t) mtmd_helper_get_n_tokens(chunks);
+    if (n_tokens_total <= 0 || n_tokens_total > n_batch) {
+        return false;
+    }
+
+    const llama_model * model = llama_get_model(lctx);
+    const int32_t n_embd = llama_model_n_embd(model);
+
+    std::vector<mtmd_helper_merged_chunk> merged_chunks;
+    merged_chunks.reserve(n_chunks);
+
+    for (size_t i = 0; i < n_chunks; i++) {
+        const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
+        const mtmd_input_chunk_type type = mtmd_input_chunk_get_type(chunk);
+        const int32_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk);
+
+        mtmd_helper_merged_chunk merged_chunk = {
+            /* type     = */ type,
+            /* n_tokens = */ n_tokens,
+            /* chunk    = */ chunk,
+            /* embd     = */ {},
+        };
+
+        if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE || type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            const char * name = type == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" : "audio";
+            const int64_t t0 = ggml_time_ms();
+
+            LOG_INF("encoding %s slice for merged prefill...\n", name);
+
+            *result = mtmd_encode_chunk(ctx, chunk);
+            if (*result != 0) {
+                LOG_ERR("failed to encode %s slice\n", name);
+                return true;
+            }
+
+            LOG_INF("%s slice encoded for merged prefill in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
+
+            float * embd = mtmd_get_output_embd(ctx);
+            if (!embd) {
+                LOG_ERR("failed to get %s embeddings for merged prefill\n", name);
+                *result = -1;
+                return true;
+            }
+
+            merged_chunk.embd.assign(embd, embd + (size_t) n_tokens * n_embd);
+        } else if (type != MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            GGML_ABORT("chunk type not supported");
+        }
+
+        merged_chunks.emplace_back(std::move(merged_chunk));
+    }
+
+    std::vector<float> embd_all((size_t) n_tokens_total * n_embd);
+    int32_t cursor = 0;
+
+    for (const mtmd_helper_merged_chunk & merged_chunk : merged_chunks) {
+        if (merged_chunk.type == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            size_t n_text_tokens = 0;
+            const llama_token * tokens = mtmd_input_chunk_get_tokens_text(merged_chunk.chunk, &n_text_tokens);
+            if ((int32_t) n_text_tokens != merged_chunk.n_tokens) {
+                return false;
+            }
+
+            for (size_t i = 0; i < n_text_tokens; i++) {
+                float * out = embd_all.data() + ((size_t) cursor + i) * n_embd;
+                if (!llama_model_get_token_embedding(model, tokens[i], out, n_embd)) {
+                    LOG_INF("merged prefill disabled: token embedding lookup is unsupported for this model\n");
+                    return false;
+                }
+            }
+        } else {
+            std::copy(
+                    merged_chunk.embd.begin(),
+                    merged_chunk.embd.end(),
+                    embd_all.begin() + (size_t) cursor * n_embd);
+        }
+
+        cursor += merged_chunk.n_tokens;
+    }
+
+    decode_embd_batch batch_embd(embd_all.data(), n_tokens_total, 1, n_embd);
+    batch_embd.set_position_normal(n_past, seq_id);
+    if (logits_last) {
+        batch_embd.batch.logits[n_tokens_total - 1] = true;
+    }
+
+    LOG_INF("decoding merged multimodal prefill, n_chunks = %zu, n_tokens = %d\n", n_chunks, n_tokens_total);
+
+    const int64_t t1 = ggml_time_ms();
+    *result = llama_decode(lctx, batch_embd.batch);
+    if (*result != 0) {
+        LOG_ERR("failed to decode merged multimodal prefill\n");
+        return true;
+    }
+
+    LOG_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
+
+    *new_n_past = n_past + mtmd_helper_get_n_pos(chunks);
+    return true;
+}
+
 int32_t mtmd_helper_eval_chunks(mtmd_context * ctx,
                                 struct llama_context * lctx,
                                 const mtmd_input_chunks * chunks,
@@ -327,6 +457,15 @@ int32_t mtmd_helper_eval_chunks(mtmd_context * ctx,
     if (n_chunks == 0) {
         LOG_ERR("no chunks to eval\n");
         return 0;
+    }
+
+    if (mtmd_helper_merge_prefill_enabled()) {
+        int32_t res = 0;
+        if (mtmd_helper_eval_chunks_merged(ctx, lctx, chunks, n_past, seq_id, n_batch, logits_last, new_n_past, &res)) {
+            return res;
+        }
+
+        LOG_INF("merged multimodal prefill is not applicable; falling back to chunked prefill\n");
     }
 
     for (size_t i = 0; i < n_chunks; i++) {

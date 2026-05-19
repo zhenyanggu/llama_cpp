@@ -109,6 +109,14 @@ static int8_t npu_quantize_i8(float value, float scale) {
     return static_cast<int8_t>(q);
 }
 
+static int8_t npu_quantize_u8_payload(float shifted) {
+    int32_t q = static_cast<int32_t>(std::lrint(shifted));
+    q = std::max(0, std::min(255, q));
+    // Keep raw uint8 payload in memory; GEMM asymmetric_activations
+    // path will apply the fixed -128 in hardware.
+    return static_cast<int8_t>(q);
+}
+
 std::vector<float> npu_compute_weight_output_scales(
         const struct ggml_tensor * src0,
         int64_t m0,
@@ -131,6 +139,7 @@ bool npu_pack_activation_tile_dynamic_tensor_i8(
         int64_t n_rows,
         int64_t k0,
         int64_t k_cols,
+        int64_t k_stride,
         float scale,
         uint8_t zero_point_u8,
         std::vector<int8_t> * packed,
@@ -141,7 +150,13 @@ bool npu_pack_activation_tile_dynamic_tensor_i8(
         }
         return false;
     }
-    packed->assign(static_cast<size_t>(n_rows * k_cols), 0);
+    if (k_stride < k_cols) {
+        if (error) {
+            *error = "激活打包 stride 小于 K tile";
+        }
+        return false;
+    }
+    packed->assign(static_cast<size_t>(n_rows * k_stride), 0);
     for (int64_t n = 0; n < n_rows; ++n) {
         for (int64_t k = 0; k < k_cols; ++k) {
             const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
@@ -149,7 +164,7 @@ bool npu_pack_activation_tile_dynamic_tensor_i8(
             q_u8 = std::max(0, std::min(255, q_u8));
             // Keep raw uint8 payload in memory; GEMM asymmetric_activations
             // path will apply the fixed -128 in hardware.
-            (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q_u8);
+            (*packed)[static_cast<size_t>(n * k_stride + k)] = static_cast<int8_t>(q_u8);
         }
     }
     return true;
@@ -161,6 +176,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         int64_t n_rows,
         int64_t k0,
         int64_t k_cols,
+        int64_t k_stride,
         float scale,
         int32_t zero_point_u8,
         const std::vector<float> * smooth_scale,
@@ -172,7 +188,13 @@ bool npu_pack_activation_tile_static_asym_i8(
         }
         return false;
     }
-    packed->assign(static_cast<size_t>(n_rows * k_cols), 0);
+    if (k_stride < k_cols) {
+        if (error) {
+            *error = "激活打包 stride 小于 K tile";
+        }
+        return false;
+    }
+    packed->assign(static_cast<size_t>(n_rows * k_stride), 0);
     if (smooth_scale != nullptr && !smooth_scale->empty() &&
             static_cast<size_t>(k0 + k_cols) > smooth_scale->size()) {
         if (error) {
@@ -183,16 +205,101 @@ bool npu_pack_activation_tile_static_asym_i8(
     const float inv_scale = scale > 0.0f ? (1.0f / scale) : 0.0f;
     const float zp = static_cast<float>(zero_point_u8);
     if (smooth_scale != nullptr && !smooth_scale->empty()) {
+        const float * smooth = smooth_scale->data() + static_cast<size_t>(k0);
+        if (src1->type == GGML_TYPE_F32 && src1->nb[0] == static_cast<int64_t>(sizeof(float))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const float * row = reinterpret_cast<const float *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(row[k] * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
+        if (src1->type == GGML_TYPE_F16 && src1->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const ggml_fp16_t * row = reinterpret_cast<const ggml_fp16_t *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    const float v = ggml_fp16_to_fp32(row[k]);
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(v * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
+        if (src1->type == GGML_TYPE_I8 && src1->nb[0] == static_cast<int64_t>(sizeof(int8_t))) {
+            for (int64_t n = 0; n < n_rows; ++n) {
+                const int8_t * row = reinterpret_cast<const int8_t *>(
+                    static_cast<const char *>(src1->data) +
+                    (n0 + n) * src1->nb[1] +
+                    k0 * src1->nb[0]);
+                int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+                for (int64_t k = 0; k < k_cols; ++k) {
+                    const float v = static_cast<float>(row[k]);
+                    dst[static_cast<size_t>(k)] =
+                        npu_quantize_u8_payload(v * smooth[static_cast<size_t>(k)] + zp);
+                }
+            }
+            return true;
+        }
         for (int64_t n = 0; n < n_rows; ++n) {
             for (int64_t k = 0; k < k_cols; ++k) {
                 const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
                 const float fused_multiplier = (*smooth_scale)[static_cast<size_t>(k0 + k)];
-                const float shifted = v * fused_multiplier + zp;
-                int32_t q = static_cast<int32_t>(std::lrint(shifted));
-                q = std::max(0, std::min(255, q));
-                // Keep raw uint8 payload in memory; GEMM asymmetric_activations
-                // path will apply the fixed -128 in hardware.
-                (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q);
+                (*packed)[static_cast<size_t>(n * k_stride + k)] =
+                    npu_quantize_u8_payload(v * fused_multiplier + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_F32 && src1->nb[0] == static_cast<int64_t>(sizeof(float))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const float * row = reinterpret_cast<const float *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(row[k] * inv_scale + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_F16 && src1->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const ggml_fp16_t * row = reinterpret_cast<const ggml_fp16_t *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                const float v = ggml_fp16_to_fp32(row[k]);
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(v * inv_scale + zp);
+            }
+        }
+        return true;
+    }
+    if (src1->type == GGML_TYPE_I8 && src1->nb[0] == static_cast<int64_t>(sizeof(int8_t))) {
+        for (int64_t n = 0; n < n_rows; ++n) {
+            const int8_t * row = reinterpret_cast<const int8_t *>(
+                static_cast<const char *>(src1->data) +
+                (n0 + n) * src1->nb[1] +
+                k0 * src1->nb[0]);
+            int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+            for (int64_t k = 0; k < k_cols; ++k) {
+                const float v = static_cast<float>(row[k]);
+                dst[static_cast<size_t>(k)] =
+                    npu_quantize_u8_payload(v * inv_scale + zp);
             }
         }
         return true;
@@ -201,11 +308,7 @@ bool npu_pack_activation_tile_static_asym_i8(
         for (int64_t k = 0; k < k_cols; ++k) {
             const float v = npu_read_tensor_value_f32(src1, k0 + k, n0 + n);
             const float shifted = v * inv_scale + zp;
-            int32_t q = static_cast<int32_t>(std::lrint(shifted));
-            q = std::max(0, std::min(255, q));
-            // Keep raw uint8 payload in memory; GEMM asymmetric_activations
-            // path will apply the fixed -128 in hardware.
-            (*packed)[static_cast<size_t>(n * k_cols + k)] = static_cast<int8_t>(q);
+            (*packed)[static_cast<size_t>(n * k_stride + k)] = npu_quantize_u8_payload(shifted);
         }
     }
     return true;
@@ -217,6 +320,7 @@ bool npu_pack_weight_tile_fixed_i8_transposed(
         int64_t m_cols,
         int64_t k0,
         int64_t k_rows,
+        int64_t m_stride,
         const float * col_scales,
         std::vector<int8_t> * packed,
         std::string * error) {
@@ -226,11 +330,17 @@ bool npu_pack_weight_tile_fixed_i8_transposed(
         }
         return false;
     }
-    packed->assign(static_cast<size_t>(k_rows * m_cols), 0);
+    if (m_stride < m_cols) {
+        if (error) {
+            *error = "权重打包 stride 小于 M tile";
+        }
+        return false;
+    }
+    packed->assign(static_cast<size_t>(k_rows * m_stride), 0);
     for (int64_t k = 0; k < k_rows; ++k) {
         for (int64_t m = 0; m < m_cols; ++m) {
             const float v = npu_read_weight_value_f32(src0, k0 + k, m0 + m);
-            (*packed)[static_cast<size_t>(k * m_cols + m)] = npu_quantize_i8(v, col_scales[m]);
+            (*packed)[static_cast<size_t>(k * m_stride + m)] = npu_quantize_i8(v, col_scales[m]);
         }
     }
     return true;
@@ -242,6 +352,7 @@ bool npu_pack_weight_tile_prequant_i8_transposed(
         int64_t m_cols,
         int64_t k0,
         int64_t k_rows,
+        int64_t m_stride,
         std::vector<int8_t> * packed,
         std::string * error) {
     if (src0 == nullptr || src0->type != GGML_TYPE_I8) {
@@ -257,12 +368,18 @@ bool npu_pack_weight_tile_prequant_i8_transposed(
         return false;
     }
 
-    packed->assign(static_cast<size_t>(k_rows * m_cols), 0);
+    if (m_stride < m_cols) {
+        if (error) {
+            *error = "权重打包 stride 小于 M tile";
+        }
+        return false;
+    }
+    packed->assign(static_cast<size_t>(k_rows * m_stride), 0);
     for (int64_t m = 0; m < m_cols; ++m) {
         const int8_t * row_ptr = reinterpret_cast<const int8_t *>(
             static_cast<const char *>(src0->data) + (m0 + m) * src0->nb[1] + k0 * src0->nb[0]);
         for (int64_t k = 0; k < k_rows; ++k) {
-            (*packed)[static_cast<size_t>(k * m_cols + m)] = row_ptr[k];
+            (*packed)[static_cast<size_t>(k * m_stride + m)] = row_ptr[k];
         }
     }
 

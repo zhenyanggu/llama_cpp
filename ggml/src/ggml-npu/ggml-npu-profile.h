@@ -68,6 +68,8 @@ struct npu_profile_node_record {
     int64_t n = 0;
     int64_t k = 0;
     bool use_aicas_w8a8 = false;
+    bool shape_table_hit = false;
+    std::string shape_table_source;
     float activation_scale = 0.0f;
     int32_t activation_zero_point = 0;
     int64_t first_stage_tm = 0;
@@ -101,6 +103,11 @@ struct npu_profile_node_record {
     int64_t bias_bytes_total = 0;
     int64_t acc_readback_bytes_total = 0;
     int64_t output_write_bytes_total = 0;
+    double setup_runtime_us_total = 0.0;
+    double setup_validate_us_total = 0.0;
+    double setup_buffer_alloc_us_total = 0.0;
+    double setup_cache_alloc_us_total = 0.0;
+    double setup_profile_begin_us_total = 0.0;
     double activation_pack_us_total = 0.0;
     double host_copy_activation_us_total = 0.0;
     double host_copy_weight_us_total = 0.0;
@@ -143,6 +150,11 @@ struct npu_profile_summary_delta {
     int64_t acc_readback_bytes_total = 0;
     int64_t output_write_bytes_total = 0;
     int64_t total_node_us = 0;
+    int64_t setup_runtime_us_total = 0;
+    int64_t setup_validate_us_total = 0;
+    int64_t setup_buffer_alloc_us_total = 0;
+    int64_t setup_cache_alloc_us_total = 0;
+    int64_t setup_profile_begin_us_total = 0;
     int64_t activation_pack_us_total = 0;
     int64_t host_copy_activation_us_total = 0;
     int64_t host_copy_weight_us_total = 0;

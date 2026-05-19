@@ -26,6 +26,11 @@ static bool npu_runtime_profile_requested() {
     return path != nullptr && path[0] != '\0';
 }
 
+static bool npu_eager_init_enabled() {
+    const char * v = std::getenv("GGML_NPU_EAGER_INIT");
+    return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+}
+
 static int64_t & npu_profile_next_layer_id() {
     static int64_t next_layer_id = 0;
     return next_layer_id;
@@ -421,6 +426,12 @@ static ggml_backend_t npu_device_init_backend(ggml_backend_dev_t dev, const char
     };
 
     if (backend == nullptr) {
+        delete ctx;
+        return nullptr;
+    }
+
+    if (npu_eager_init_enabled() && npu_init() != 0) {
+        delete backend;
         delete ctx;
         return nullptr;
     }

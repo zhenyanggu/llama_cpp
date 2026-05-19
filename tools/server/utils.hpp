@@ -3,6 +3,7 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "ggml-cpu.h"
 #include "arg.h" // common_remote_get_content
 #include "base64.hpp"
 #include "mtmd.h"
@@ -24,6 +25,8 @@
 #include <nlohmann/json.hpp>
 
 #include <random>
+#include <algorithm>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,6 +34,7 @@
 #include <cinttypes>
 #include <fstream>
 #include <cstdlib>
+#include <cstring>
 
 #define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
 
@@ -63,7 +67,24 @@ static bool server_mtmd_profile_enabled() {
     return !path.empty();
 }
 
+static bool server_mtmd_merge_prefill_enabled() {
+    const char * value = std::getenv("LLAMA_MTMD_MERGE_PREFILL");
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool server_mtmd_cpu_op_profile_enabled() {
+    const char * env = std::getenv("LLAMA_MTMD_CPU_OP_PROFILE");
+    return env != nullptr && env[0] != '\0' && std::string(env) != "0";
+}
+
 struct server_mtmd_prefill_profile {
+    struct mmproj_category_aggregate {
+        int64_t node_count = 0;
+        int64_t duration_us = 0;
+        int64_t elements = 0;
+        int64_t bytes = 0;
+    };
+
     bool enabled = false;
     bool has_media = false;
     int64_t media_chunk_count = 0;
@@ -74,6 +95,12 @@ struct server_mtmd_prefill_profile {
     int64_t mmproj_encode_us = 0;
     int64_t media_decode_us = 0;
     int64_t media_process_us = 0;
+    bool merged_prefill = false;
+    int64_t merged_tokens = 0;
+    int64_t text_tokens = 0;
+    int64_t merged_decode_us = 0;
+    std::vector<json> mmproj_encode_details;
+    std::vector<json> cpu_backend_profile_details;
 #ifdef GGML_USE_NPU
     ggml_npu_profile_summary npu = {};
 #endif
@@ -89,6 +116,12 @@ struct server_mtmd_prefill_profile {
         mmproj_encode_us = 0;
         media_decode_us = 0;
         media_process_us = 0;
+        merged_prefill = false;
+        merged_tokens = 0;
+        text_tokens = 0;
+        merged_decode_us = 0;
+        mmproj_encode_details.clear();
+        cpu_backend_profile_details.clear();
 #ifdef GGML_USE_NPU
         npu = {};
 #endif
@@ -98,7 +131,9 @@ struct server_mtmd_prefill_profile {
             const mtmd_input_chunk * chunk,
             int64_t encode_us,
             int64_t decode_us,
-            int64_t total_us
+            int64_t total_us,
+            const char * mmproj_summary_json,
+            const char * cpu_backend_profile_json
 #ifdef GGML_USE_NPU
             , const ggml_npu_profile_summary & npu_summary
 #endif
@@ -120,6 +155,19 @@ struct server_mtmd_prefill_profile {
             image_chunk_count += 1;
         } else if (type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
             audio_chunk_count += 1;
+        }
+
+        if (mmproj_summary_json != nullptr && mmproj_summary_json[0] != '\0') {
+            json detail = json::parse(mmproj_summary_json, nullptr, false);
+            if (!detail.is_discarded()) {
+                mmproj_encode_details.push_back(std::move(detail));
+            }
+        }
+        if (cpu_backend_profile_json != nullptr && cpu_backend_profile_json[0] != '\0') {
+            json detail = json::parse(cpu_backend_profile_json, nullptr, false);
+            if (!detail.is_discarded()) {
+                cpu_backend_profile_details.push_back(std::move(detail));
+            }
         }
 
 #ifdef GGML_USE_NPU
@@ -173,6 +221,134 @@ struct server_mtmd_prefill_profile {
         npu.runtime_mvout_calls += npu_summary.runtime_mvout_calls;
         npu.runtime_layout_calls += npu_summary.runtime_layout_calls;
 #endif
+    }
+
+    void set_merged_prefill(int64_t n_merged_tokens, int64_t n_text_tokens, int64_t decode_us) {
+        if (!enabled) {
+            return;
+        }
+
+        merged_prefill = true;
+        merged_tokens = n_merged_tokens;
+        text_tokens = n_text_tokens;
+        merged_decode_us = decode_us;
+    }
+
+    json aggregate_mmproj_phase_us() const {
+        std::map<std::string, int64_t> phases;
+        for (const json & detail : mmproj_encode_details) {
+            if (!detail.contains("phases") || !detail["phases"].is_object()) {
+                continue;
+            }
+            for (auto it = detail["phases"].begin(); it != detail["phases"].end(); ++it) {
+                if (it.value().is_number_integer()) {
+                    phases[it.key()] += it.value().get<int64_t>();
+                }
+            }
+        }
+
+        json out = json::object();
+        for (const auto & kv : phases) {
+            out[kv.first] = kv.second;
+        }
+        return out;
+    }
+
+    int64_t aggregate_mmproj_known_profile_overhead_us() const {
+        int64_t overhead_us = 0;
+        for (const json & detail : mmproj_encode_details) {
+            if (detail.contains("known_profile_overhead_us") && detail["known_profile_overhead_us"].is_number_integer()) {
+                overhead_us += detail["known_profile_overhead_us"].get<int64_t>();
+            }
+        }
+        return overhead_us;
+    }
+
+    json aggregate_mmproj_cpu_operator_categories() const {
+        std::map<std::string, mmproj_category_aggregate> categories;
+        for (const json & detail : mmproj_encode_details) {
+            if (!detail.contains("graph") ||
+                    !detail["graph"].contains("cpu_operator_categories") ||
+                    !detail["graph"]["cpu_operator_categories"].is_array()) {
+                continue;
+            }
+
+            for (const json & item : detail["graph"]["cpu_operator_categories"]) {
+                if (!item.contains("name") || !item["name"].is_string()) {
+                    continue;
+                }
+                const std::string name = item["name"].get<std::string>();
+                auto & dst = categories[name];
+                dst.node_count += item.value("node_count", 0);
+                dst.duration_us += item.value("duration_us", 0);
+                dst.elements += item.value("elements", 0);
+                dst.bytes += item.value("bytes", 0);
+            }
+        }
+
+        std::vector<std::pair<std::string, mmproj_category_aggregate>> sorted(categories.begin(), categories.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+            if (a.second.bytes != b.second.bytes) {
+                return a.second.bytes > b.second.bytes;
+            }
+            if (a.second.elements != b.second.elements) {
+                return a.second.elements > b.second.elements;
+            }
+            return a.first < b.first;
+        });
+
+        json out = json::array();
+        for (const auto & kv : sorted) {
+            out.push_back({
+                {"name", kv.first},
+                {"node_count", kv.second.node_count},
+                {"elements", kv.second.elements},
+                {"bytes", kv.second.bytes},
+            });
+        }
+        return out;
+    }
+
+    json aggregate_cpu_backend_operator_categories() const {
+        std::map<std::string, mmproj_category_aggregate> categories;
+        for (const json & detail : cpu_backend_profile_details) {
+            if (!detail.contains("operator_categories") || !detail["operator_categories"].is_array()) {
+                continue;
+            }
+
+            for (const json & item : detail["operator_categories"]) {
+                if (!item.contains("name") || !item["name"].is_string()) {
+                    continue;
+                }
+                const std::string name = item["name"].get<std::string>();
+                auto & dst = categories[name];
+                dst.node_count += item.value("node_count", 0);
+                dst.duration_us += item.value("duration_us", 0);
+                dst.elements += item.value("elements", 0);
+                dst.bytes += item.value("bytes", 0);
+            }
+        }
+
+        std::vector<std::pair<std::string, mmproj_category_aggregate>> sorted(categories.begin(), categories.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+            if (a.second.duration_us != b.second.duration_us) {
+                return a.second.duration_us > b.second.duration_us;
+            }
+            return a.first < b.first;
+        });
+
+        json out = json::array();
+        for (const auto & kv : sorted) {
+            out.push_back({
+                {"name", kv.first},
+                {"node_count", kv.second.node_count},
+                {"duration_us", kv.second.duration_us},
+                {"duration_ms", static_cast<double>(kv.second.duration_us) / 1000.0},
+                {"elements", kv.second.elements},
+                {"bytes", kv.second.bytes},
+            });
+        }
+        return out;
     }
 
     json to_json(
@@ -258,6 +434,9 @@ struct server_mtmd_prefill_profile {
             {"prefill_total_us", static_cast<int64_t>(prefill_total_us)},
             {"mmproj", {
                 {"has_media", has_media},
+                {"merged_prefill", merged_prefill},
+                {"merged_tokens", merged_tokens},
+                {"text_tokens", text_tokens},
                 {"media_chunk_count", media_chunk_count},
                 {"image_chunk_count", image_chunk_count},
                 {"audio_chunk_count", audio_chunk_count},
@@ -265,13 +444,24 @@ struct server_mtmd_prefill_profile {
                 {"media_positions", media_positions},
                 {"encode_us", mmproj_encode_us},
                 {"decode_us", media_decode_us},
+                {"merged_decode_us", merged_decode_us},
                 {"total_chunk_us", media_process_us},
+                {"encode_details", mmproj_encode_details},
+                {"cpu_backend_profile_details", cpu_backend_profile_details},
             }},
             {"npu", npu_json},
             {"derived", {
                 {"npu_host_us", static_cast<int64_t>(npu_host_us)},
                 {"npu_total_node_us", static_cast<int64_t>(npu_total_node_us)},
                 {"mmproj_residual_cpu_us", static_cast<int64_t>(residual_cpu_us)},
+                {"mmproj_residual_cpu_detail", {
+                    {"kind", "non_intrusive_phase_timing_and_graph_categories"},
+                    {"note", "This splits the residual by coarse mmproj phases and scheduled CPU graph categories. CPU operator categories are node/byte counts, not exact per-operator runtime."},
+                    {"known_profile_overhead_us", aggregate_mmproj_known_profile_overhead_us()},
+                    {"phase_wall_time_us", aggregate_mmproj_phase_us()},
+                    {"cpu_operator_categories", aggregate_mmproj_cpu_operator_categories()},
+                    {"cpu_backend_operator_categories", aggregate_cpu_backend_operator_categories()},
+                }},
                 {"prefill_minus_mmproj_us", static_cast<int64_t>(std::max(0.0, prefill_total_us - static_cast<double>(mmproj_encode_us)))},
             }},
         };
@@ -1424,6 +1614,21 @@ public:
         }
     }
 
+    void push_back_all_to(server_tokens & dst) const {
+        GGML_ASSERT(!has_mtmd || dst.has_mtmd);
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const llama_token tok = tokens[i];
+            if (tok != LLAMA_TOKEN_NULL) {
+                dst.push_back(tok);
+                continue;
+            }
+
+            const auto & chunk = find_chunk(i);
+            dst.push_back(chunk.get());
+            i += mtmd_input_chunk_get_n_pos(chunk.get()) - 1;
+        }
+    }
+
     // for compatibility with context shift and prompt truncation
     void insert(const llama_tokens & inp_tokens) {
         GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
@@ -1444,6 +1649,10 @@ public:
 
     size_t size() const {
         return tokens.size();
+    }
+
+    bool has_media() const {
+        return has_mtmd && !map_pos_to_media.empty();
     }
 
     bool empty() const {
@@ -1609,8 +1818,15 @@ public:
 #endif
 
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
+            const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
+            if (collect_cpu_backend_profile) {
+                ggml_backend_cpu_profile_start();
+            }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
+            const char * cpu_backend_profile_json =
+                collect_cpu_backend_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+            const char * mmproj_summary_json = collect_profile ? mtmd_get_last_mmproj_summary_json(mctx) : nullptr;
 
 #ifdef GGML_USE_NPU
             if (profile != nullptr && profile->enabled) {
@@ -1637,7 +1853,9 @@ public:
                         chunk.get(),
                         encode_us,
                         decode_us,
-                        ggml_time_us() - process_start_us
+                        ggml_time_us() - process_start_us,
+                        mmproj_summary_json,
+                        cpu_backend_profile_json
 #ifdef GGML_USE_NPU
                         , npu_summary
 #endif
@@ -1655,6 +1873,157 @@ public:
 
         n_pos_out = new_n_past;
         return 0;
+    }
+
+    bool process_merged_prefill(
+                llama_context * ctx,
+                mtmd_context * mctx,
+                int32_t seq_id,
+                llama_pos & n_pos_out,
+                int32_t & result,
+                server_mtmd_prefill_profile * profile = nullptr) const {
+        if (!server_mtmd_merge_prefill_enabled() || !has_media() || mctx == nullptr) {
+            return false;
+        }
+        if (mtmd_decode_use_mrope(mctx) || mtmd_decode_use_non_causal(mctx)) {
+            return false;
+        }
+        if (tokens.empty() || tokens.size() > (size_t) llama_n_batch(ctx)) {
+            return false;
+        }
+
+        const llama_model * model = llama_get_model(ctx);
+        const int32_t n_embd = llama_model_n_embd(model);
+        std::vector<float> embd_all(tokens.size() * (size_t) n_embd);
+
+        size_t cursor = 0;
+        int64_t text_token_count = 0;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const llama_token tok = tokens[i];
+            if (tok != LLAMA_TOKEN_NULL) {
+                float * out = embd_all.data() + cursor * (size_t) n_embd;
+                if (!llama_model_get_token_embedding(model, tok, out, n_embd)) {
+                    SRV_INF("%s", "merged prefill disabled: token embedding lookup is unsupported for this model\n");
+                    return false;
+                }
+                ++cursor;
+                ++text_token_count;
+                continue;
+            }
+
+            const auto & chunk = find_chunk(i);
+            const mtmd_input_chunk_type type = mtmd_input_chunk_get_type(chunk.get());
+            if (type != MTMD_INPUT_CHUNK_TYPE_IMAGE && type != MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+                return false;
+            }
+
+            const int32_t n_pos = mtmd_input_chunk_get_n_pos(chunk.get());
+            const int32_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk.get());
+            if (n_pos != n_tokens || i + (size_t) n_pos > tokens.size()) {
+                return false;
+            }
+
+            const char * name = type == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" : "audio";
+            const int64_t t0 = ggml_time_ms();
+            SRV_INF("encoding %s slice for merged prefill...\n", name);
+            const bool collect_profile = profile != nullptr && profile->enabled;
+#ifdef GGML_USE_NPU
+            const bool collect_npu_summary = collect_profile;
+            ggml_npu_profile_summary npu_summary = {};
+            if (collect_npu_summary) {
+                ggml_backend_npu_profile_summary_start();
+            }
+#endif
+            const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
+            const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
+            if (collect_cpu_backend_profile) {
+                ggml_backend_cpu_profile_start();
+            }
+            result = mtmd_encode_chunk(mctx, chunk.get());
+            const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
+            const char * cpu_backend_profile_json =
+                collect_cpu_backend_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+            const char * mmproj_summary_json = collect_profile ? mtmd_get_last_mmproj_summary_json(mctx) : nullptr;
+#ifdef GGML_USE_NPU
+            if (collect_npu_summary) {
+                ggml_backend_npu_profile_summary_stop(&npu_summary);
+            }
+#endif
+            if (result != 0) {
+                SRV_ERR("failed to encode %s slice for merged prefill\n", name);
+                return true;
+            }
+            SRV_INF("%s slice encoded for merged prefill in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
+
+            if (profile != nullptr && profile->enabled) {
+                profile->add_chunk(
+                        chunk.get(),
+                        encode_us,
+                        0,
+                        encode_us,
+                        mmproj_summary_json,
+                        cpu_backend_profile_json
+#ifdef GGML_USE_NPU
+                        , npu_summary
+#endif
+                        );
+            }
+
+            float * embd = mtmd_get_output_embd(mctx);
+            if (!embd) {
+                SRV_ERR("failed to get %s embeddings for merged prefill\n", name);
+                result = -1;
+                return true;
+            }
+
+            std::copy(embd, embd + (size_t) n_tokens * n_embd, embd_all.begin() + cursor * (size_t) n_embd);
+            cursor += n_tokens;
+            i += (size_t) n_pos - 1;
+        }
+
+        if (cursor != tokens.size()) {
+            return false;
+        }
+
+        std::vector<llama_pos> pos(tokens.size());
+        std::vector<int32_t> n_seq_id(tokens.size(), 1);
+        std::vector<llama_seq_id> seq_id_0(1, seq_id);
+        std::vector<llama_seq_id *> seq_ids(tokens.size() + 1);
+        std::vector<int8_t> logits(tokens.size(), false);
+
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            pos[i] = (llama_pos) i;
+            seq_ids[i] = seq_id_0.data();
+        }
+        seq_ids[tokens.size()] = nullptr;
+        logits.back() = true;
+
+        llama_batch batch = {
+            /*n_tokens       =*/ (int32_t) tokens.size(),
+            /*tokens         =*/ nullptr,
+            /*embd           =*/ embd_all.data(),
+            /*pos            =*/ pos.data(),
+            /*n_seq_id       =*/ n_seq_id.data(),
+            /*seq_id         =*/ seq_ids.data(),
+            /*logits         =*/ logits.data(),
+        };
+
+        SRV_INF("decoding merged multimodal prefill, n_tokens = %zu\n", tokens.size());
+        const int64_t t1 = ggml_time_ms();
+        const int64_t decode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
+        result = llama_decode(ctx, batch);
+        const int64_t decode_us = profile != nullptr && profile->enabled ? (ggml_time_us() - decode_start_us) : 0;
+        if (result != 0) {
+            SRV_ERR("failed to decode merged multimodal prefill, res = %d\n", result);
+            return true;
+        }
+
+        SRV_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
+        if (profile != nullptr && profile->enabled) {
+            profile->set_merged_prefill((int64_t) tokens.size(), text_token_count, decode_us);
+        }
+        n_pos_out = (llama_pos) tokens.size();
+        return true;
     }
 };
 

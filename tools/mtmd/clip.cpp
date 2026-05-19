@@ -2314,6 +2314,7 @@ struct clip_ctx {
     size_t debug_dump_w8a8_tensors_max = std::numeric_limits<size_t>::max();
     std::vector<std::string> npu_w8a8_skip_contains;
     clip_profiler profiler;
+    std::string last_mmproj_summary_json;
     std::vector<ggml_tensor *> debug_print_tensors;
     std::vector<ggml_tensor *> debug_dump_w8a8_tensors;
     bool aicas_w8a8_debug = false;
@@ -2750,6 +2751,225 @@ struct clip_ctx {
         fout << out.dump(2);
     }
 };
+
+struct clip_mmproj_summary_aggregate {
+    int64_t node_count = 0;
+    int64_t elements = 0;
+    int64_t bytes = 0;
+};
+
+struct clip_mmproj_mul_mat_signature_aggregate {
+    clip_profile_tensor_info src0;
+    clip_profile_tensor_info src1;
+    clip_profile_tensor_info dst;
+    int64_t node_count = 0;
+    int64_t elements = 0;
+    int64_t bytes = 0;
+    std::vector<std::string> example_node_names;
+};
+
+static bool clip_mmproj_light_summary_enabled() {
+    const char * path = std::getenv("LLAMA_MTMD_PREFILL_SUMMARY_JSON");
+    return path != nullptr && path[0] != '\0';
+}
+
+static std::string clip_to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return s;
+}
+
+static std::string clip_backend_class(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return "unknown";
+    }
+
+    const char * name_c = ggml_backend_name(backend);
+    if (name_c == nullptr || name_c[0] == '\0') {
+        return "unknown";
+    }
+
+    const std::string name = clip_to_lower(name_c);
+    if (name.find("npu") != std::string::npos) {
+        return "npu";
+    }
+    if (name.find("cpu") != std::string::npos) {
+        return "cpu";
+    }
+    return name;
+}
+
+static std::string clip_mmproj_op_category(const ggml_tensor * node, const std::string & backend_class) {
+    const std::string op = node != nullptr ? ggml_op_desc(node) : "UNKNOWN";
+
+    if (backend_class == "npu") {
+        if (op == "MUL_MAT") {
+            return "MUL_MAT_NPU";
+        }
+        return op + "_NPU";
+    }
+
+    if (backend_class != "cpu") {
+        return op + "_" + backend_class;
+    }
+
+    if (op == "MUL_MAT" || op == "MUL_MAT_ID") {
+        return "MUL_MAT_CPU";
+    }
+    if (op == "SOFT_MAX" || op == "FLASH_ATTN_EXT") {
+        return "ATTENTION_CPU";
+    }
+    if (op == "GELU" || op == "SILU" || op == "RELU" || op == "GLU" || op == "UNARY") {
+        return "ACTIVATION_CPU";
+    }
+    if (op == "RMS_NORM" || op == "NORM" || op == "GROUP_NORM" || op == "L2_NORM") {
+        return "NORM_CPU";
+    }
+    if (op == "ADD" || op == "SUB" || op == "MUL" || op == "DIV" ||
+            op == "SQR" || op == "SQRT" || op == "SCALE" || op == "CLAMP") {
+        return "ELEMENTWISE_CPU";
+    }
+    if (op == "CONT" || op == "CPY" || op == "RESHAPE" || op == "VIEW" ||
+            op == "PERMUTE" || op == "TRANSPOSE" || op == "GET_ROWS") {
+        return "LAYOUT_CPU";
+    }
+    if (op == "POOL_1D" || op == "POOL_2D") {
+        return "POOL_CPU";
+    }
+    return op + "_CPU";
+}
+
+static json clip_mmproj_aggregate_map_json(const std::map<std::string, clip_mmproj_summary_aggregate> & values) {
+    std::vector<std::pair<std::string, clip_mmproj_summary_aggregate>> sorted(values.begin(), values.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+        if (a.second.bytes != b.second.bytes) {
+            return a.second.bytes > b.second.bytes;
+        }
+        if (a.second.elements != b.second.elements) {
+            return a.second.elements > b.second.elements;
+        }
+        return a.first < b.first;
+    });
+
+    json out = json::array();
+    for (const auto & kv : sorted) {
+        out.push_back({
+            {"name", kv.first},
+            {"node_count", kv.second.node_count},
+            {"elements", kv.second.elements},
+            {"bytes", kv.second.bytes},
+        });
+    }
+    return out;
+}
+
+static std::string clip_mul_mat_signature_key(
+        const clip_profile_tensor_info & src0,
+        const clip_profile_tensor_info & src1,
+        const clip_profile_tensor_info & dst) {
+    return src0.type + "|" + clip_shape_key(src0.ne) + "|" +
+           src1.type + "|" + clip_shape_key(src1.ne) + "|" +
+           dst.type + "|" + clip_shape_key(dst.ne);
+}
+
+static json clip_mmproj_mul_mat_signatures_json(
+        const std::map<std::string, clip_mmproj_mul_mat_signature_aggregate> & values) {
+    std::vector<std::pair<std::string, clip_mmproj_mul_mat_signature_aggregate>> sorted(values.begin(), values.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+        if (a.second.bytes != b.second.bytes) {
+            return a.second.bytes > b.second.bytes;
+        }
+        if (a.second.elements != b.second.elements) {
+            return a.second.elements > b.second.elements;
+        }
+        return a.first < b.first;
+    });
+
+    json out = json::array();
+    for (const auto & kv : sorted) {
+        out.push_back({
+            {"src0", clip_tensor_json(kv.second.src0)},
+            {"src1", clip_tensor_json(kv.second.src1)},
+            {"dst", clip_tensor_json(kv.second.dst)},
+            {"node_count", kv.second.node_count},
+            {"elements", kv.second.elements},
+            {"bytes", kv.second.bytes},
+            {"example_node_names", kv.second.example_node_names},
+        });
+    }
+    return out;
+}
+
+static json clip_build_mmproj_graph_summary(clip_ctx * ctx, ggml_cgraph * gf) {
+    std::map<std::string, clip_mmproj_summary_aggregate> by_backend;
+    std::map<std::string, clip_mmproj_summary_aggregate> by_category;
+    std::map<std::string, clip_mmproj_summary_aggregate> cpu_categories;
+    std::map<std::string, clip_mmproj_summary_aggregate> npu_categories;
+    std::map<std::string, clip_mmproj_mul_mat_signature_aggregate> cpu_mul_mat_signatures;
+
+    const int node_count = gf != nullptr ? ggml_graph_n_nodes(gf) : 0;
+    if (ctx != nullptr && gf != nullptr) {
+        for (int i = 0; i < node_count; ++i) {
+            ggml_tensor * node = ggml_graph_node(gf, i);
+            if (node == nullptr) {
+                continue;
+            }
+
+            ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(ctx->sched.get(), node);
+            const std::string backend_class = clip_backend_class(backend);
+            const std::string category = clip_mmproj_op_category(node, backend_class);
+
+            clip_mmproj_summary_aggregate delta;
+            delta.node_count = 1;
+            delta.elements = ggml_nelements(node);
+            delta.bytes = ggml_nbytes(node);
+
+            auto add_delta = [&delta](clip_mmproj_summary_aggregate & dst) {
+                dst.node_count += delta.node_count;
+                dst.elements += delta.elements;
+                dst.bytes += delta.bytes;
+            };
+
+            add_delta(by_backend[backend_class]);
+            add_delta(by_category[category]);
+            if (backend_class == "cpu") {
+                add_delta(cpu_categories[category]);
+                if (node->op == GGML_OP_MUL_MAT && node->src[0] != nullptr && node->src[1] != nullptr) {
+                    const clip_profile_tensor_info src0 = clip_capture_tensor_info(node->src[0]);
+                    const clip_profile_tensor_info src1 = clip_capture_tensor_info(node->src[1]);
+                    const clip_profile_tensor_info dst = clip_capture_tensor_info(node);
+                    auto & sig = cpu_mul_mat_signatures[clip_mul_mat_signature_key(src0, src1, dst)];
+                    if (sig.node_count == 0) {
+                        sig.src0 = src0;
+                        sig.src1 = src1;
+                        sig.dst = dst;
+                    }
+                    sig.node_count += 1;
+                    sig.elements += delta.elements;
+                    sig.bytes += delta.bytes;
+                    if (sig.example_node_names.size() < 4) {
+                        sig.example_node_names.emplace_back(node->name);
+                    }
+                }
+            } else if (backend_class == "npu") {
+                add_delta(npu_categories[category]);
+            }
+        }
+    }
+
+    return {
+        {"profile_kind", "mmproj_non_intrusive_graph_summary"},
+        {"instrumentation", "graph_assignment_no_eval_callback"},
+        {"note", "Counts and byte sizes describe scheduled graph nodes, not per-node runtime. No eval callback is installed for this summary."},
+        {"node_count", node_count},
+        {"by_backend", clip_mmproj_aggregate_map_json(by_backend)},
+        {"by_operator_category", clip_mmproj_aggregate_map_json(by_category)},
+        {"cpu_operator_categories", clip_mmproj_aggregate_map_json(cpu_categories)},
+        {"cpu_mul_mat_signatures", clip_mmproj_mul_mat_signatures_json(cpu_mul_mat_signatures)},
+        {"npu_operator_categories", clip_mmproj_aggregate_map_json(npu_categories)},
+    };
+}
 
 static bool clip_should_dump_w8a8_tensor(const clip_ctx * ctx, const ggml_tensor * t, int * index) {
     if (ctx == nullptr || ctx->debug_dump_w8a8_tensors_dir.empty() || t == nullptr) {
@@ -7559,6 +7779,16 @@ bool clip_image_encode(struct clip_ctx * ctx, const int n_threads, clip_image_f3
 bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_image_f32_batch * imgs_c_ptr, float * vec) {
     const clip_image_f32_batch & imgs = *imgs_c_ptr;
     int batch_size = imgs.entries.size();
+    ctx->last_mmproj_summary_json.clear();
+    const bool collect_light_summary = clip_mmproj_light_summary_enabled();
+    const int64_t summary_start_us = collect_light_summary ? ggml_time_us() : 0;
+    int64_t build_graph_us = 0;
+    int64_t alloc_graph_us = 0;
+    int64_t graph_summary_us = 0;
+    int64_t set_inputs_us = 0;
+    int64_t graph_compute_us = 0;
+    int64_t output_readback_us = 0;
+    json graph_summary = nullptr;
 
     // TODO @ngxson : implement batch size > 1 as a loop
     //                we don't need true batching support because the cgraph will gonna be big anyway
@@ -7571,7 +7801,11 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     ctx->debug_dump_w8a8_tensors.clear();
     ctx->profiler.reset();
     ggml_backend_sched_reset(ctx->sched.get());
+    const int64_t build_graph_start_us = collect_light_summary ? ggml_time_us() : 0;
     ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);
+    if (collect_light_summary) {
+        build_graph_us = ggml_time_us() - build_graph_start_us;
+    }
     if (ctx->aicas_w8a8_debug) {
         LOG_INF("%s: built mmproj graph\n", __func__);
     }
@@ -7587,15 +7821,23 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     if (ctx->aicas_w8a8_debug) {
         LOG_INF("%s: allocating mmproj graph\n", __func__);
     }
+    const int64_t alloc_graph_start_us = collect_light_summary ? ggml_time_us() : 0;
     if (!ggml_backend_sched_alloc_graph(ctx->sched.get(), gf)) {
         LOG_ERR("%s: ggml_backend_sched_alloc_graph failed\n", __func__);
         return false;
+    }
+    if (collect_light_summary) {
+        alloc_graph_us = ggml_time_us() - alloc_graph_start_us;
+        const int64_t graph_summary_start_us = ggml_time_us();
+        graph_summary = clip_build_mmproj_graph_summary(ctx, gf);
+        graph_summary_us = ggml_time_us() - graph_summary_start_us;
     }
     if (ctx->aicas_w8a8_debug) {
         LOG_INF("%s: allocated mmproj graph\n", __func__);
     }
 
     // set inputs
+    const int64_t set_inputs_start_us = collect_light_summary ? ggml_time_us() : 0;
     const auto & model   = ctx->model;
     const auto & hparams = model.hparams;
 
@@ -7907,6 +8149,9 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         default:
             GGML_ABORT("Unknown projector type");
     }
+    if (collect_light_summary) {
+        set_inputs_us = ggml_time_us() - set_inputs_start_us;
+    }
 
     // ggml_backend_cpu_set_n_threads(ctx->backend_cpu, n_threads);
     ggml_backend_dev_t dev = ggml_backend_get_device(ctx->backend_cpu);
@@ -7921,7 +8166,11 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     if (ctx->aicas_w8a8_debug) {
         LOG_INF("%s: computing mmproj graph\n", __func__);
     }
+    const int64_t graph_compute_start_us = collect_light_summary ? ggml_time_us() : 0;
     auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), gf);
+    if (collect_light_summary) {
+        graph_compute_us = ggml_time_us() - graph_compute_start_us;
+    }
     if (status != GGML_STATUS_SUCCESS) {
         LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
         return false;
@@ -7956,8 +8205,30 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     }
 
     // copy the embeddings to the location passed by the user
+    const int64_t output_readback_start_us = collect_light_summary ? ggml_time_us() : 0;
     ggml_backend_tensor_get(embeddings, vec, 0, ggml_nbytes(embeddings));
     clip_dump_embeddings_if_requested(embeddings, vec);
+    if (collect_light_summary) {
+        output_readback_us = ggml_time_us() - output_readback_start_us;
+        const int64_t total_observed_us = ggml_time_us() - summary_start_us;
+        json summary = {
+            {"profile_kind", "mmproj_encode_light_summary"},
+            {"timing_unit", "us"},
+            {"instrumentation", "phase_wall_time_plus_graph_assignment"},
+            {"note", "Phase timings use wall clock around coarse mmproj steps. Graph categories are scheduled-node counts and bytes, not exact CPU operator runtime."},
+            {"known_profile_overhead_us", graph_summary_us},
+            {"phases", {
+                {"build_graph_us", build_graph_us},
+                {"alloc_graph_us", alloc_graph_us},
+                {"set_inputs_us", set_inputs_us},
+                {"graph_compute_us", graph_compute_us},
+                {"output_readback_us", output_readback_us},
+                {"total_observed_us", total_observed_us},
+            }},
+            {"graph", graph_summary},
+        };
+        ctx->last_mmproj_summary_json = summary.dump();
+    }
 
     return true;
 }
@@ -8037,6 +8308,13 @@ bool clip_has_whisper_encoder(const struct clip_ctx * ctx) {
     return ctx->proj_type() == PROJECTOR_TYPE_ULTRAVOX
         || ctx->proj_type() == PROJECTOR_TYPE_QWEN2A
         || ctx->proj_type() == PROJECTOR_TYPE_VOXTRAL;
+}
+
+const char * clip_last_mmproj_summary_json(const struct clip_ctx * ctx) {
+    if (ctx == nullptr || ctx->last_mmproj_summary_json.empty()) {
+        return nullptr;
+    }
+    return ctx->last_mmproj_summary_json.c_str();
 }
 
 bool clip_encode_float_image (struct clip_ctx * ctx, int n_threads, float * img, int h, int w, float * vec) {
