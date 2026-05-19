@@ -1,0 +1,73 @@
+{
+  "schema": "aicas.current_best_config.v1",
+  "updated_at_local": "2026-05-18T14:27:44+08:00",
+  "name": "group128_awq012_mm070_bfp16m_text_static_tensor",
+  "text_model": "AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128/text_sq_a05_decode_awq_calib16_a0_12_g128_scale_f16.gguf",
+  "mmproj": "AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf",
+  "image_root": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/data",
+  "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260516-excl-prev-calib.json",
+  "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_static_tensor/SmolVLM2.json",
+  "score": 52,
+  "total": 100,
+  "by_type": {
+    "Regular Text Recognition": {"score": 10, "total": 10},
+    "Irregular Text Recognition": {"score": 4, "total": 10},
+    "Artistic Text Recognition": {"score": 7, "total": 10},
+    "Handwriting Recognition": {"score": 6, "total": 10},
+    "Digit String Recognition": {"score": 8, "total": 10},
+    "Non-Semantic Text Recognition": {"score": 4, "total": 10},
+    "Scene Text-centric VQA": {"score": 13, "total": 40}
+  },
+  "quantization": {
+    "text_prefill": {
+      "method": "SmoothQuant W8A8",
+      "alpha": 0.5,
+      "activation_quant_mode": "asymmetric_u8",
+      "weight_scale_mode": "per_channel"
+    },
+    "text_decode": {
+      "method": "AWQ int4",
+      "alpha": 0.12,
+      "group_size": 128,
+      "scale_dtype": "f16"
+    },
+    "mmproj": {
+      "method": "SmoothQuant W8A8",
+      "alpha": 0.7,
+      "weight_scale_mode": "per_channel"
+    },
+    "attention": {
+      "text_prefill_qk_pv": "BFP16-M static per-tensor",
+      "text_prefill_static_exponents": {
+        "q": -11,
+        "k": -11,
+        "v": -12,
+        "p": -15
+      },
+      "mmproj_qk_pv": "BFP16-M static per-layer/per-op"
+    }
+  },
+  "env": {
+    "AICAS_TEXT_PREFILL_ATTN_BFP16M": "1",
+    "AICAS_TEXT_PREFILL_BFP16M_EXP_MODE": "static_tensor",
+    "AICAS_TEXT_PREFILL_BFP16M_Q_EXP": "-11",
+    "AICAS_TEXT_PREFILL_BFP16M_K_EXP": "-11",
+    "AICAS_TEXT_PREFILL_BFP16M_V_EXP": "-12",
+    "AICAS_TEXT_PREFILL_BFP16M_P_EXP": "-15",
+    "AICAS_MMPROJ_ATTN_PRECISION": "bfp16m",
+    "AICAS_MMPROJ_ATTN_PRECISION_SCOPE": "core",
+    "AICAS_MMPROJ_BFP16M_EXP_MODE": "static_per_layer"
+  },
+  "comparison": {
+    "previous_mmproj_static_text_dynamic_bfp16m": {
+      "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_bfp16m/result.json",
+      "score": 50,
+      "total": 100
+    },
+    "gate30": {
+      "result_json": "AICAS/output/group128-hparam-search/bfp16m_attn/text-static-tensor-default-gate30/SmolVLM2.json",
+      "score": 14,
+      "total": 30
+    }
+  }
+}

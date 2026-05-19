@@ -47,6 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", default="", help="Run id; defaults to UTC timestamp")
     parser.add_argument("--variants", default="bf16,f16", help="Comma-separated candidate precisions")
     parser.add_argument("--bfp16m-k-block", type=int, default=64, help="K block size for BFP16-M matmul simulation")
+    parser.add_argument("--bfp8m-k-block", type=int, default=64, help="K block size for BFP8-M matmul simulation")
+    parser.add_argument(
+        "--bfp8m-scale-mode",
+        choices=["block", "tensor", "tile"],
+        default="block",
+        help="BFP8-M scale granularity",
+    )
+    parser.add_argument("--bfp8m-tile", type=int, default=32, help="Tile size for BFP8-M tile scale mode")
     parser.add_argument(
         "--bfp16m-exp-mode",
         choices=["kblock", "per_channel"],
@@ -209,6 +217,9 @@ def run_eval(
     env["AICAS_MMPROJ_ATTN_PRECISION_SCOPE"] = args.scope
     env["AICAS_MMPROJ_BFP16M_K_BLOCK"] = str(args.bfp16m_k_block)
     env["AICAS_MMPROJ_BFP16M_EXP_MODE"] = args.bfp16m_exp_mode
+    env["AICAS_MMPROJ_BFP8M_K_BLOCK"] = str(args.bfp8m_k_block)
+    env["AICAS_MMPROJ_BFP8M_SCALE_MODE"] = args.bfp8m_scale_mode
+    env["AICAS_MMPROJ_BFP8M_TILE"] = str(args.bfp8m_tile)
     log_path = output_dir / "eval.log"
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(cmd) + "\n")
@@ -216,6 +227,9 @@ def run_eval(
         log.write(f"AICAS_MMPROJ_ATTN_PRECISION_SCOPE={args.scope}\n\n")
         log.write(f"AICAS_MMPROJ_BFP16M_K_BLOCK={args.bfp16m_k_block}\n\n")
         log.write(f"AICAS_MMPROJ_BFP16M_EXP_MODE={args.bfp16m_exp_mode}\n\n")
+        log.write(f"AICAS_MMPROJ_BFP8M_K_BLOCK={args.bfp8m_k_block}\n\n")
+        log.write(f"AICAS_MMPROJ_BFP8M_SCALE_MODE={args.bfp8m_scale_mode}\n\n")
+        log.write(f"AICAS_MMPROJ_BFP8M_TILE={args.bfp8m_tile}\n\n")
         log.flush()
         subprocess.run(cmd, cwd=ROOT_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
 
@@ -240,6 +254,9 @@ def write_markdown_summary(path: Path, payload: dict[str, Any]) -> None:
         f"- scope: `{payload.get('scope', 'core')}`",
         f"- bfp16m_k_block: `{payload.get('bfp16m_k_block', 64)}`",
         f"- bfp16m_exp_mode: `{payload.get('bfp16m_exp_mode', 'kblock')}`",
+        f"- bfp8m_k_block: `{payload.get('bfp8m_k_block', 64)}`",
+        f"- bfp8m_scale_mode: `{payload.get('bfp8m_scale_mode', 'block')}`",
+        f"- bfp8m_tile: `{payload.get('bfp8m_tile', 32)}`",
         f"- max_drop_30: `{payload['max_drop_30']}`",
         "",
         "## Results",
@@ -279,9 +296,9 @@ def main() -> int:
     require_path(AICAS_DIR / "scripts" / "run_local_acc_eval.sh", "run_local_acc_eval.sh")
 
     variants = [item.strip() for item in args.variants.split(",") if item.strip()]
-    invalid = [item for item in variants if item not in {"bf16", "f16", "bfp16m"}]
+    invalid = [item for item in variants if item not in {"bf16", "f16", "bfp16m", "bfp8m"}]
     if invalid:
-        raise SystemExit(f"Invalid candidate variants: {invalid}; expected bf16, f16, and/or bfp16m")
+        raise SystemExit(f"Invalid candidate variants: {invalid}; expected bf16, f16, bfp16m, and/or bfp8m")
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-attn-precision")
     run_dir = output_root / run_id
@@ -301,6 +318,9 @@ def main() -> int:
         "scope": args.scope,
         "bfp16m_k_block": args.bfp16m_k_block,
         "bfp16m_exp_mode": args.bfp16m_exp_mode,
+        "bfp8m_k_block": args.bfp8m_k_block,
+        "bfp8m_scale_mode": args.bfp8m_scale_mode,
+        "bfp8m_tile": args.bfp8m_tile,
         "max_drop_30": args.max_drop_30,
         "gate_30": [],
         "eval_100": [],
