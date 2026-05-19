@@ -1047,6 +1047,7 @@ enum class clip_aicas_bfp8m_scale_mode {
     block,
     tensor,
     tile,
+    static_tile,
 };
 
 static const char * clip_mmproj_attn_precision_name(clip_mmproj_attn_precision mode) {
@@ -1098,6 +1099,8 @@ static const char * clip_aicas_bfp8m_scale_mode_name(clip_aicas_bfp8m_scale_mode
             return "tensor";
         case clip_aicas_bfp8m_scale_mode::tile:
             return "tile";
+        case clip_aicas_bfp8m_scale_mode::static_tile:
+            return "static_tile";
     }
 
     return "block";
@@ -1168,9 +1171,13 @@ static clip_aicas_bfp8m_scale_mode clip_get_bfp8m_scale_mode() {
             std::strcmp(env, "systolic_tile") == 0 || std::strcmp(env, "systolic-tile") == 0) {
         return clip_aicas_bfp8m_scale_mode::tile;
     }
+    if (std::strcmp(env, "static_tile") == 0 || std::strcmp(env, "static-tile") == 0 ||
+            std::strcmp(env, "static_tile32") == 0 || std::strcmp(env, "static-tile32") == 0) {
+        return clip_aicas_bfp8m_scale_mode::static_tile;
+    }
 
     throw std::runtime_error(string_format(
-        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile", env));
+        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile, static_tile", env));
 }
 
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
@@ -1287,6 +1294,7 @@ struct clip_aicas_bfp8m_userdata {
     int64_t k_block = 64;
     int64_t tile = 32;
     clip_aicas_bfp8m_scale_mode scale_mode = clip_aicas_bfp8m_scale_mode::block;
+    bool pv_matmul = false;
 };
 
 static int64_t clip_get_mmproj_bfp16m_k_block() {
@@ -1550,6 +1558,36 @@ static clip_aicas_scale_shift32 clip_dequant_scale_to_scale_shift(float scale) {
     out.scale = static_cast<int32_t>(scale_i64);
     out.shift = exponent - 31;
     return out;
+}
+
+static float clip_mmproj_bfp8m_static_scale(const char * env_name, float default_scale) {
+    const char * value = std::getenv(env_name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_scale;
+    }
+    char * end = nullptr;
+    const float parsed = std::strtof(value, &end);
+    if (end != value && *end == '\0' && std::isfinite(parsed) && parsed > 0.0f) {
+        return parsed;
+    }
+    return default_scale;
+}
+
+static clip_aicas_scale_shift32 clip_mmproj_bfp8m_static_scale_shift(bool pv_matmul, bool a_side) {
+    // Defaults come from the stratified30 attention-distribution calibration in
+    // AICAS/output/group128-hparam-search/attn_dist_bfp8_strategy.
+    constexpr float q_scale = 11.4603f / 127.0f;
+    constexpr float k_scale = 12.3074f / 127.0f;
+    constexpr float v_scale = 7.92846f / 127.0f;
+    constexpr float p_scale = 1.0f / 127.0f;
+    if (pv_matmul) {
+        return clip_dequant_scale_to_scale_shift(a_side
+            ? clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_V_SCALE", v_scale)
+            : clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_P_SCALE", p_scale));
+    }
+    return clip_dequant_scale_to_scale_shift(a_side
+        ? clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_K_SCALE", k_scale)
+        : clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_Q_SCALE", q_scale));
 }
 
 static int clip_u64_msb_index(uint64_t value) {
@@ -2298,6 +2336,7 @@ struct clip_ctx {
     mutable clip_aicas_bfp16m_userdata aicas_bfp16m_userdata;
     mutable std::vector<std::unique_ptr<clip_aicas_bfp16m_userdata>> aicas_bfp16m_node_userdata;
     mutable clip_aicas_bfp8m_userdata aicas_bfp8m_userdata;
+    mutable std::vector<std::unique_ptr<clip_aicas_bfp8m_userdata>> aicas_bfp8m_node_userdata;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -3364,7 +3403,8 @@ static void clip_bfp8m_mul_mat_f32(
     const int64_t k_total = a->ne[0];
     const bool per_tensor_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tensor;
     const bool per_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile;
-    const int64_t scale_block = (per_tensor_scale || per_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
+    const bool static_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::static_tile;
+    const int64_t scale_block = (per_tensor_scale || per_tile_scale || static_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
     const int64_t n_kb = (k_total + scale_block - 1) / scale_block;
     const int64_t a_s_stride_row = n_kb;
     const int64_t a_s_stride_i2 = a->ne[1] * a_s_stride_row;
@@ -3386,6 +3426,12 @@ static void clip_bfp8m_mul_mat_f32(
     std::vector<int8_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
     const clip_aicas_scale_shift32 tensor_scale_a = per_tensor_scale ? clip_bfp8m_tensor_scale(a) : clip_aicas_scale_shift32{};
     const clip_aicas_scale_shift32 tensor_scale_b = per_tensor_scale ? clip_bfp8m_tensor_scale(b) : clip_aicas_scale_shift32{};
+    const clip_aicas_scale_shift32 static_scale_a = static_tile_scale
+        ? clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, true)
+        : clip_aicas_scale_shift32{};
+    const clip_aicas_scale_shift32 static_scale_b = static_tile_scale
+        ? clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, false)
+        : clip_aicas_scale_shift32{};
     const int64_t tile = std::max<int64_t>(1, cfg->tile);
 
     for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
@@ -3396,9 +3442,11 @@ static void clip_bfp8m_mul_mat_f32(
                     const int64_t k1 = std::min(k_total, k0 + scale_block);
                     const clip_aicas_scale_shift32 scale = per_tensor_scale
                         ? tensor_scale_a
-                        : (per_tile_scale
-                            ? clip_bfp8m_tile_scale_for_a(a, row, i2, i3, tile)
-                            : clip_bfp8m_block_scale_for_a(a, row, i2, i3, k0, k1));
+                        : (static_tile_scale
+                            ? static_scale_a
+                            : (per_tile_scale
+                                ? clip_bfp8m_tile_scale_for_a(a, row, i2, i3, tile)
+                                : clip_bfp8m_block_scale_for_a(a, row, i2, i3, k0, k1)));
                     a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row + kb)] = scale;
                     for (int64_t k = k0; k < k1; ++k) {
                         a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
@@ -3417,9 +3465,11 @@ static void clip_bfp8m_mul_mat_f32(
                     const int64_t k1 = std::min(k_total, k0 + scale_block);
                     const clip_aicas_scale_shift32 scale = per_tensor_scale
                         ? tensor_scale_b
-                        : (per_tile_scale
-                            ? clip_bfp8m_tile_scale_for_b(b, col, i2, i3, tile)
-                            : clip_bfp8m_block_scale_for_b(b, col, i2, i3, k0, k1));
+                        : (static_tile_scale
+                            ? static_scale_b
+                            : (per_tile_scale
+                                ? clip_bfp8m_tile_scale_for_b(b, col, i2, i3, tile)
+                                : clip_bfp8m_block_scale_for_b(b, col, i2, i3, k0, k1)));
                     b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)] = scale;
                     for (int64_t k = k0; k < k1; ++k) {
                         b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
@@ -5126,6 +5176,14 @@ private:
         return ptr;
     }
 
+    clip_aicas_bfp8m_userdata * make_mmproj_attn_bfp8m_userdata(bool pv_matmul) const {
+        auto node_cfg = std::make_unique<clip_aicas_bfp8m_userdata>(ctx->aicas_bfp8m_userdata);
+        node_cfg->pv_matmul = pv_matmul;
+        clip_aicas_bfp8m_userdata * ptr = node_cfg.get();
+        ctx->aicas_bfp8m_node_userdata.push_back(std::move(node_cfg));
+        return ptr;
+    }
+
     ggml_tensor * build_mmproj_attn_mul_mat(ggml_tensor * a, ggml_tensor * b, int il, bool pv_matmul) const {
         if (ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp16m &&
                 ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp8m) {
@@ -5141,7 +5199,6 @@ private:
         ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
         if (ctx->aicas_mmproj_attn_precision == clip_mmproj_attn_precision::bfp8m) {
             GGML_UNUSED(il);
-            GGML_UNUSED(pv_matmul);
             return ggml_map_custom3(
                 ctx0,
                 out_template,
@@ -5149,7 +5206,7 @@ private:
                 b,
                 clip_bfp8m_mul_mat_f32,
                 1,
-                &ctx->aicas_bfp8m_userdata);
+                make_mmproj_attn_bfp8m_userdata(pv_matmul));
         }
         return ggml_map_custom3(
             ctx0,

@@ -1,23 +1,11 @@
 {
-  "schema": "aicas.current_best_config.v1",
-  "updated_at_local": "2026-05-18T14:27:44+08:00",
-  "name": "group128_awq012_mm070_bfp16m_text_static_tensor",
+  "schema": "aicas.current_best_config.v2",
+  "updated_at_local": "2026-05-19T20:31:34+08:00",
+  "name": "group128_awq012_mm070_mmproj_bfp8m_dynamic_tile32_textoff",
+  "scope": "current preferred hardware-oriented config; validated on two independent 100-sample sets",
   "text_model": "AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128/text_sq_a05_decode_awq_calib16_a0_12_g128_scale_f16.gguf",
   "mmproj": "AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf",
   "image_root": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/data",
-  "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260516-excl-prev-calib.json",
-  "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_static_tensor/SmolVLM2.json",
-  "score": 52,
-  "total": 100,
-  "by_type": {
-    "Regular Text Recognition": {"score": 10, "total": 10},
-    "Irregular Text Recognition": {"score": 4, "total": 10},
-    "Artistic Text Recognition": {"score": 7, "total": 10},
-    "Handwriting Recognition": {"score": 6, "total": 10},
-    "Digit String Recognition": {"score": 8, "total": 10},
-    "Non-Semantic Text Recognition": {"score": 4, "total": 10},
-    "Scene Text-centric VQA": {"score": 13, "total": 40}
-  },
   "quantization": {
     "text_prefill": {
       "method": "SmoothQuant W8A8",
@@ -37,37 +25,76 @@
       "weight_scale_mode": "per_channel"
     },
     "attention": {
-      "text_prefill_qk_pv": "BFP16-M static per-tensor",
-      "text_prefill_static_exponents": {
-        "q": -11,
-        "k": -11,
-        "v": -12,
-        "p": -15
-      },
-      "mmproj_qk_pv": "BFP16-M static per-layer/per-op"
+      "text_prefill_qk_pv": "normal flash attention path; no text BFP8/BFP16 override",
+      "mmproj_qk_pv": "BFP8-M dynamic per-tile scale",
+      "tile_m": 32,
+      "tile_n": 32,
+      "a_scale_group": "[tile_m, K]",
+      "b_scale_group": "[K, tile_n]",
+      "scale_mode": "tile",
+      "scope": "core"
     }
   },
   "env": {
-    "AICAS_TEXT_PREFILL_ATTN_BFP16M": "1",
-    "AICAS_TEXT_PREFILL_BFP16M_EXP_MODE": "static_tensor",
-    "AICAS_TEXT_PREFILL_BFP16M_Q_EXP": "-11",
-    "AICAS_TEXT_PREFILL_BFP16M_K_EXP": "-11",
-    "AICAS_TEXT_PREFILL_BFP16M_V_EXP": "-12",
-    "AICAS_TEXT_PREFILL_BFP16M_P_EXP": "-15",
-    "AICAS_MMPROJ_ATTN_PRECISION": "bfp16m",
+    "AICAS_TEXT_DECODE_AWQ": "1",
+    "AICAS_TEXT_PREFILL_ATTN_BFP8M": "0",
+    "AICAS_TEXT_PREFILL_ATTN_BFP16M": "0",
+    "AICAS_MMPROJ_ATTN_PRECISION": "bfp8m",
     "AICAS_MMPROJ_ATTN_PRECISION_SCOPE": "core",
-    "AICAS_MMPROJ_BFP16M_EXP_MODE": "static_per_layer"
+    "AICAS_MMPROJ_BFP8M_SCALE_MODE": "tile",
+    "AICAS_MMPROJ_BFP8M_TILE": "32",
+    "AICAS_BFP8M_TILE": "32"
+  },
+  "validation": {
+    "seed20260516": {
+      "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260516-excl-prev-calib.json",
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/mmproj-dynamic-tile32-textoff-seed20260516-100/SmolVLM2.json",
+      "score": 50,
+      "total": 100,
+      "baseline_fp16_score": 53,
+      "baseline_delta": -3,
+      "by_type": {
+        "Regular Text Recognition": {"score": 9, "total": 10},
+        "Irregular Text Recognition": {"score": 5, "total": 10},
+        "Artistic Text Recognition": {"score": 8, "total": 10},
+        "Handwriting Recognition": {"score": 7, "total": 10},
+        "Digit String Recognition": {"score": 7, "total": 10},
+        "Non-Semantic Text Recognition": {"score": 3, "total": 10},
+        "Scene Text-centric VQA": {"score": 11, "total": 40}
+      }
+    },
+    "seed20260517": {
+      "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260517-excl-rotated.json",
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/mmproj-dynamic-tile32-textoff-seed20260517-100/SmolVLM2.json",
+      "score": 45,
+      "total": 100,
+      "baseline_fp16_score": 44,
+      "baseline_delta": 1,
+      "by_type": {
+        "Regular Text Recognition": {"score": 6, "total": 10},
+        "Irregular Text Recognition": {"score": 4, "total": 10},
+        "Artistic Text Recognition": {"score": 8, "total": 10},
+        "Handwriting Recognition": {"score": 5, "total": 10},
+        "Digit String Recognition": {"score": 4, "total": 10},
+        "Non-Semantic Text Recognition": {"score": 5, "total": 10},
+        "Scene Text-centric VQA": {"score": 13, "total": 40}
+      }
+    }
   },
   "comparison": {
-    "previous_mmproj_static_text_dynamic_bfp16m": {
-      "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_bfp16m/result.json",
-      "score": 50,
-      "total": 100
+    "acceptance_rule": "score must be no worse than the same-sample FP16 baseline by more than 5 samples",
+    "previous_overall_bfp16m_seed20260516": {
+      "name": "group128_awq012_mm070_bfp16m_text_static_tensor",
+      "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_static_tensor/SmolVLM2.json",
+      "score": 52,
+      "total": 100,
+      "note": "higher single-seed score, but not the current preferred BFP8/NPU-simplified path"
     },
-    "gate30": {
-      "result_json": "AICAS/output/group128-hparam-search/bfp16m_attn/text-static-tensor-default-gate30/SmolVLM2.json",
-      "score": 14,
-      "total": 30
+    "mmproj_static_tile_bfp8m_seed20260516": {
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_static_tile/mmproj_static_tile_seed20260516_100/SmolVLM2.json",
+      "score": 16,
+      "total": 100,
+      "accepted": false
     }
   }
 }

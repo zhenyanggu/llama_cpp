@@ -1,64 +1,104 @@
 {
-  "schema": "aicas.current_best_bfp8_config.v1",
-  "updated_at_local": "2026-05-18T16:06:57+08:00",
-  "name": "group128_awq012_mm070_mmproj_bfp8m_tile32",
-  "scope": "best BFP8 attention candidate; not overall best",
+  "schema": "aicas.current_best_bfp8_config.v2",
+  "updated_at_local": "2026-05-19T20:31:34+08:00",
+  "name": "group128_awq012_mm070_mmproj_bfp8m_dynamic_tile32_textoff",
+  "scope": "current best BFP8/NPU-friendly attention candidate; validated on two independent 100-sample sets",
   "text_model": "AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128/text_sq_a05_decode_awq_calib16_a0_12_g128_scale_f16.gguf",
   "mmproj": "AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf",
   "image_root": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/data",
-  "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260517-excl-rotated.json",
-  "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/text-mmproj-bfp8m-tile32-seed20260517-100/SmolVLM2.json",
-  "score": 47,
-  "total": 100,
-  "by_type": {
-    "Regular Text Recognition": {"score": 7, "total": 10},
-    "Irregular Text Recognition": {"score": 5, "total": 10},
-    "Artistic Text Recognition": {"score": 8, "total": 10},
-    "Handwriting Recognition": {"score": 6, "total": 10},
-    "Digit String Recognition": {"score": 5, "total": 10},
-    "Non-Semantic Text Recognition": {"score": 4, "total": 10},
-    "Scene Text-centric VQA": {"score": 12, "total": 40}
-  },
-  "attention": {
-    "mmproj_qk_pv": "BFP8-M tile scale",
-    "tile_m": 32,
-    "tile_n": 32,
-    "a_scale_group": "[tile_m, K]",
-    "b_scale_group": "[K, tile_n]",
-    "scale_storage": "int32 scale + int32 shift",
-    "text_prefill_qk_pv": "flash attention path in normal eval; tile32 BFP8 custom path is not accepted"
+  "quantization": {
+    "text_prefill": {
+      "method": "SmoothQuant W8A8",
+      "alpha": 0.5,
+      "activation_quant_mode": "asymmetric_u8",
+      "weight_scale_mode": "per_channel"
+    },
+    "text_decode": {
+      "method": "AWQ int4",
+      "alpha": 0.12,
+      "group_size": 128,
+      "scale_dtype": "f16"
+    },
+    "mmproj": {
+      "method": "SmoothQuant W8A8",
+      "alpha": 0.7,
+      "weight_scale_mode": "per_channel"
+    },
+    "attention": {
+      "text_prefill_qk_pv": "disabled for BFP8/BFP16; normal flash attention path",
+      "mmproj_qk_pv": "BFP8-M dynamic per-tile scale",
+      "tile_m": 32,
+      "tile_n": 32,
+      "a_scale_group": "[tile_m, K]",
+      "b_scale_group": "[K, tile_n]",
+      "scale_mode": "tile",
+      "scope": "core"
+    }
   },
   "env": {
-    "AICAS_TEXT_PREFILL_ATTN_BFP8M": "1",
-    "AICAS_TEXT_PREFILL_BFP8M_SCALE_MODE": "tile",
-    "AICAS_TEXT_PREFILL_BFP8M_TILE": "32",
+    "AICAS_TEXT_DECODE_AWQ": "1",
+    "AICAS_TEXT_PREFILL_ATTN_BFP8M": "0",
+    "AICAS_TEXT_PREFILL_ATTN_BFP16M": "0",
     "AICAS_MMPROJ_ATTN_PRECISION": "bfp8m",
     "AICAS_MMPROJ_ATTN_PRECISION_SCOPE": "core",
     "AICAS_MMPROJ_BFP8M_SCALE_MODE": "tile",
     "AICAS_MMPROJ_BFP8M_TILE": "32",
     "AICAS_BFP8M_TILE": "32"
   },
+  "validation": {
+    "seed20260516": {
+      "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260516-excl-prev-calib.json",
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/mmproj-dynamic-tile32-textoff-seed20260516-100/SmolVLM2.json",
+      "score": 50,
+      "total": 100,
+      "baseline_fp16_score": 53,
+      "baseline_delta": -3,
+      "by_type": {
+        "Regular Text Recognition": {"score": 9, "total": 10},
+        "Irregular Text Recognition": {"score": 5, "total": 10},
+        "Artistic Text Recognition": {"score": 8, "total": 10},
+        "Handwriting Recognition": {"score": 7, "total": 10},
+        "Digit String Recognition": {"score": 7, "total": 10},
+        "Non-Semantic Text Recognition": {"score": 3, "total": 10},
+        "Scene Text-centric VQA": {"score": 11, "total": 40}
+      }
+    },
+    "seed20260517": {
+      "eval_json": "AICAS/output/group128-hparam-search/stratified100-seed20260517-excl-rotated.json",
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/mmproj-dynamic-tile32-textoff-seed20260517-100/SmolVLM2.json",
+      "score": 45,
+      "total": 100,
+      "baseline_fp16_score": 44,
+      "baseline_delta": 1,
+      "by_type": {
+        "Regular Text Recognition": {"score": 6, "total": 10},
+        "Irregular Text Recognition": {"score": 4, "total": 10},
+        "Artistic Text Recognition": {"score": 8, "total": 10},
+        "Handwriting Recognition": {"score": 5, "total": 10},
+        "Digit String Recognition": {"score": 4, "total": 10},
+        "Non-Semantic Text Recognition": {"score": 5, "total": 10},
+        "Scene Text-centric VQA": {"score": 13, "total": 40}
+      }
+    }
+  },
   "comparison": {
-    "bfp8_k64_block_same_batch": {
-      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/text-mmproj-bfp8m-k64-seed20260517-100/SmolVLM2.json",
-      "score": 46,
-      "total": 100
-    },
-    "official_f16_same_batch": {
-      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/official-f16-baseline-seed20260517-100/SmolVLM2.json",
-      "score": 44,
-      "total": 100
-    },
-    "gate30": {
-      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/text-mmproj-bfp8m-tile32-gate30/SmolVLM2.json",
-      "score": 14,
-      "total": 30
-    },
-    "text_custom_attention_flash_off_gate30": {
-      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/text-mmproj-bfp8m-tile32-flashoff-gate30/SmolVLM2.json",
-      "score": 0,
-      "total": 30,
+    "acceptance_rule": "score must be no worse than the same-sample FP16 baseline by more than 5 samples",
+    "static_tile_mmproj_bfp8m_seed20260516": {
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_static_tile/mmproj_static_tile_seed20260516_100/SmolVLM2.json",
+      "score": 16,
+      "total": 100,
       "accepted": false
+    },
+    "previous_text_mmproj_bfp8m_tile32_seed20260517": {
+      "result_json": "AICAS/output/group128-hparam-search/bfp8m_attn/text-mmproj-bfp8m-tile32-seed20260517-100/SmolVLM2.json",
+      "score": 47,
+      "total": 100,
+      "note": "older ambiguous run; text BFP8 env was set, but normal eval likely used flash attention"
+    },
+    "previous_overall_bfp16m_seed20260516": {
+      "result_json": "AICAS/output/group128-hparam-search/retest-seed20260516/best_awq012_mm070_static_bfp16m_textprefill_static_tensor/SmolVLM2.json",
+      "score": 52,
+      "total": 100
     }
   }
 }
