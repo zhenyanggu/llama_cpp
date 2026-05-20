@@ -1047,6 +1047,9 @@ enum class clip_aicas_bfp8m_scale_mode {
     block,
     tensor,
     tile,
+    tile_f32,
+    tile_q8_24,
+    tile_exp,
     static_tile,
 };
 
@@ -1099,6 +1102,12 @@ static const char * clip_aicas_bfp8m_scale_mode_name(clip_aicas_bfp8m_scale_mode
             return "tensor";
         case clip_aicas_bfp8m_scale_mode::tile:
             return "tile";
+        case clip_aicas_bfp8m_scale_mode::tile_f32:
+            return "tile_f32";
+        case clip_aicas_bfp8m_scale_mode::tile_q8_24:
+            return "tile_q8_24";
+        case clip_aicas_bfp8m_scale_mode::tile_exp:
+            return "tile_exp";
         case clip_aicas_bfp8m_scale_mode::static_tile:
             return "static_tile";
     }
@@ -1171,13 +1180,28 @@ static clip_aicas_bfp8m_scale_mode clip_get_bfp8m_scale_mode() {
             std::strcmp(env, "systolic_tile") == 0 || std::strcmp(env, "systolic-tile") == 0) {
         return clip_aicas_bfp8m_scale_mode::tile;
     }
+    if (std::strcmp(env, "tile_f32") == 0 || std::strcmp(env, "tile-f32") == 0 ||
+            std::strcmp(env, "tile_float") == 0 || std::strcmp(env, "tile-float") == 0 ||
+            std::strcmp(env, "tile_fp32") == 0 || std::strcmp(env, "tile-fp32") == 0) {
+        return clip_aicas_bfp8m_scale_mode::tile_f32;
+    }
+    if (std::strcmp(env, "tile_q8_24") == 0 || std::strcmp(env, "tile-q8-24") == 0 ||
+            std::strcmp(env, "tile_fixed32") == 0 || std::strcmp(env, "tile-fixed32") == 0 ||
+            std::strcmp(env, "tile_int32") == 0 || std::strcmp(env, "tile-int32") == 0) {
+        return clip_aicas_bfp8m_scale_mode::tile_q8_24;
+    }
+    if (std::strcmp(env, "tile_exp") == 0 || std::strcmp(env, "tile-exp") == 0 ||
+            std::strcmp(env, "tile_exponent") == 0 || std::strcmp(env, "tile-exponent") == 0 ||
+            std::strcmp(env, "tile_exp32") == 0 || std::strcmp(env, "tile-exp32") == 0) {
+        return clip_aicas_bfp8m_scale_mode::tile_exp;
+    }
     if (std::strcmp(env, "static_tile") == 0 || std::strcmp(env, "static-tile") == 0 ||
             std::strcmp(env, "static_tile32") == 0 || std::strcmp(env, "static-tile32") == 0) {
         return clip_aicas_bfp8m_scale_mode::static_tile;
     }
 
     throw std::runtime_error(string_format(
-        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile, static_tile", env));
+        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile, tile_f32, tile_q8_24, tile_exp, static_tile", env));
 }
 
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
@@ -3627,6 +3651,35 @@ static inline int8_t clip_bfp8m_quant_value_with_scale_f(float value, double sca
     return static_cast<int8_t>(q);
 }
 
+static clip_aicas_scale_shift32 clip_bfp8m_exp_scale_from_max_abs(float max_abs) {
+    if (max_abs <= 0.0f || !std::isfinite(max_abs)) {
+        return clip_aicas_scale_shift32{};
+    }
+
+    const int exp = (int) std::ceil(std::log2((double) max_abs / 127.0));
+    return clip_aicas_scale_shift32{1, (int32_t) clip_bfp16m_exp_to_i8(exp)};
+}
+
+static clip_aicas_scale_shift32 clip_bfp8m_f32_scale_from_max_abs(float max_abs) {
+    if (max_abs <= 0.0f || !std::isfinite(max_abs)) {
+        return clip_aicas_scale_shift32{};
+    }
+
+    const float scale_f32 = max_abs / 127.0f;
+    return clip_dequant_scale_to_scale_shift(scale_f32);
+}
+
+static clip_aicas_scale_shift32 clip_bfp8m_q8_24_scale_from_max_abs(float max_abs) {
+    if (max_abs <= 0.0f || !std::isfinite(max_abs)) {
+        return clip_aicas_scale_shift32{};
+    }
+
+    const double scale = static_cast<double>(max_abs) / 127.0;
+    int64_t scale_i64 = std::llround(scale * static_cast<double>(1ULL << 24));
+    scale_i64 = std::max<int64_t>(0, std::min<int64_t>(INT32_MAX, scale_i64));
+    return clip_aicas_scale_shift32{static_cast<int32_t>(scale_i64), -24};
+}
+
 static clip_aicas_scale_shift32 clip_bfp8m_block_scale_for_a(
         const struct ggml_tensor * a,
         int64_t row,
@@ -3733,8 +3786,12 @@ static void clip_bfp8m_mul_mat_f32(
     const int64_t k_total = a->ne[0];
     const bool per_tensor_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tensor;
     const bool per_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile;
+    const bool per_tile_f32_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile_f32;
+    const bool per_tile_q8_24_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile_q8_24;
+    const bool per_tile_exp_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile_exp;
     const bool static_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::static_tile;
-    const int64_t scale_block = (per_tensor_scale || per_tile_scale || static_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
+    const bool full_k_tile_scale = per_tile_scale || per_tile_f32_scale || per_tile_q8_24_scale || per_tile_exp_scale;
+    const int64_t scale_block = (per_tensor_scale || full_k_tile_scale || static_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
     const int64_t n_kb = (k_total + scale_block - 1) / scale_block;
     const int64_t a_s_stride_row = n_kb;
     const int64_t a_s_stride_i2 = a->ne[1] * a_s_stride_row;
@@ -3927,7 +3984,7 @@ static void clip_bfp8m_mul_mat_f32(
     if (static_tile_scale) {
         static_scale_a = clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, true);
     }
-    if (per_tile_scale) {
+    if (full_k_tile_scale) {
         GGML_ASSERT(n_kb == 1);
         for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
             for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
@@ -3940,7 +3997,10 @@ static void clip_bfp8m_mul_mat_f32(
                         }
                     }
                     const clip_aicas_scale_shift32 scale =
-                        max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                        per_tile_exp_scale ? clip_bfp8m_exp_scale_from_max_abs(max_abs) :
+                            (per_tile_q8_24_scale ? clip_bfp8m_q8_24_scale_from_max_abs(max_abs) :
+                                (per_tile_f32_scale ? clip_bfp8m_f32_scale_from_max_abs(max_abs) :
+                                    (max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{})));
                     const double scale_f = clip_scale_shift32_to_double(scale);
                     for (int64_t row = row0; row < row1; ++row) {
                         a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row)] = scale;
@@ -3984,7 +4044,7 @@ static void clip_bfp8m_mul_mat_f32(
     if (static_tile_scale) {
         static_scale_b = clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, false);
     }
-    if (per_tile_scale) {
+    if (full_k_tile_scale) {
         GGML_ASSERT(n_kb == 1);
         for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
             for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
@@ -3997,7 +4057,10 @@ static void clip_bfp8m_mul_mat_f32(
                         }
                     }
                     const clip_aicas_scale_shift32 scale =
-                        max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                        per_tile_exp_scale ? clip_bfp8m_exp_scale_from_max_abs(max_abs) :
+                            (per_tile_q8_24_scale ? clip_bfp8m_q8_24_scale_from_max_abs(max_abs) :
+                                (per_tile_f32_scale ? clip_bfp8m_f32_scale_from_max_abs(max_abs) :
+                                    (max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{})));
                     const double scale_f = clip_scale_shift32_to_double(scale);
                     for (int64_t col = col0; col < col1; ++col) {
                         b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col)] = scale;
@@ -4073,9 +4136,9 @@ static void clip_bfp8m_mul_mat_f32(
         }
     };
 
-    const bool can_use_npu = cfg->npu_enabled && per_tile_scale && n_kb == 1;
+    const bool can_use_npu = cfg->npu_enabled && full_k_tile_scale && n_kb == 1;
     if (cfg->npu_enabled && cfg->npu_required && !can_use_npu) {
-        GGML_ABORT("AICAS_MMPROJ_BFP8M_NPU_REQUIRE=1 requires BFP8-M tile scale mode");
+        GGML_ABORT("AICAS_MMPROJ_BFP8M_NPU_REQUIRE=1 requires BFP8-M full-K tile scale mode");
     }
 
     const auto record_common_stats = [&](int64_t cpu_accum_us = 0) {
