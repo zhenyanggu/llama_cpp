@@ -96,6 +96,25 @@ The mmproj graph assignment is still CPU-backend scheduled because the custom at
 | `LAYOUT_CPU` | 122 | 383.0 MB |
 | `ACTIVATION_CPU` | 12 | 151.0 MB |
 
+The BFP8 custom NPU path also emitted an internal qk/pv breakdown under `bfp8m_npu`:
+
+| Item | Value |
+| --- | ---: |
+| qk custom calls | 12 |
+| pv custom calls | 12 |
+| qk raw GEMM calls | 144 |
+| pv raw GEMM calls | 144 |
+| fallback calls | 0 |
+| total custom qk/pv time | 27.887 s |
+| qk custom time | 17.164 s |
+| pv custom time | 10.723 s |
+| A scale + quantize | 1.074 s |
+| B scale + quantize | 8.849 s |
+| NPU pack | 0.261 s |
+| raw GEMM path | 8.666 s |
+| postprocess | 8.989 s |
+| raw int32 accumulator traffic | 641.7 MB |
+
 From `text_cpu_profile.jsonl`, request-level decode is also a major bottleneck:
 
 | Phase | Wall time |
@@ -114,7 +133,7 @@ Top text CPU operators:
 
 ## Bottleneck assessment
 
-For mmproj attention, the NPU currently accelerates only the raw qk/pv int8 GEMM pieces. The enclosing BFP8 attention remains dominated by CPU-side custom operator work and memory traffic: activation/weight packing, CMA copies, per-tile MVIN/GEMM/MVOUT synchronization, Q8.24 scale handling, layout work, softmax/probability processing, and output postprocess. The current profile does not emit `ggml_npu_profile.json` for this custom raw path, so exact per-tile NPU busy time versus host overhead still needs a dedicated raw-GEMM profiler.
+For mmproj attention, the NPU currently accelerates only the raw qk/pv int8 GEMM pieces. The enclosing BFP8 attention remains dominated by CPU-side custom operator work and memory traffic: A/B scale search and quantization, packed-buffer preparation, per-call MVIN/GEMM/MVOUT synchronization inside `raw_gemm_us`, Q8.24 scale application, raw int32 readback, layout work, softmax/probability processing, and output postprocess. The custom path emits coarse qk/pv breakdowns in `mtmd_prefill_summary.json`, but it does not emit the generic `ggml_npu_profile.json`; exact per-tile NPU busy time versus host overhead still needs a dedicated raw-GEMM profiler.
 
 For end-to-end throughput, mmproj is not the only bottleneck. With this text model/config, CPU text decode is slower than mmproj encode for the 64-token request and limits decode throughput to about `0.63 t/s`.
 
