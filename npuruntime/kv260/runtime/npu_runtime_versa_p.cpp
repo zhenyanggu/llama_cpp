@@ -112,7 +112,7 @@ uint32_t dma_addr_for(void * ptr) {
 }
 
 uint32_t actual_count(uint32_t value) {
-    return value == 0 ? 1 : value;
+    return value + 1u;
 }
 
 uint16_t checked_u16(uint32_t value, const char * field) {

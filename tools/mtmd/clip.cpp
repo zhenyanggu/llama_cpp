@@ -1381,6 +1381,12 @@ struct clip_aicas_bfp8m_npu_stats {
     }
 };
 
+struct clip_mmproj_fused_attn_userdata {
+    int64_t block_q = 8;
+    int64_t block_k = 32;
+    float scale = 1.0f;
+};
+
 static bool clip_env_bool(const char * name, bool default_value) {
     const char * env = std::getenv(name);
     if (env == nullptr || env[0] == '\0') {
@@ -1395,6 +1401,23 @@ static bool clip_env_bool(const char * name, bool default_value) {
         std::strcmp(env, "NO") != 0;
 }
 
+static int64_t clip_env_i64(const char * name, int64_t default_value, int64_t min_value, int64_t max_value) {
+    const char * env = std::getenv(name);
+    if (env == nullptr || env[0] == '\0') {
+        return default_value;
+    }
+
+    char * end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end != env && *end == '\0' && parsed >= min_value && parsed <= max_value) {
+        return parsed;
+    }
+
+    LOG_WRN("%s: ignoring invalid %s=%s, using default=%" PRId64 "\n",
+            __func__, name, env, default_value);
+    return default_value;
+}
+
 static bool clip_get_mmproj_bfp8m_npu_enabled() {
     const char * backend_name = std::getenv("MTMD_BACKEND_DEVICE");
     const bool default_value = backend_name != nullptr && std::strcmp(backend_name, "NPU") == 0;
@@ -1407,6 +1430,18 @@ static bool clip_get_mmproj_bfp8m_npu_required() {
 
 static bool clip_get_mmproj_bfp8m_npu_cma2d_enabled() {
     return clip_env_bool("AICAS_MMPROJ_BFP8M_NPU_CMA2D", false);
+}
+
+static bool clip_get_mmproj_fused_attn_enabled() {
+    return clip_env_bool("AICAS_MMPROJ_FUSED_ATTN", false);
+}
+
+static int64_t clip_get_mmproj_fused_attn_bq() {
+    return clip_env_i64("AICAS_MMPROJ_FUSED_ATTN_BQ", 8, 1, 1024);
+}
+
+static int64_t clip_get_mmproj_fused_attn_bk() {
+    return clip_env_i64("AICAS_MMPROJ_FUSED_ATTN_BK", 32, 1, 4096);
 }
 
 static int64_t clip_get_mmproj_bfp16m_k_block() {
@@ -2433,6 +2468,7 @@ struct clip_ctx {
     clip_aicas_dequant_sim_mode aicas_dequant_sim_mode = clip_aicas_dequant_sim_mode::off;
     clip_mmproj_attn_precision aicas_mmproj_attn_precision = clip_mmproj_attn_precision::f32;
     clip_mmproj_attn_precision_scope aicas_mmproj_attn_precision_scope = clip_mmproj_attn_precision_scope::core;
+    bool aicas_mmproj_fused_attn = false;
     int64_t aicas_mmproj_bfp16m_k_block = 64;
     int64_t aicas_mmproj_bfp8m_k_block = 64;
     int64_t aicas_mmproj_bfp8m_tile = 32;
@@ -2451,6 +2487,8 @@ struct clip_ctx {
     mutable clip_aicas_bfp8m_userdata aicas_bfp8m_userdata;
     mutable std::vector<std::unique_ptr<clip_aicas_bfp8m_userdata>> aicas_bfp8m_node_userdata;
     mutable clip_aicas_bfp8m_npu_stats aicas_bfp8m_npu_stats;
+    mutable clip_mmproj_fused_attn_userdata aicas_fused_attn_userdata;
+    mutable std::vector<std::unique_ptr<clip_mmproj_fused_attn_userdata>> aicas_fused_attn_node_userdata;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -2484,6 +2522,7 @@ struct clip_ctx {
         aicas_dequant_sim_mode = clip_get_dequant_sim_mode();
         aicas_mmproj_attn_precision = clip_get_mmproj_attn_precision();
         aicas_mmproj_attn_precision_scope = clip_get_mmproj_attn_precision_scope();
+        aicas_mmproj_fused_attn = clip_get_mmproj_fused_attn_enabled();
         aicas_mmproj_bfp16m_k_block = clip_get_mmproj_bfp16m_k_block();
         aicas_mmproj_bfp8m_k_block = clip_get_mmproj_bfp8m_k_block();
         aicas_mmproj_bfp8m_tile = clip_get_mmproj_bfp8m_tile();
@@ -2498,6 +2537,8 @@ struct clip_ctx {
         aicas_bfp8m_userdata.npu_required = clip_get_mmproj_bfp8m_npu_required();
         aicas_bfp8m_userdata.npu_cma2d_enabled = clip_get_mmproj_bfp8m_npu_cma2d_enabled();
         aicas_bfp8m_userdata.npu_stats = &aicas_bfp8m_npu_stats;
+        aicas_fused_attn_userdata.block_q = clip_get_mmproj_fused_attn_bq();
+        aicas_fused_attn_userdata.block_k = clip_get_mmproj_fused_attn_bk();
         if (aicas_dequant_sim_mode != clip_aicas_dequant_sim_mode::off) {
             LOG_INF("%s: AICAS mmproj dequant simulation enabled: %s\n",
                 __func__,
@@ -2523,6 +2564,10 @@ struct clip_ctx {
                     LOG_INF("%s: AICAS mmproj BFP8-M NPU CMA 2D GEMM path enabled\n", __func__);
                 }
             }
+        }
+        if (aicas_mmproj_fused_attn) {
+            LOG_INF("%s: AICAS mmproj fused attention prototype enabled: BQ=%" PRId64 " BK=%" PRId64 "\n",
+                __func__, aicas_fused_attn_userdata.block_q, aicas_fused_attn_userdata.block_k);
         }
         if (const char * stats_path = std::getenv("AICAS_MMPROJ_DEQUANT_STATS_FILE")) {
             aicas_dequant_stats_path = stats_path;
@@ -3235,6 +3280,115 @@ static inline void clip_tensor_set_f32_4d(
         float value) {
     *(float *) ((char *) t->data +
         i0 * t->nb[0] + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3]) = value;
+}
+
+static inline float clip_tensor_get_f32_2d(
+        const struct ggml_tensor * t,
+        int64_t i0,
+        int64_t i1) {
+    return *(const float *) ((const char *) t->data + i0 * t->nb[0] + i1 * t->nb[1]);
+}
+
+static inline void clip_tensor_set_f32_2d(
+        struct ggml_tensor * t,
+        int64_t i0,
+        int64_t i1,
+        float value) {
+    *(float *) ((char *) t->data + i0 * t->nb[0] + i1 * t->nb[1]) = value;
+}
+
+static void clip_mmproj_fused_attn_f32(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * q_2d,
+        const struct ggml_tensor * k,
+        const struct ggml_tensor * v,
+        int ith,
+        int nth,
+        void * userdata) {
+    const auto * cfg = static_cast<const clip_mmproj_fused_attn_userdata *>(userdata);
+    const int64_t block_q = std::max<int64_t>(1, cfg ? cfg->block_q : 8);
+    const int64_t block_k = std::max<int64_t>(1, cfg ? cfg->block_k : 32);
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(q_2d->type == GGML_TYPE_F32);
+    GGML_ASSERT(k->type == GGML_TYPE_F32);
+    GGML_ASSERT(v->type == GGML_TYPE_F32);
+    GGML_ASSERT(k->ne[0] == v->ne[0]);
+    GGML_ASSERT(k->ne[1] == v->ne[1]);
+    GGML_ASSERT(k->ne[2] == v->ne[2]);
+    GGML_ASSERT(k->ne[3] == v->ne[3]);
+
+    const int64_t d_head = k->ne[0];
+    const int64_t n_head = k->ne[1];
+    const int64_t n_k = k->ne[2];
+    const int64_t n_q = q_2d->ne[1];
+    const int64_t n_embd = d_head * n_head;
+    GGML_ASSERT(q_2d->ne[0] == n_embd);
+    GGML_ASSERT(dst->ne[0] == n_embd);
+    GGML_ASSERT(dst->ne[1] == n_q);
+
+    const float scale = cfg ? cfg->scale : 1.0f / std::sqrt((float) d_head);
+    const int64_t q_blocks = (n_q + block_q - 1) / block_q;
+    const int64_t total_tasks = n_head * q_blocks;
+
+    std::vector<float> acc((size_t) (block_q * d_head));
+    std::vector<float> max_score((size_t) block_q);
+    std::vector<float> sum_exp((size_t) block_q);
+    std::vector<float> scores((size_t) block_q);
+
+    for (int64_t task = ith; task < total_tasks; task += nth) {
+        const int64_t head = task / q_blocks;
+        const int64_t qb = task % q_blocks;
+        const int64_t q0 = qb * block_q;
+        const int64_t q1 = std::min(n_q, q0 + block_q);
+        const int64_t q_count = q1 - q0;
+
+        std::fill(acc.begin(), acc.begin() + (size_t) (q_count * d_head), 0.0f);
+        std::fill(max_score.begin(), max_score.begin() + (size_t) q_count, -std::numeric_limits<float>::infinity());
+        std::fill(sum_exp.begin(), sum_exp.begin() + (size_t) q_count, 0.0f);
+
+        for (int64_t k0 = 0; k0 < n_k; k0 += block_k) {
+            const int64_t k1 = std::min(n_k, k0 + block_k);
+
+            for (int64_t ik = k0; ik < k1; ++ik) {
+                for (int64_t iq_rel = 0; iq_rel < q_count; ++iq_rel) {
+                    const int64_t iq = q0 + iq_rel;
+                    float dot = 0.0f;
+                    for (int64_t d = 0; d < d_head; ++d) {
+                        const float qv = clip_tensor_get_f32_2d(q_2d, d + d_head * head, iq);
+                        const float kv = clip_tensor_get_f32_4d(k, d, head, ik, 0);
+                        dot += qv * kv;
+                    }
+                    const float s = dot * scale;
+                    scores[(size_t) iq_rel] = s;
+                }
+
+                for (int64_t iq_rel = 0; iq_rel < q_count; ++iq_rel) {
+                    const float old_m = max_score[(size_t) iq_rel];
+                    const float new_m = std::max(old_m, scores[(size_t) iq_rel]);
+                    const float old_scale = std::isfinite(old_m) ? std::exp(old_m - new_m) : 0.0f;
+                    const float score_scale = std::exp(scores[(size_t) iq_rel] - new_m);
+                    float * acc_q = acc.data() + iq_rel * d_head;
+
+                    for (int64_t d = 0; d < d_head; ++d) {
+                        acc_q[d] = acc_q[d] * old_scale + score_scale * clip_tensor_get_f32_4d(v, d, head, ik, 0);
+                    }
+                    sum_exp[(size_t) iq_rel] = sum_exp[(size_t) iq_rel] * old_scale + score_scale;
+                    max_score[(size_t) iq_rel] = new_m;
+                }
+            }
+        }
+
+        for (int64_t iq_rel = 0; iq_rel < q_count; ++iq_rel) {
+            const int64_t iq = q0 + iq_rel;
+            const float denom = sum_exp[(size_t) iq_rel];
+            const float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+            const float * acc_q = acc.data() + iq_rel * d_head;
+            for (int64_t d = 0; d < d_head; ++d) {
+                clip_tensor_set_f32_2d(dst, d + d_head * head, iq, acc_q[d] * inv_denom);
+            }
+        }
+    }
 }
 
 static std::string clip_attn_dist_stats_path() {
@@ -5933,6 +6087,14 @@ private:
         return ptr;
     }
 
+    clip_mmproj_fused_attn_userdata * make_mmproj_fused_attn_userdata(float kq_scale) const {
+        auto node_cfg = std::make_unique<clip_mmproj_fused_attn_userdata>(ctx->aicas_fused_attn_userdata);
+        node_cfg->scale = kq_scale;
+        clip_mmproj_fused_attn_userdata * ptr = node_cfg.get();
+        ctx->aicas_fused_attn_node_userdata.push_back(std::move(node_cfg));
+        return ptr;
+    }
+
     ggml_tensor * build_mmproj_attn_mul_mat(ggml_tensor * a, ggml_tensor * b, int il, bool pv_matmul) const {
         if (ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp16m &&
                 ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp8m) {
@@ -5979,6 +6141,60 @@ private:
             ctx->aicas_mmproj_attn_precision_scope == clip_mmproj_attn_precision_scope::block;
     }
 
+    bool can_use_mmproj_fused_attn(
+            const ggml_tensor * q_cur,
+            const ggml_tensor * k_cur,
+            const ggml_tensor * v_cur,
+            const ggml_tensor * kq_mask) const {
+        if (!ctx->aicas_mmproj_fused_attn ||
+                ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::f32 ||
+                kq_mask != nullptr ||
+                !ctx->aicas_act_stats_path.empty()) {
+            return false;
+        }
+
+        if (q_cur == nullptr || k_cur == nullptr || v_cur == nullptr ||
+                q_cur->type != GGML_TYPE_F32 ||
+                k_cur->type != GGML_TYPE_F32 ||
+                v_cur->type != GGML_TYPE_F32) {
+            return false;
+        }
+
+        if (q_cur->ne[0] <= 0 || q_cur->ne[1] <= 0 || q_cur->ne[2] <= 0) {
+            return false;
+        }
+
+        return q_cur->ne[0] == k_cur->ne[0] &&
+            q_cur->ne[0] == v_cur->ne[0] &&
+            q_cur->ne[1] == k_cur->ne[1] &&
+            q_cur->ne[1] == v_cur->ne[1] &&
+            k_cur->ne[2] == v_cur->ne[2] &&
+            q_cur->ne[3] == 1 &&
+            k_cur->ne[3] == 1 &&
+            v_cur->ne[3] == 1;
+    }
+
+    ggml_tensor * build_mmproj_fused_attn(
+            ggml_tensor * q_cur,
+            ggml_tensor * k_cur,
+            ggml_tensor * v_cur,
+            float kq_scale) const {
+        const int64_t d_head = q_cur->ne[0];
+        const int64_t n_head = q_cur->ne[1];
+        const int64_t n_tokens = q_cur->ne[2];
+        ggml_tensor * q_2d = ggml_reshape_2d(ctx0, q_cur, d_head * n_head, n_tokens);
+        ggml_tensor * cur = ggml_map_custom3(
+            ctx0,
+            q_2d,
+            k_cur,
+            v_cur,
+            clip_mmproj_fused_attn_f32,
+            GGML_N_TASKS_MAX,
+            make_mmproj_fused_attn_userdata(kq_scale));
+        ggml_set_name(cur, "mmproj_fused_attn");
+        return cur;
+    }
+
     ggml_tensor * build_attn(
             ggml_tensor * wo,
             ggml_tensor * wo_b,
@@ -5994,55 +6210,59 @@ private:
         ggml_build_forward_expand(gf, k_cur);
         ggml_build_forward_expand(gf, v_cur);
 
-        if (should_cast_mmproj_attn_block()) {
-            q_cur = cast_mmproj_attn_tensor(q_cur);
-            k_cur = cast_mmproj_attn_tensor(k_cur);
-            v_cur = cast_mmproj_attn_tensor(v_cur);
-        }
-
-        ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);
-        if (!ctx->aicas_act_stats_path.empty()) {
-            q = ggml_cont(ctx0, q);
-            q = maybe_observe_mmproj_activation(q, (il >= 0 ? string_format("mmproj.attn.%d.q_for_qk", il) : "mmproj.attn.resampler.q_for_qk").c_str());
-        }
-        //cb(q, "q", il);
-
-        ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
-        if (!ctx->aicas_act_stats_path.empty()) {
-            k = ggml_cont(ctx0, k);
-            k = maybe_observe_mmproj_activation(k, (il >= 0 ? string_format("mmproj.attn.%d.k_for_qk", il) : "mmproj.attn.resampler.k_for_qk").c_str());
-        }
-        //cb(k, "k", il);
-
-        ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
-        v = ggml_cont(ctx0, v);
-        if (!ctx->aicas_act_stats_path.empty()) {
-            v = maybe_observe_mmproj_activation(v, (il >= 0 ? string_format("mmproj.attn.%d.v_for_pv", il) : "mmproj.attn.resampler.v_for_pv").c_str());
-        }
-        //cb(k, "v", il);
-
         ggml_tensor * cur;
 
-        // TODO @ngxson : support flash attention
-        {
-            const auto n_tokens = q->ne[1];
-            const auto n_head   = q->ne[2];
-            // const auto n_kv     = k->ne[1]; // for flash attention
-
-            ggml_tensor * kq = build_mmproj_attn_mul_mat(k, q, il, false);
-            // F32 may not needed for vision encoders?
-            // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
-
-            kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
-            if (!ctx->aicas_act_stats_path.empty()) {
-                kq = maybe_observe_mmproj_activation(kq, (il >= 0 ? string_format("mmproj.attn.%d.p_for_pv", il) : "mmproj.attn.resampler.p_for_pv").c_str());
+        if (can_use_mmproj_fused_attn(q_cur, k_cur, v_cur, kq_mask)) {
+            cur = build_mmproj_fused_attn(q_cur, k_cur, v_cur, kq_scale);
+        } else {
+            if (should_cast_mmproj_attn_block()) {
+                q_cur = cast_mmproj_attn_tensor(q_cur);
+                k_cur = cast_mmproj_attn_tensor(k_cur);
+                v_cur = cast_mmproj_attn_tensor(v_cur);
             }
 
-            ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq, il, true);
-            cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
-            cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
-            if (should_cast_mmproj_attn_block()) {
-                cur = cast_mmproj_attn_tensor_f32(cast_mmproj_attn_tensor(cur));
+            ggml_tensor * q = ggml_permute(ctx0, q_cur, 0, 2, 1, 3);
+            if (!ctx->aicas_act_stats_path.empty()) {
+                q = ggml_cont(ctx0, q);
+                q = maybe_observe_mmproj_activation(q, (il >= 0 ? string_format("mmproj.attn.%d.q_for_qk", il) : "mmproj.attn.resampler.q_for_qk").c_str());
+            }
+            //cb(q, "q", il);
+
+            ggml_tensor * k = ggml_permute(ctx0, k_cur, 0, 2, 1, 3);
+            if (!ctx->aicas_act_stats_path.empty()) {
+                k = ggml_cont(ctx0, k);
+                k = maybe_observe_mmproj_activation(k, (il >= 0 ? string_format("mmproj.attn.%d.k_for_qk", il) : "mmproj.attn.resampler.k_for_qk").c_str());
+            }
+            //cb(k, "k", il);
+
+            ggml_tensor * v = ggml_permute(ctx0, v_cur, 1, 2, 0, 3);
+            v = ggml_cont(ctx0, v);
+            if (!ctx->aicas_act_stats_path.empty()) {
+                v = maybe_observe_mmproj_activation(v, (il >= 0 ? string_format("mmproj.attn.%d.v_for_pv", il) : "mmproj.attn.resampler.v_for_pv").c_str());
+            }
+            //cb(k, "v", il);
+
+            // TODO @ngxson : support flash attention
+            {
+                const auto n_tokens = q->ne[1];
+                const auto n_head   = q->ne[2];
+                // const auto n_kv     = k->ne[1]; // for flash attention
+
+                ggml_tensor * kq = build_mmproj_attn_mul_mat(k, q, il, false);
+                // F32 may not needed for vision encoders?
+                // ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+
+                kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
+                if (!ctx->aicas_act_stats_path.empty()) {
+                    kq = maybe_observe_mmproj_activation(kq, (il >= 0 ? string_format("mmproj.attn.%d.p_for_pv", il) : "mmproj.attn.resampler.p_for_pv").c_str());
+                }
+
+                ggml_tensor * kqv = build_mmproj_attn_mul_mat(v, kq, il, true);
+                cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
+                cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
+                if (should_cast_mmproj_attn_block()) {
+                    cur = cast_mmproj_attn_tensor_f32(cast_mmproj_attn_tensor(cur));
+                }
             }
         }
 
@@ -8756,6 +8976,11 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 {"total_observed_us", total_observed_us},
             }},
             {"graph", graph_summary},
+            {"fused_attn", {
+                {"enabled", ctx->aicas_mmproj_fused_attn},
+                {"block_q", ctx->aicas_fused_attn_userdata.block_q},
+                {"block_k", ctx->aicas_fused_attn_userdata.block_k},
+            }},
             {"bfp8m_npu", ctx->aicas_bfp8m_npu_stats.to_json()},
         };
         ctx->last_mmproj_summary_json = summary.dump();
