@@ -135,9 +135,133 @@ struct NpuLastOpContext {
     uint64_t cfg0 = 0;
     uint64_t cfg1 = 0;
     uint32_t start_bit = 0;
+    bool has_mvin = false;
+    bool has_mvout = false;
+    bool has_gemm = false;
+    bool has_gemm_plan = false;
+    uint32_t dma_id = 0;
+    MvinConfig mvin {};
+    MvoutConfig mvout {};
+    GemmConfig gemm {};
+    GemmPlanConfig gemm_plan {};
 };
 
+thread_local NpuLastOpContext g_op_history[4];
 thread_local NpuLastOpContext g_last_op_ctx;
+
+static void dump_op_context(const char * label, const NpuLastOpContext & op_ctx) {
+    if (op_ctx.has_mvin) {
+        const MvinConfig & cfg = op_ctx.mvin;
+        std::fprintf(stderr, "[NPU_ERROR] "
+            "%s MVIN params: dma=%u host=%p sram=0x%08X col=%u row=%u sram_stride=%u dram_stride=%u precision=%u input_type=%u dest=%d is_bias=%d is_quant=%d quant_zero=%u quant_scale=%u quant_shift=%d\n",
+            label,
+            op_ctx.dma_id,
+            cfg.host_ptr,
+            cfg.sram_addr,
+            cfg.col_num,
+            cfg.row_num,
+            cfg.sram_stride,
+            cfg.dram_stride,
+            (unsigned) cfg.precision,
+            (unsigned) cfg.input_type,
+            (int) cfg.dest,
+            (int) cfg.is_bias,
+            (int) cfg.is_quant,
+            cfg.quant_zero,
+            (unsigned) cfg.quant_scale,
+            (int) static_cast<int16_t>(cfg.quant_shift));
+    }
+    if (op_ctx.has_mvout) {
+        const MvoutConfig & cfg = op_ctx.mvout;
+        std::fprintf(stderr, "[NPU_ERROR] "
+            "%s MVOUT params: dma=%u host=%p sram=0x%08X col=%u row=%u sram_stride=%u dram_stride=%u precision=%u output_type=%u source=%d is_quant=%d quant_zero=%u scale_or_addr=0x%08X per_channel=%d\n",
+            label,
+            op_ctx.dma_id,
+            cfg.host_ptr,
+            cfg.sram_addr,
+            cfg.col_num,
+            cfg.row_num,
+            cfg.sram_stride,
+            cfg.dram_stride,
+            (unsigned) cfg.precision,
+            (unsigned) cfg.output_type,
+            (int) cfg.source,
+            (int) cfg.is_quant,
+            cfg.quant_zero,
+            cfg.scale_or_addr,
+            (int) cfg.per_channel);
+    }
+    if (op_ctx.has_gemm) {
+        const GemmConfig & cfg = op_ctx.gemm;
+        std::fprintf(stderr, "[NPU_ERROR] "
+            "%s GEMM params: dataflow=%d int_type=%u optype=%u accout_dest=%d asym=%d a_zp=%u b_zp=%u out_zp=%u out_scale=%u out_shift=%d bias_addr=0x%08X bias_stride=%u bias_width=%u bias_height=%u out_addr=0x%08X out_stride=%u isaccu=%d relu=%d relu_type=%u is_bias=%d a_addr=0x%08X a_col=%u a_row=%u a_stride=%u b_addr=0x%08X b_col=%u b_row=%u b_stride=%u\n",
+            label,
+            (int) cfg.dataflow,
+            (unsigned) cfg.int_type,
+            (unsigned) cfg.optype,
+            (int) cfg.accout_dest,
+            (int) cfg.asymmetric_activations,
+            cfg.input_a_zeropoint,
+            cfg.input_b_zeropoint,
+            cfg.output_zeropoint,
+            (unsigned) cfg.output_scale,
+            (int) static_cast<int16_t>(cfg.output_scaleshift),
+            cfg.biaspsum_addr,
+            (unsigned) cfg.biaspsum_stride,
+            (unsigned) cfg.biaspsum_width,
+            (unsigned) cfg.biaspsum_height,
+            cfg.output_addr,
+            (unsigned) cfg.output_stride,
+            (int) cfg.isaccu,
+            (int) cfg.relu,
+            (unsigned) cfg.relu_type,
+            (int) cfg.is_bias,
+            cfg.input_a_addr,
+            (unsigned) cfg.input_a_col_num,
+            (unsigned) cfg.input_a_row_num,
+            (unsigned) cfg.input_a_stride,
+            cfg.input_b_addr,
+            (unsigned) cfg.input_b_col_num,
+            (unsigned) cfg.input_b_row_num,
+            (unsigned) cfg.input_b_stride);
+    }
+    if (op_ctx.has_gemm_plan) {
+        const GemmPlanConfig & cfg = op_ctx.gemm_plan;
+        std::fprintf(stderr, "[NPU_ERROR] "
+            "%s GEMM_PLAN params: a=0x%08X b=0x%08X out=0x%08X scratch=0x%08X bias=0x%08X block_m=%u block_n=%u block_k=%u a_stride=%u b_stride=%u out_stride=%u bias_stride=%u have_bias=%d is_accumulate=%d asym=%d\n",
+            label,
+            cfg.a_addr,
+            cfg.b_addr,
+            cfg.out_addr,
+            cfg.scratch_addr,
+            cfg.bias_addr,
+            (unsigned) cfg.block_m,
+            (unsigned) cfg.block_n,
+            (unsigned) cfg.block_k,
+            (unsigned) cfg.a_stride,
+            (unsigned) cfg.b_stride,
+            (unsigned) cfg.out_stride,
+            (unsigned) cfg.bias_stride,
+            (int) cfg.have_bias,
+            (int) cfg.is_accumulate,
+            (int) cfg.asymmetric_activations);
+    }
+}
+
+static void dump_last_op_context() {
+    dump_op_context("history[-4]", g_op_history[0]);
+    dump_op_context("history[-3]", g_op_history[1]);
+    dump_op_context("history[-2]", g_op_history[2]);
+    dump_op_context("history[-1]", g_op_history[3]);
+    dump_op_context("last", g_last_op_ctx);
+}
+
+static void remember_last_op() {
+    g_op_history[0] = g_op_history[1];
+    g_op_history[1] = g_op_history[2];
+    g_op_history[2] = g_op_history[3];
+    g_op_history[3] = g_last_op_ctx;
+}
 
 static bool abort_on_irq_timeout() {
     const char * env = std::getenv("NPU_ABORT_ON_IRQ_TIMEOUT");
@@ -815,7 +939,7 @@ static void dumpProfilerReport(const char* pathOverride) {
 // Debug/Release Mode Configuration
 // ==========================================
 
-// #define NPU_DEBUG 
+// #define NPU_DEBUG
 
 #ifndef NPU_CPU_WIDTH
 #define NPU_CPU_WIDTH 64
@@ -824,7 +948,7 @@ static void dumpProfilerReport(const char* pathOverride) {
 #ifdef NPU_DEBUG
     #define NPU_LOG(fmt, ...) \
         fprintf(stdout, "[NPU_DEBUG] " fmt "\n", ##__VA_ARGS__)
-    
+
     #define NPU_REG_LOG(offset, val, width) \
         fprintf(stdout, "[NPU_REG] WR%d Offset:0x%04X Val:0x%0llX\n", width, offset, (unsigned long long)val)
 #else
@@ -880,7 +1004,7 @@ static void dumpProfilerReport(const char* pathOverride) {
 #define NPU_POLL_SPIN_COUNT     1000    // 首轮自旋轮询次数（无延迟）
 #endif
 
-#ifndef NPU_POLL_YIELD_COUNT  
+#ifndef NPU_POLL_YIELD_COUNT
 #define NPU_POLL_YIELD_COUNT    100     // 让出CPU的轮询次数
 #endif
 
@@ -1062,17 +1186,17 @@ bool NpuRuntime::init() {
 
     NPU_LOG("NPU Runtime Initialized (Shadow Regs: Enabled).");
     init_allocator();
-    
+
     // 4. [新增] 启动时执行一次复位，确保硬件和软件状态同步
     // 注意：必须先设置IRQ模式，因为reset()内部会根据当前模式配置IER
     ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
-    
+
     // 5. 执行复位，驱动会根据当前IRQ模式正确配置IER
     reset();
-    
+
     // 6. 再次确认IRQ模式（防止reset后状态不一致）
-    ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE); 
-    
+    ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
+
     return true;
 }
 
@@ -1082,7 +1206,7 @@ bool NpuRuntime::init() {
 void NpuRuntime::reset() {
     NPU_LOG("Requesting NPU Hardware Reset...");
     release_mvin_staging((1u << DMA_CHANNEL_COUNT) - 1u);
-    
+
     // 1. 调用驱动接口执行硬件脉冲复位
     if (ioctl(fd, IOCTL_RESET_DEV) < 0) {
         // 在 Release 模式下可能需要根据 errno 判断是否要报警
@@ -1300,7 +1424,7 @@ void NpuRuntime::reg_write64_cached(uint32_t offset, uint64_t val, uint64_t* cac
         #ifdef NPU_DEBUG
         fprintf(stdout, "[NPU_REG] CACHE_MISS Write Offset:0x%04X Val:0x%016llX\n", offset, (unsigned long long)val);
         #endif
-        
+
         reg_write64(offset, val);
         *cache_ptr = val;
     } else {
@@ -1326,7 +1450,7 @@ inline __attribute__((always_inline)) void NpuRuntime::ack_irq(uint32_t mask) {
 }
 
 void NpuRuntime::dump_irq_regs() {
-    
+
     // uint32_t iar = reg_read(RegOffset::IAR);
     uint32_t mer = reg_read(RegOffset::MER);
     uint32_t ier = reg_read(RegOffset::IER);
@@ -1342,13 +1466,13 @@ void NpuRuntime::wait_irq() {
     NPU_LOG("Waiting for IRQ (hybrid polling)...");
     const uint32_t expected_irq = g_last_op_ctx.start_bit & NPU_REGS__IAR__ACK_bm;
     const uint32_t wait_mask = expected_irq ? expected_irq : NPU_REGS__IAR__ACK_bm;
-    
+
     // ========== Phase 1: 自旋轮询（无延迟，最低延迟路径）==========
     // 在用户态轮询模式下，IER=0，因此 IPR = ISR & IER = 0（永远为0）
     // 所以必须直接检查 ISR 寄存器，而不是 IPR
     // ISR 是原始中断状态，不受 IER 影响
     volatile uint32_t* isr_ptr = (volatile uint32_t*)((char*)regs_virt_base + RegOffset::ISR);
-    
+
     // 循环展开：每次迭代检测4次，减少循环开销
     int i = 0;
     for (; i < NPU_POLL_SPIN_COUNT - 3; i += 4) {
@@ -1361,7 +1485,7 @@ void NpuRuntime::wait_irq() {
     for (; i < NPU_POLL_SPIN_COUNT; ++i) {
         if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
     }
-    
+
     // ========== Phase 2: 让出式轮询（短暂sleep，减少CPU占用）==========
     for (int i = 0; i < NPU_POLL_YIELD_COUNT; ++i) {
         if (*isr_ptr & wait_mask) {
@@ -1372,7 +1496,7 @@ void NpuRuntime::wait_irq() {
         }
         usleep(NPU_POLL_YIELD_US);
     }
-    
+
     // ========== Phase 3: 中断等待（回退到阻塞模式）==========
     // The IRQ may arrive in the small window after the final userspace poll.
     // Do not ACK before entering kernel wait; doing so can clear the late IRQ
@@ -1386,25 +1510,26 @@ void NpuRuntime::wait_irq() {
 
     // 切换到内核中断模式：从此刻起，内核ISR会ACK中断
     ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
-    
+
     NPU_LOG("Polling timeout, falling back to kernel IRQ wait...");
     uint32_t status = 0;
     int ret = ioctl(fd, IOCTL_WAIT_IRQ, &status);
-    
+
     // 返回用户态轮询模式：为下一次 wait_irq 做准备
     ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
-    
+
     if (ret < 0) {
         perror("Wait IRQ failed");
         dump_irq_regs();
-        NPU_ERR(
-            "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX",
+        std::fprintf(stderr, "[NPU_ERROR] "
+            "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX\n",
             g_last_op_ctx.op,
             g_last_op_ctx.start_bit,
             (unsigned long long) g_last_op_ctx.reg0,
             (unsigned long long) g_last_op_ctx.reg1,
             (unsigned long long) g_last_op_ctx.cfg0,
             (unsigned long long) g_last_op_ctx.cfg1);
+        dump_last_op_context();
         if (abort_on_irq_timeout()) {
             NPU_ERR("abort due to IRQ timeout (set NPU_ABORT_ON_IRQ_TIMEOUT=0 to disable abort)");
             std::abort();
@@ -1518,11 +1643,11 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
     uint64_t val_dram = REG_FIELD(MVIN_CTRL0, DRAM_ADDR, phys_dram) |
                         REG_FIELD(MVIN_CTRL0, ROW_NUM, cfg.row_num);
     reg_write64(RegOffset::MVIN_DRAM_ADDR, val_dram);
-    
+
     uint64_t val_sram = REG_FIELD(MVIN_CTRL1, SRAM_ADDR, cfg.sram_addr) |
                         REG_FIELD(MVIN_CTRL1, COL_NUM, cfg.col_num);
     reg_write64(RegOffset::MVIN_SRAM_ADDR, val_sram);
-    
+
     uint64_t val_cfg = REG_FIELD(CFG_MVIN0, INPUT_TYPE, cfg.input_type) |
                        REG_FIELD(CFG_MVIN0, INPUT_PRECISION, precision) |
                        REG_FIELD(CFG_MVIN0, IS_QUANT, cfg.is_quant) |
@@ -1531,6 +1656,7 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
                        REG_FIELD(CFG_MVIN0, SRAM_STRIDE, cfg.sram_stride) |
                        REG_FIELD(CFG_MVIN0, DRAM_STRIDE, cfg.dram_stride);
     reg_write64_cached(RegOffset::MVIN_CFG, val_cfg, &shadow.mvin_cfg);
+    remember_last_op();
     g_last_op_ctx = {
         "MVIN",
         val_dram,
@@ -1539,7 +1665,10 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
         0,
         BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id))
     };
-    
+    g_last_op_ctx.has_mvin = true;
+    g_last_op_ctx.dma_id = dma_id;
+    g_last_op_ctx.mvin = cfg;
+
     if (cfg.is_quant) {
         uint64_t val_quant = REG_FIELD(CFG_MVIN1, ZEROPOINT, cfg.quant_zero) |
                              REG_FIELD(CFG_MVIN1, SCALE, cfg.quant_scale) |
@@ -1573,22 +1702,22 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
     }
 
     const uint8_t precision = static_cast<uint8_t>(cfg.precision & 0x3);
-    
+
     uint32_t phys_dram = virt_to_phys(cfg.host_ptr);
     NPU_TIMER_SECTION_BEGIN("run_mvout(pre_reg)")
     NPU_LOG("Running MVOUT async DMA%u (HostPtr=%p, phy_dram=0x%x, SRAM=0x%x)",
             dma_id, cfg.host_ptr, phys_dram, cfg.sram_addr);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_mvout(reg_write)")
     uint64_t val_dram = REG_FIELD(MVOUT_CTRL0, DRAM_ADDR, phys_dram) |
                         REG_FIELD(MVOUT_CTRL0, ROW_NUM, cfg.row_num);
     reg_write64(RegOffset::MVOUT_DRAM_ADDR, val_dram);
-    
+
     uint64_t val_sram = REG_FIELD(MVOUT_CTRL1, SRAM_ADDR, cfg.sram_addr) |
                         REG_FIELD(MVOUT_CTRL1, COL_NUM, cfg.col_num);
     reg_write64(RegOffset::MVOUT_SRAM_ADDR, val_sram);
-    
+
     uint64_t val_cfg = REG_FIELD(CFG_MVOUT0, OUTPUT_TYPE, cfg.output_type) |
                        REG_FIELD(CFG_MVOUT0, OUTPUT_PRECISION, precision) |
                        REG_FIELD(CFG_MVOUT0, IS_QUANT, cfg.is_quant) |
@@ -1597,6 +1726,7 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
                        REG_FIELD(CFG_MVOUT0, SRAM_STRIDE, cfg.sram_stride) |
                        REG_FIELD(CFG_MVOUT0, DRAM_STRIDE, cfg.dram_stride);
     reg_write64_cached(RegOffset::MVOUT_CFG, val_cfg, &shadow.mvout_cfg);
+    remember_last_op();
     g_last_op_ctx = {
         "MVOUT",
         val_dram,
@@ -1605,7 +1735,10 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
         0,
         BIT_START_DMA_MVOUT | static_cast<uint32_t>(REG_FIELD(START_REG, MVOUT_DMA_SEL, dma_id))
     };
-    
+    g_last_op_ctx.has_mvout = true;
+    g_last_op_ctx.dma_id = dma_id;
+    g_last_op_ctx.mvout = cfg;
+
     if (precision == 3) {
         uint16_t quant_scale = static_cast<uint16_t>(cfg.scale_or_addr & 0xFFFF);
         uint16_t quant_scaleshift = static_cast<uint16_t>((cfg.scale_or_addr >> 16) & 0xFFFF);
@@ -1664,11 +1797,11 @@ void NpuRuntime::run_double_mvin(const MvinConfig& dma0_cfg, const MvinConfig& d
 void NpuRuntime::run_sfu(const SfuConfig& cfg) {
     NPU_TIMER_TOTAL("run_sfu");
     ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::Compute);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_sfu(pre_reg)")
     NPU_LOG("Running SFU (Op=%d)", cfg.op_type);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_sfu(reg_write)")
     uint64_t val_cfg1 = REG_FIELD(CFG_SFU0, OP, cfg.op_type) |
                         REG_FIELD(CFG_SFU0, INT_TYPE, cfg.int_type) |
@@ -1702,11 +1835,11 @@ void NpuRuntime::run_sfu(const SfuConfig& cfg) {
 void NpuRuntime::run_conv(const ConvConfig& cfg) {
     NPU_TIMER_TOTAL("run_conv");
     ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::Compute);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_conv(pre_reg)")
     NPU_LOG("Running CONV (DataFlow=%d)", cfg.dataflow_mode);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_conv(reg_write)")
     // 1. Compute Config 1
     uint64_t val_cfg1 = REG_FIELD(CFG_COMPUTE0, DATAFLOW, cfg.dataflow_mode) |
@@ -1834,7 +1967,7 @@ int NpuRuntime::run_conv_tile(const NpuConvTileConfig& cfg) {
                 bool is_last_cin_global = (cfg.i_cin + cfg.t_cin >= cfg.c_in) &&
                                           (j_cin + SA_SIZE >= cfg.t_cin);
                 bool is_only_cin_global = is_first_cin_global && is_last_cin_global;
-                
+
                 ConvConfig conv_cfg = {};
 
                 // Padding 由编译器完成，硬件侧全部置 0
@@ -1949,7 +2082,7 @@ int NpuRuntime::run_conv_tile(const NpuConvTileConfig& cfg) {
 void NpuRuntime::run_gemm(const GemmConfig& cfg) {
     NPU_TIMER_TOTAL("run_gemm");
     ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::Compute);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_gemm(pre_reg)")
     NPU_LOG("Running GEMM (DataFlow=%d)", cfg.dataflow);
     NPU_TIMER_SECTION_END()
@@ -2003,6 +2136,7 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
                            REG_FIELD(SA_IN_B, ROW, cfg.input_b_row_num) |
                            REG_FIELD(SA_IN_B, STRIDE, cfg.input_b_stride);
     reg_write64(RegOffset::SA_INPUT_B, val_input_b);
+    remember_last_op();
     g_last_op_ctx = {
         "GEMM",
         val_input_a,
@@ -2011,6 +2145,8 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
         val_cfg2,
         BIT_START_SA
     };
+    g_last_op_ctx.has_gemm = true;
+    g_last_op_ctx.gemm = cfg;
 
     // 7. Start SA
     ack_irq(BIT_START_SA);
@@ -2115,6 +2251,7 @@ void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
     reg_write64(RegOffset::GEMM_PLAN_1, plan1);
     reg_write64(RegOffset::GEMM_PLAN_2, 0);
 
+    remember_last_op();
     g_last_op_ctx = {
         "GEMM_PLAN",
         val_input_a,
@@ -2123,6 +2260,8 @@ void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
         plan1,
         BIT_START_SA
     };
+    g_last_op_ctx.has_gemm_plan = true;
+    g_last_op_ctx.gemm_plan = cfg;
 
     ack_irq(BIT_START_SA);
     reg_write(RegOffset::START, BIT_START_SA);
@@ -2137,35 +2276,35 @@ void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
 void NpuRuntime::run_matadd(const MataddConfig& cfg) {
     NPU_TIMER_TOTAL("run_matadd");
     ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::Compute);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_matadd(pre_reg)")
-    NPU_LOG("Running MATADD (A=0x%X, B=0x%X, Out=0x%X, ColM1=%d, RowM1=%d)", 
+    NPU_LOG("Running MATADD (A=0x%X, B=0x%X, Out=0x%X, ColM1=%d, RowM1=%d)",
             cfg.input_a_addr, cfg.input_b_addr, cfg.output_addr,
             cfg.col_num_m1, cfg.row_num_m1);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_matadd(reg_write)")
     // 1. Compute Config 2 - Quantization output parameters
     uint64_t val_cfg2 = REG_FIELD(CFG_COMPUTE1, OUT_ZP, cfg.output_zeropoint) |
                         REG_FIELD(CFG_COMPUTE1, OUT_SCALE, cfg.output_scale) |
                         REG_FIELD(CFG_COMPUTE1, OUT_SHIFT, cfg.output_scaleshift);
     reg_write64_cached(RegOffset::CFG_COMPUTE_2, val_cfg2, &shadow.compute_cfg2);
-    
+
     // 2. MATADD CTRL0 - Input A and B addresses
     uint64_t val_ctrl0 = REG_FIELD(MATADD_CTRL0, A_ADDR, cfg.input_a_addr) |
                          REG_FIELD(MATADD_CTRL0, B_ADDR, cfg.input_b_addr);
     reg_write64(RegOffset::MATADD_CTRL_0, val_ctrl0);
-    
+
     // 3. MATADD CTRL1 - Output address and dimensions
     uint64_t val_ctrl1 = REG_FIELD(MATADD_CTRL1, OUT_ADDR, cfg.output_addr) |
                          REG_FIELD(MATADD_CTRL1, COL, cfg.col_num_m1) |
                          REG_FIELD(MATADD_CTRL1, ROW, cfg.row_num_m1);
     reg_write64(RegOffset::MATADD_CTRL_1, val_ctrl1);
-    
+
     // 4. Start MATADD
     reg_write(RegOffset::START, BIT_START_MATADD);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_matadd(wait_irq)")
     wait_irq();
     NPU_TIMER_SECTION_END()
@@ -2174,17 +2313,17 @@ void NpuRuntime::run_matadd(const MataddConfig& cfg) {
 void NpuRuntime::run_transpose(const TransposeConfig& cfg) {
     NPU_TIMER_TOTAL("run_transpose");
     ScopedStageTimer profileTimer(ProfileStage::Layout, ProfileCallCounter::Layout);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_transpose(pre_reg)")
-    NPU_LOG("Running TRANSPOSE (In=0x%X, Out=0x%X, Col=%d, Row=%d)", 
+    NPU_LOG("Running TRANSPOSE (In=0x%X, Out=0x%X, Col=%d, Row=%d)",
             cfg.input_sram_addr, cfg.output_sram_addr,
             cfg.col_num, cfg.row_num);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_transpose(reg_write)")
     // Transpose 使用 SFU 模块实现，操作码为 SFU_OP_TRANSPOSE (8)
     // 不需要量化参数，直接配置输入输出地址和尺寸
-    
+
     // 1. SFU Config 0 - 设置操作码为 TRANSPOSE
     uint64_t val_cfg1 = REG_FIELD(CFG_SFU0, OP, SFU_OP_TRANSPOSE) |
                         REG_FIELD(CFG_SFU0, INT_TYPE, 0) |  // int8
@@ -2194,7 +2333,7 @@ void NpuRuntime::run_transpose(const TransposeConfig& cfg) {
                         REG_FIELD(CFG_SFU0, OUT_ZP, 0) |
                         REG_FIELD(CFG_SFU0, IN_ZP, 0);
     reg_write64_cached(RegOffset::CFG_SFU_1, val_cfg1, &shadow.sfu_cfg1);
-    
+
     // 2. SFU Config 1 - Scale 参数置 0
     // 同样不用配置量化参数
     // uint64_t val_cfg2 = REG_FIELD(CFG_SFU1, IN_SCALE, 0) |
@@ -2202,21 +2341,21 @@ void NpuRuntime::run_transpose(const TransposeConfig& cfg) {
     //                     REG_FIELD(CFG_SFU1, OUT_SCALE, 0) |
     //                     REG_FIELD(CFG_SFU1, OUT_SHIFT, 0);
     // reg_write64_cached(RegOffset::CFG_SFU_2, val_cfg2, &shadow.sfu_cfg2);
-    
+
     // 3. SFU Input - 输入地址和尺寸
     uint64_t val_input = REG_FIELD(SFU_EXE0, IN_ADDR, cfg.input_sram_addr) |
                          REG_FIELD(SFU_EXE0, COL, cfg.col_num) |
                          REG_FIELD(SFU_EXE0, ROW, cfg.row_num);
     reg_write64(RegOffset::SFU_INPUT, val_input);
-    
+
     // 4. SFU Output - 输出地址
     uint64_t val_output = REG_FIELD(SFU_EXE1, OUT_ADDR, cfg.output_sram_addr);
     reg_write64(RegOffset::SFU_OUTPUT, val_output);
-    
+
     // 5. Start SFU
     reg_write(RegOffset::START, BIT_START_SFU);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_transpose(wait_irq)")
     wait_irq();
     NPU_TIMER_SECTION_END()
@@ -2225,14 +2364,14 @@ void NpuRuntime::run_transpose(const TransposeConfig& cfg) {
 void NpuRuntime::run_resample(const ResampleConfig& cfg) {
     NPU_TIMER_TOTAL("run_resample");
     ScopedStageTimer profileTimer(ProfileStage::Compute, ProfileCallCounter::Compute);
-    
+
     NPU_TIMER_SECTION_BEGIN("run_resample(pre_reg)")
-    NPU_LOG("Running RESAMPLE (Type=%d, Op=%d, In=0x%X, Out=0x%X, Col=%d, Row=%d)", 
+    NPU_LOG("Running RESAMPLE (Type=%d, Op=%d, In=0x%X, Out=0x%X, Col=%d, Row=%d)",
             cfg.resample_type, cfg.resample_op,
             cfg.input_sram_addr, cfg.output_sram_addr,
             cfg.input_col_num, cfg.input_row_num);
     NPU_TIMER_SECTION_END()
-    
+
     NPU_TIMER_SECTION_BEGIN("run_resample(reg_write)")
     // Resample 使用 SFU 模块实现
     // 根据 resample_type 和 resample_op 构造 SFU 操作码
@@ -2484,7 +2623,7 @@ void NpuRuntime::init_allocator() {
 void* NpuRuntime::alloc(size_t size) {
     size_t aligned_size = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
     BlockHeader* curr = free_list_head;
-    
+
     while (curr) {
         if (curr->is_free && curr->size >= aligned_size) {
             if (curr->size >= aligned_size + sizeof(BlockHeader) + ALIGNMENT) {
@@ -2495,7 +2634,7 @@ void* NpuRuntime::alloc(size_t size) {
                 new_block->next = curr->next;
                 new_block->prev = curr;
                 if (curr->next) curr->next->prev = new_block;
-                
+
                 curr->next = new_block;
                 curr->size = aligned_size;
             }
@@ -2513,7 +2652,7 @@ void NpuRuntime::free(void* ptr) {
     if (!ptr) return;
     BlockHeader* block = (BlockHeader*)((uint8_t*)ptr - sizeof(BlockHeader));
     if (block->is_free) return;
-    
+
     NPU_LOG("Freeing block at offset 0x%lX", (uint8_t*)ptr - (uint8_t*)data_virt_base);
     block->is_free = true;
     coalesce(block);

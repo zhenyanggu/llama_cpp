@@ -89,6 +89,33 @@ GGML_BACKEND_API bool ggml_backend_npu_w8a8_register(
 GGML_BACKEND_API bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor);
 GGML_BACKEND_API void ggml_backend_npu_w8a8_preload_clear(void);
 
+GGML_BACKEND_API bool ggml_backend_npu_i8_gemm_raw_packed(
+        const char * op_name,
+        const int8_t * weight_kxm,
+        int64_t m,
+        int64_t k,
+        int64_t weight_stride_m,
+        const int8_t * act_nxk,
+        int64_t n,
+        int64_t act_stride_k,
+        int32_t * out_nxm,
+        int64_t out_stride_m);
+
+GGML_BACKEND_API void * ggml_backend_npu_mem_alloc(size_t size);
+GGML_BACKEND_API void ggml_backend_npu_mem_free(void * ptr);
+
+GGML_BACKEND_API bool ggml_backend_npu_i8_gemm_raw_cma(
+        const char * op_name,
+        const int8_t * weight_cma_kxm,
+        int64_t m,
+        int64_t k,
+        int64_t weight_stride_m,
+        const int8_t * act_cma_nxk,
+        int64_t n,
+        int64_t act_stride_k,
+        int32_t * out_nxm,
+        int64_t out_stride_m);
+
 #ifdef __cplusplus
 }
 #endif

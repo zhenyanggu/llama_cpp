@@ -1047,6 +1047,7 @@ enum class clip_aicas_bfp8m_scale_mode {
     block,
     tensor,
     tile,
+    static_tile,
 };
 
 static const char * clip_mmproj_attn_precision_name(clip_mmproj_attn_precision mode) {
@@ -1098,6 +1099,8 @@ static const char * clip_aicas_bfp8m_scale_mode_name(clip_aicas_bfp8m_scale_mode
             return "tensor";
         case clip_aicas_bfp8m_scale_mode::tile:
             return "tile";
+        case clip_aicas_bfp8m_scale_mode::static_tile:
+            return "static_tile";
     }
 
     return "block";
@@ -1168,9 +1171,13 @@ static clip_aicas_bfp8m_scale_mode clip_get_bfp8m_scale_mode() {
             std::strcmp(env, "systolic_tile") == 0 || std::strcmp(env, "systolic-tile") == 0) {
         return clip_aicas_bfp8m_scale_mode::tile;
     }
+    if (std::strcmp(env, "static_tile") == 0 || std::strcmp(env, "static-tile") == 0 ||
+            std::strcmp(env, "static_tile32") == 0 || std::strcmp(env, "static-tile32") == 0) {
+        return clip_aicas_bfp8m_scale_mode::static_tile;
+    }
 
     throw std::runtime_error(string_format(
-        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile", env));
+        "invalid AICAS_MMPROJ_BFP8M_SCALE_MODE=%s; expected one of: block, tensor, tile, static_tile", env));
 }
 
 static const char * clip_dequant_sim_mode_name(clip_aicas_dequant_sim_mode mode) {
@@ -1287,7 +1294,96 @@ struct clip_aicas_bfp8m_userdata {
     int64_t k_block = 64;
     int64_t tile = 32;
     clip_aicas_bfp8m_scale_mode scale_mode = clip_aicas_bfp8m_scale_mode::block;
+    bool pv_matmul = false;
+    bool npu_enabled = false;
+    bool npu_required = false;
+    bool npu_cma2d_enabled = false;
+    struct clip_aicas_bfp8m_npu_stats * npu_stats = nullptr;
 };
+
+struct clip_aicas_bfp8m_npu_stats {
+    std::atomic<int64_t> qk_custom_calls{0};
+    std::atomic<int64_t> pv_custom_calls{0};
+    std::atomic<int64_t> qk_calls{0};
+    std::atomic<int64_t> pv_calls{0};
+    std::atomic<int64_t> fallback_calls{0};
+    std::atomic<int64_t> total_us{0};
+    std::atomic<int64_t> qk_total_us{0};
+    std::atomic<int64_t> pv_total_us{0};
+    std::atomic<int64_t> a_quant_us{0};
+    std::atomic<int64_t> b_quant_us{0};
+    std::atomic<int64_t> preprocess_us{0};
+    std::atomic<int64_t> raw_gemm_us{0};
+    std::atomic<int64_t> postprocess_us{0};
+    std::atomic<int64_t> cpu_accum_us{0};
+    std::atomic<int64_t> raw_acc_bytes{0};
+
+    void reset() {
+        qk_custom_calls.store(0, std::memory_order_relaxed);
+        pv_custom_calls.store(0, std::memory_order_relaxed);
+        qk_calls.store(0, std::memory_order_relaxed);
+        pv_calls.store(0, std::memory_order_relaxed);
+        fallback_calls.store(0, std::memory_order_relaxed);
+        total_us.store(0, std::memory_order_relaxed);
+        qk_total_us.store(0, std::memory_order_relaxed);
+        pv_total_us.store(0, std::memory_order_relaxed);
+        a_quant_us.store(0, std::memory_order_relaxed);
+        b_quant_us.store(0, std::memory_order_relaxed);
+        preprocess_us.store(0, std::memory_order_relaxed);
+        raw_gemm_us.store(0, std::memory_order_relaxed);
+        postprocess_us.store(0, std::memory_order_relaxed);
+        cpu_accum_us.store(0, std::memory_order_relaxed);
+        raw_acc_bytes.store(0, std::memory_order_relaxed);
+    }
+
+    json to_json() const {
+        return {
+            {"qk_custom_calls", qk_custom_calls.load(std::memory_order_relaxed)},
+            {"pv_custom_calls", pv_custom_calls.load(std::memory_order_relaxed)},
+            {"qk_raw_gemm_calls", qk_calls.load(std::memory_order_relaxed)},
+            {"pv_raw_gemm_calls", pv_calls.load(std::memory_order_relaxed)},
+            {"fallback_calls", fallback_calls.load(std::memory_order_relaxed)},
+            {"total_custom_us", total_us.load(std::memory_order_relaxed)},
+            {"qk_total_custom_us", qk_total_us.load(std::memory_order_relaxed)},
+            {"pv_total_custom_us", pv_total_us.load(std::memory_order_relaxed)},
+            {"a_scale_quant_us", a_quant_us.load(std::memory_order_relaxed)},
+            {"b_scale_quant_us", b_quant_us.load(std::memory_order_relaxed)},
+            {"npu_pack_us", preprocess_us.load(std::memory_order_relaxed)},
+            {"raw_gemm_us", raw_gemm_us.load(std::memory_order_relaxed)},
+            {"postprocess_us", postprocess_us.load(std::memory_order_relaxed)},
+            {"cpu_accum_us", cpu_accum_us.load(std::memory_order_relaxed)},
+            {"raw_acc_bytes", raw_acc_bytes.load(std::memory_order_relaxed)},
+        };
+    }
+};
+
+static bool clip_env_bool(const char * name, bool default_value) {
+    const char * env = std::getenv(name);
+    if (env == nullptr || env[0] == '\0') {
+        return default_value;
+    }
+    return std::strcmp(env, "0") != 0 &&
+        std::strcmp(env, "false") != 0 &&
+        std::strcmp(env, "FALSE") != 0 &&
+        std::strcmp(env, "off") != 0 &&
+        std::strcmp(env, "OFF") != 0 &&
+        std::strcmp(env, "no") != 0 &&
+        std::strcmp(env, "NO") != 0;
+}
+
+static bool clip_get_mmproj_bfp8m_npu_enabled() {
+    const char * backend_name = std::getenv("MTMD_BACKEND_DEVICE");
+    const bool default_value = backend_name != nullptr && std::strcmp(backend_name, "NPU") == 0;
+    return clip_env_bool("AICAS_MMPROJ_BFP8M_NPU", default_value);
+}
+
+static bool clip_get_mmproj_bfp8m_npu_required() {
+    return clip_env_bool("AICAS_MMPROJ_BFP8M_NPU_REQUIRE", false);
+}
+
+static bool clip_get_mmproj_bfp8m_npu_cma2d_enabled() {
+    return clip_env_bool("AICAS_MMPROJ_BFP8M_NPU_CMA2D", false);
+}
 
 static int64_t clip_get_mmproj_bfp16m_k_block() {
     constexpr int64_t default_k_block = 64;
@@ -1550,6 +1646,36 @@ static clip_aicas_scale_shift32 clip_dequant_scale_to_scale_shift(float scale) {
     out.scale = static_cast<int32_t>(scale_i64);
     out.shift = exponent - 31;
     return out;
+}
+
+static float clip_mmproj_bfp8m_static_scale(const char * env_name, float default_scale) {
+    const char * value = std::getenv(env_name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_scale;
+    }
+    char * end = nullptr;
+    const float parsed = std::strtof(value, &end);
+    if (end != value && *end == '\0' && std::isfinite(parsed) && parsed > 0.0f) {
+        return parsed;
+    }
+    return default_scale;
+}
+
+static clip_aicas_scale_shift32 clip_mmproj_bfp8m_static_scale_shift(bool pv_matmul, bool a_side) {
+    // Defaults come from the stratified30 attention-distribution calibration in
+    // AICAS/output/group128-hparam-search/attn_dist_bfp8_strategy.
+    constexpr float q_scale = 11.4603f / 127.0f;
+    constexpr float k_scale = 12.3074f / 127.0f;
+    constexpr float v_scale = 7.92846f / 127.0f;
+    constexpr float p_scale = 1.0f / 127.0f;
+    if (pv_matmul) {
+        return clip_dequant_scale_to_scale_shift(a_side
+            ? clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_V_SCALE", v_scale)
+            : clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_P_SCALE", p_scale));
+    }
+    return clip_dequant_scale_to_scale_shift(a_side
+        ? clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_K_SCALE", k_scale)
+        : clip_mmproj_bfp8m_static_scale("AICAS_MMPROJ_BFP8M_Q_SCALE", q_scale));
 }
 
 static int clip_u64_msb_index(uint64_t value) {
@@ -2299,6 +2425,8 @@ struct clip_ctx {
     mutable clip_aicas_bfp16m_userdata aicas_bfp16m_userdata;
     mutable std::vector<std::unique_ptr<clip_aicas_bfp16m_userdata>> aicas_bfp16m_node_userdata;
     mutable clip_aicas_bfp8m_userdata aicas_bfp8m_userdata;
+    mutable std::vector<std::unique_ptr<clip_aicas_bfp8m_userdata>> aicas_bfp8m_node_userdata;
+    mutable clip_aicas_bfp8m_npu_stats aicas_bfp8m_npu_stats;
 
     clip_ctx(clip_context_params & ctx_params) {
         debug_graph = std::getenv("MTMD_DEBUG_GRAPH") != nullptr;
@@ -2342,6 +2470,10 @@ struct clip_ctx {
         aicas_bfp8m_userdata.k_block = aicas_mmproj_bfp8m_k_block;
         aicas_bfp8m_userdata.tile = aicas_mmproj_bfp8m_tile;
         aicas_bfp8m_userdata.scale_mode = aicas_bfp8m_scale_mode;
+        aicas_bfp8m_userdata.npu_enabled = clip_get_mmproj_bfp8m_npu_enabled();
+        aicas_bfp8m_userdata.npu_required = clip_get_mmproj_bfp8m_npu_required();
+        aicas_bfp8m_userdata.npu_cma2d_enabled = clip_get_mmproj_bfp8m_npu_cma2d_enabled();
+        aicas_bfp8m_userdata.npu_stats = &aicas_bfp8m_npu_stats;
         if (aicas_dequant_sim_mode != clip_aicas_dequant_sim_mode::off) {
             LOG_INF("%s: AICAS mmproj dequant simulation enabled: %s\n",
                 __func__,
@@ -2360,6 +2492,13 @@ struct clip_ctx {
         if (aicas_mmproj_attn_precision == clip_mmproj_attn_precision::bfp8m) {
             LOG_INF("%s: AICAS mmproj BFP8-M k_block=%" PRId64 " tile=%" PRId64 " scale_mode=%s scale_shift=i32+i32\n",
                 __func__, aicas_mmproj_bfp8m_k_block, aicas_mmproj_bfp8m_tile, clip_aicas_bfp8m_scale_mode_name(aicas_bfp8m_scale_mode));
+            if (aicas_bfp8m_userdata.npu_enabled) {
+                LOG_INF("%s: AICAS mmproj BFP8-M NPU raw int8 GEMM enabled%s\n",
+                    __func__, aicas_bfp8m_userdata.npu_required ? " (required)" : "");
+                if (aicas_bfp8m_userdata.npu_cma2d_enabled) {
+                    LOG_INF("%s: AICAS mmproj BFP8-M NPU CMA 2D GEMM path enabled\n", __func__);
+                }
+            }
         }
         if (const char * stats_path = std::getenv("AICAS_MMPROJ_DEQUANT_STATS_FILE")) {
             aicas_dequant_stats_path = stats_path;
@@ -3479,6 +3618,15 @@ static inline int8_t clip_bfp8m_quant_value(float value, clip_aicas_scale_shift3
     return static_cast<int8_t>(q);
 }
 
+static inline int8_t clip_bfp8m_quant_value_with_scale_f(float value, double scale_f) {
+    if (scale_f == 0.0) {
+        return 0;
+    }
+    long q = std::lrint(static_cast<double>(value) / scale_f);
+    q = std::max<long>(-127, std::min<long>(127, q));
+    return static_cast<int8_t>(q);
+}
+
 static clip_aicas_scale_shift32 clip_bfp8m_block_scale_for_a(
         const struct ggml_tensor * a,
         int64_t row,
@@ -3581,10 +3729,12 @@ static void clip_bfp8m_mul_mat_f32(
         return;
     }
 
+    const int64_t custom_start_us = ggml_time_us();
     const int64_t k_total = a->ne[0];
     const bool per_tensor_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tensor;
     const bool per_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::tile;
-    const int64_t scale_block = (per_tensor_scale || per_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
+    const bool static_tile_scale = cfg->scale_mode == clip_aicas_bfp8m_scale_mode::static_tile;
+    const int64_t scale_block = (per_tensor_scale || per_tile_scale || static_tile_scale) ? k_total : std::max<int64_t>(1, cfg->k_block);
     const int64_t n_kb = (k_total + scale_block - 1) / scale_block;
     const int64_t a_s_stride_row = n_kb;
     const int64_t a_s_stride_i2 = a->ne[1] * a_s_stride_row;
@@ -3604,88 +3754,454 @@ static void clip_bfp8m_mul_mat_f32(
     std::vector<int8_t> a_q((size_t) (a->ne[3] * a_q_stride_i3));
     std::vector<clip_aicas_scale_shift32> b_scale((size_t) (b->ne[3] * b_s_stride_i3));
     std::vector<int8_t> b_q((size_t) (b->ne[3] * b_q_stride_i3));
-    const clip_aicas_scale_shift32 tensor_scale_a = per_tensor_scale ? clip_bfp8m_tensor_scale(a) : clip_aicas_scale_shift32{};
-    const clip_aicas_scale_shift32 tensor_scale_b = per_tensor_scale ? clip_bfp8m_tensor_scale(b) : clip_aicas_scale_shift32{};
+    clip_aicas_scale_shift32 tensor_scale_a;
+    clip_aicas_scale_shift32 tensor_scale_b;
+    clip_aicas_scale_shift32 static_scale_a;
+    clip_aicas_scale_shift32 static_scale_b;
     const int64_t tile = std::max<int64_t>(1, cfg->tile);
 
-    for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
-        for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
-            for (int64_t row = 0; row < a->ne[1]; ++row) {
-                for (int64_t kb = 0; kb < n_kb; ++kb) {
-                    const int64_t k0 = kb * scale_block;
-                    const int64_t k1 = std::min(k_total, k0 + scale_block);
-                    const clip_aicas_scale_shift32 scale = per_tensor_scale
-                        ? tensor_scale_a
-                        : (per_tile_scale
-                            ? clip_bfp8m_tile_scale_for_a(a, row, i2, i3, tile)
-                            : clip_bfp8m_block_scale_for_a(a, row, i2, i3, k0, k1));
-                    a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row + kb)] = scale;
-                    for (int64_t k = k0; k < k1; ++k) {
-                        a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
-                            clip_bfp8m_quant_value(clip_tensor_get_f32_4d(a, k, row, i2, i3), scale);
+#ifdef GGML_USE_NPU
+    const bool can_use_npu_direct = cfg->npu_enabled && cfg->npu_cma2d_enabled && per_tile_scale && n_kb == 1;
+    if (can_use_npu_direct) {
+        const auto align_up_i64 = [](int64_t value, int64_t alignment) {
+            return alignment <= 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+        };
+        const int64_t m = a->ne[1];
+        const int64_t n = b->ne[1];
+        const int64_t weight_stride_m = align_up_i64(m, 16);
+        const int64_t act_stride_k = align_up_i64(k_total, 16);
+        const int64_t out_stride_m = weight_stride_m;
+        const size_t a_cma_bytes = (size_t) (a->ne[3] * a->ne[2] * k_total * weight_stride_m);
+        const size_t b_cma_bytes = (size_t) (b->ne[3] * b->ne[2] * n * act_stride_k);
+        void * a_cma = ggml_backend_npu_mem_alloc(a_cma_bytes);
+        void * b_cma = ggml_backend_npu_mem_alloc(b_cma_bytes);
+        if (a_cma != nullptr && b_cma != nullptr) {
+            int8_t * a_q_cma = static_cast<int8_t *>(a_cma);
+            int8_t * b_q_cma = static_cast<int8_t *>(b_cma);
+            const int64_t a_cma_stride_i2 = k_total * weight_stride_m;
+            const int64_t a_cma_stride_i3 = a->ne[2] * a_cma_stride_i2;
+            const int64_t b_cma_stride_i2 = n * act_stride_k;
+            const int64_t b_cma_stride_i3 = b->ne[2] * b_cma_stride_i2;
+
+            const int64_t a_quant_start_us = ggml_time_us();
+            for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+                for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+                    int8_t * a_q_base = a_q_cma + i3 * a_cma_stride_i3 + i2 * a_cma_stride_i2;
+                    for (int64_t row0 = 0; row0 < a->ne[1]; row0 += tile) {
+                        const int64_t row1 = std::min<int64_t>(a->ne[1], row0 + tile);
+                        float max_abs = 0.0f;
+                        for (int64_t row = row0; row < row1; ++row) {
+                            for (int64_t k = 0; k < k_total; ++k) {
+                                max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(a, k, row, i2, i3)));
+                            }
+                        }
+                        const clip_aicas_scale_shift32 scale =
+                            max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                        const double scale_f = clip_scale_shift32_to_double(scale);
+                        for (int64_t row = row0; row < row1; ++row) {
+                            a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row)] = scale;
+                            for (int64_t k = 0; k < k_total; ++k) {
+                                a_q_base[k * weight_stride_m + row] =
+                                    clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(a, k, row, i2, i3), scale_f);
+                            }
+                        }
+                    }
+                }
+            }
+            const int64_t a_quant_us = ggml_time_us() - a_quant_start_us;
+
+            const int64_t b_quant_start_us = ggml_time_us();
+            for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+                for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+                    int8_t * b_q_base = b_q_cma + i3 * b_cma_stride_i3 + i2 * b_cma_stride_i2;
+                    for (int64_t col0 = 0; col0 < b->ne[1]; col0 += tile) {
+                        const int64_t col1 = std::min<int64_t>(b->ne[1], col0 + tile);
+                        float max_abs = 0.0f;
+                        for (int64_t col = col0; col < col1; ++col) {
+                            for (int64_t k = 0; k < k_total; ++k) {
+                                max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(b, k, col, i2, i3)));
+                            }
+                        }
+                        const clip_aicas_scale_shift32 scale =
+                            max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                        const double scale_f = clip_scale_shift32_to_double(scale);
+                        for (int64_t col = col0; col < col1; ++col) {
+                            b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col)] = scale;
+                            for (int64_t k = 0; k < k_total; ++k) {
+                                b_q_base[col * act_stride_k + k] =
+                                    clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(b, k, col, i2, i3), scale_f);
+                            }
+                        }
+                    }
+                }
+            }
+            const int64_t b_quant_us = ggml_time_us() - b_quant_start_us;
+
+            std::vector<int32_t> raw_nxm((size_t) (n * out_stride_m));
+            bool npu_ok = true;
+            int64_t raw_us_total = 0;
+            int64_t post_us_total = 0;
+            int64_t calls = 0;
+            for (int64_t i3 = 0; i3 < dst->ne[3] && npu_ok; ++i3) {
+                for (int64_t i2 = 0; i2 < dst->ne[2] && npu_ok; ++i2) {
+                    const int64_t a_i2 = i2 % a->ne[2];
+                    const int64_t a_i3 = i3 % a->ne[3];
+                    const int8_t * a_q_base = a_q_cma + a_i3 * a_cma_stride_i3 + a_i2 * a_cma_stride_i2;
+                    const int8_t * b_q_base = b_q_cma + i3 * b_cma_stride_i3 + i2 * b_cma_stride_i2;
+
+                    const int64_t raw_start_us = ggml_time_us();
+                    npu_ok = ggml_backend_npu_i8_gemm_raw_cma(
+                            cfg->pv_matmul ? "mmproj_bfp8m_pv" : "mmproj_bfp8m_qk",
+                            a_q_base,
+                            m,
+                            k_total,
+                            weight_stride_m,
+                            b_q_base,
+                            n,
+                            act_stride_k,
+                            raw_nxm.data(),
+                            out_stride_m);
+                    raw_us_total += ggml_time_us() - raw_start_us;
+                    if (!npu_ok) {
+                        break;
+                    }
+
+                    const int64_t post_start_us = ggml_time_us();
+                    for (int64_t col = 0; col < n; ++col) {
+                        const clip_aicas_scale_shift32 scale_b =
+                            b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col)];
+                        const double scale_b_f = clip_scale_shift32_to_double(scale_b);
+                        for (int64_t row = 0; row < m; ++row) {
+                            const clip_aicas_scale_shift32 scale_a =
+                                a_scale[(size_t) (a_i3 * a_s_stride_i3 + a_i2 * a_s_stride_i2 + row * a_s_stride_row)];
+                            const double out_f = static_cast<double>(raw_nxm[(size_t) (col * out_stride_m + row)]) *
+                                clip_scale_shift32_to_double(scale_a) * scale_b_f;
+                            clip_tensor_set_f32_4d(dst, row, col, i2, i3, static_cast<float>(out_f));
+                        }
+                    }
+                    post_us_total += ggml_time_us() - post_start_us;
+                    ++calls;
+                }
+            }
+
+            ggml_backend_npu_mem_free(a_cma);
+            ggml_backend_npu_mem_free(b_cma);
+            a_cma = nullptr;
+            b_cma = nullptr;
+            if (npu_ok) {
+                if (cfg->npu_stats != nullptr) {
+                    (cfg->pv_matmul ? cfg->npu_stats->pv_custom_calls : cfg->npu_stats->qk_custom_calls)
+                        .fetch_add(1, std::memory_order_relaxed);
+                    (cfg->pv_matmul ? cfg->npu_stats->pv_total_us : cfg->npu_stats->qk_total_us)
+                        .fetch_add(ggml_time_us() - custom_start_us, std::memory_order_relaxed);
+                    (cfg->pv_matmul ? cfg->npu_stats->pv_calls : cfg->npu_stats->qk_calls)
+                        .fetch_add(calls, std::memory_order_relaxed);
+                    cfg->npu_stats->total_us.fetch_add(ggml_time_us() - custom_start_us, std::memory_order_relaxed);
+                    cfg->npu_stats->a_quant_us.fetch_add(a_quant_us, std::memory_order_relaxed);
+                    cfg->npu_stats->b_quant_us.fetch_add(b_quant_us, std::memory_order_relaxed);
+                    cfg->npu_stats->raw_gemm_us.fetch_add(raw_us_total, std::memory_order_relaxed);
+                    cfg->npu_stats->postprocess_us.fetch_add(post_us_total, std::memory_order_relaxed);
+                    cfg->npu_stats->raw_acc_bytes.fetch_add(calls * n * m * (int64_t) sizeof(int32_t), std::memory_order_relaxed);
+                }
+                return;
+            }
+            if (cfg->npu_stats != nullptr) {
+                cfg->npu_stats->fallback_calls.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (cfg->npu_required) {
+                GGML_ABORT("AICAS mmproj BFP8-M NPU raw CMA GEMM failed");
+            }
+        }
+        ggml_backend_npu_mem_free(a_cma);
+        ggml_backend_npu_mem_free(b_cma);
+        if (cfg->npu_required) {
+            GGML_ABORT("AICAS mmproj BFP8-M NPU CMA allocation failed");
+        }
+    }
+#endif
+
+    const int64_t a_quant_start_us = ggml_time_us();
+    if (per_tensor_scale) {
+        tensor_scale_a = clip_bfp8m_tensor_scale(a);
+    }
+    if (static_tile_scale) {
+        static_scale_a = clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, true);
+    }
+    if (per_tile_scale) {
+        GGML_ASSERT(n_kb == 1);
+        for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+                for (int64_t row0 = 0; row0 < a->ne[1]; row0 += tile) {
+                    const int64_t row1 = std::min<int64_t>(a->ne[1], row0 + tile);
+                    float max_abs = 0.0f;
+                    for (int64_t row = row0; row < row1; ++row) {
+                        for (int64_t k = 0; k < k_total; ++k) {
+                            max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(a, k, row, i2, i3)));
+                        }
+                    }
+                    const clip_aicas_scale_shift32 scale =
+                        max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                    const double scale_f = clip_scale_shift32_to_double(scale);
+                    for (int64_t row = row0; row < row1; ++row) {
+                        a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row)] = scale;
+                        for (int64_t k = 0; k < k_total; ++k) {
+                            a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
+                                clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(a, k, row, i2, i3), scale_f);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for (int64_t i3 = 0; i3 < a->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < a->ne[2]; ++i2) {
+                for (int64_t row = 0; row < a->ne[1]; ++row) {
+                    for (int64_t kb = 0; kb < n_kb; ++kb) {
+                        const int64_t k0 = kb * scale_block;
+                        const int64_t k1 = std::min(k_total, k0 + scale_block);
+                        const clip_aicas_scale_shift32 scale = per_tensor_scale
+                            ? tensor_scale_a
+                            : (static_tile_scale
+                                ? static_scale_a
+                                : clip_bfp8m_block_scale_for_a(a, row, i2, i3, k0, k1));
+                        const double scale_f = clip_scale_shift32_to_double(scale);
+                        a_scale[(size_t) (i3 * a_s_stride_i3 + i2 * a_s_stride_i2 + row * a_s_stride_row + kb)] = scale;
+                        for (int64_t k = k0; k < k1; ++k) {
+                            a_q[(size_t) (i3 * a_q_stride_i3 + i2 * a_q_stride_i2 + row * a_q_stride_row + k)] =
+                                clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(a, k, row, i2, i3), scale_f);
+                        }
                     }
                 }
             }
         }
     }
+    const int64_t a_quant_us = ggml_time_us() - a_quant_start_us;
 
-    for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
-        for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
-            for (int64_t col = 0; col < b->ne[1]; ++col) {
-                for (int64_t kb = 0; kb < n_kb; ++kb) {
-                    const int64_t k0 = kb * scale_block;
-                    const int64_t k1 = std::min(k_total, k0 + scale_block);
-                    const clip_aicas_scale_shift32 scale = per_tensor_scale
-                        ? tensor_scale_b
-                        : (per_tile_scale
-                            ? clip_bfp8m_tile_scale_for_b(b, col, i2, i3, tile)
-                            : clip_bfp8m_block_scale_for_b(b, col, i2, i3, k0, k1));
-                    b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)] = scale;
-                    for (int64_t k = k0; k < k1; ++k) {
-                        b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
-                            clip_bfp8m_quant_value(clip_tensor_get_f32_4d(b, k, col, i2, i3), scale);
+    const int64_t b_quant_start_us = ggml_time_us();
+    if (per_tensor_scale) {
+        tensor_scale_b = clip_bfp8m_tensor_scale(b);
+    }
+    if (static_tile_scale) {
+        static_scale_b = clip_mmproj_bfp8m_static_scale_shift(cfg->pv_matmul, false);
+    }
+    if (per_tile_scale) {
+        GGML_ASSERT(n_kb == 1);
+        for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+                for (int64_t col0 = 0; col0 < b->ne[1]; col0 += tile) {
+                    const int64_t col1 = std::min<int64_t>(b->ne[1], col0 + tile);
+                    float max_abs = 0.0f;
+                    for (int64_t col = col0; col < col1; ++col) {
+                        for (int64_t k = 0; k < k_total; ++k) {
+                            max_abs = std::max(max_abs, std::fabs(clip_tensor_get_f32_4d(b, k, col, i2, i3)));
+                        }
+                    }
+                    const clip_aicas_scale_shift32 scale =
+                        max_abs > 0.0f ? clip_dequant_scale_to_scale_shift(max_abs / 127.0f) : clip_aicas_scale_shift32{};
+                    const double scale_f = clip_scale_shift32_to_double(scale);
+                    for (int64_t col = col0; col < col1; ++col) {
+                        b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col)] = scale;
+                        for (int64_t k = 0; k < k_total; ++k) {
+                            b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
+                                clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(b, k, col, i2, i3), scale_f);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for (int64_t i3 = 0; i3 < b->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < b->ne[2]; ++i2) {
+                for (int64_t col = 0; col < b->ne[1]; ++col) {
+                    for (int64_t kb = 0; kb < n_kb; ++kb) {
+                        const int64_t k0 = kb * scale_block;
+                        const int64_t k1 = std::min(k_total, k0 + scale_block);
+                        const clip_aicas_scale_shift32 scale = per_tensor_scale
+                            ? tensor_scale_b
+                            : (static_tile_scale
+                                ? static_scale_b
+                                : clip_bfp8m_block_scale_for_b(b, col, i2, i3, k0, k1));
+                        const double scale_f = clip_scale_shift32_to_double(scale);
+                        b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)] = scale;
+                        for (int64_t k = k0; k < k1; ++k) {
+                            b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)] =
+                                clip_bfp8m_quant_value_with_scale_f(clip_tensor_get_f32_4d(b, k, col, i2, i3), scale_f);
+                        }
                     }
                 }
             }
         }
     }
+    const int64_t b_quant_us = ggml_time_us() - b_quant_start_us;
 
-    const int64_t total = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
-    for (int64_t index = 0; index < total; ++index) {
-        int64_t rem = index;
-        const int64_t row = rem % dst->ne[0];
-        rem /= dst->ne[0];
-        const int64_t col = rem % dst->ne[1];
-        rem /= dst->ne[1];
-        const int64_t i2 = rem % dst->ne[2];
-        rem /= dst->ne[2];
-        const int64_t i3 = rem;
-        const int64_t a_i2 = i2 % a->ne[2];
-        const int64_t a_i3 = i3 % a->ne[3];
+    const auto compute_cpu_all = [&]() {
+        const int64_t total = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
+        for (int64_t index = 0; index < total; ++index) {
+            int64_t rem = index;
+            const int64_t row = rem % dst->ne[0];
+            rem /= dst->ne[0];
+            const int64_t col = rem % dst->ne[1];
+            rem /= dst->ne[1];
+            const int64_t i2 = rem % dst->ne[2];
+            rem /= dst->ne[2];
+            const int64_t i3 = rem;
+            const int64_t a_i2 = i2 % a->ne[2];
+            const int64_t a_i3 = i3 % a->ne[3];
 
-        double acc = 0.0;
-        for (int64_t kb = 0; kb < n_kb; ++kb) {
-            const int64_t k0 = kb * scale_block;
-            const int64_t k1 = std::min(k_total, k0 + scale_block);
-            int64_t partial = 0;
-            for (int64_t k = k0; k < k1; ++k) {
-                const int8_t qa = a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + k)];
-                const int8_t qb = b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)];
-                partial += (int32_t) qa * (int32_t) qb;
+            double acc = 0.0;
+            for (int64_t kb = 0; kb < n_kb; ++kb) {
+                const int64_t k0 = kb * scale_block;
+                const int64_t k1 = std::min(k_total, k0 + scale_block);
+                int64_t partial = 0;
+                for (int64_t k = k0; k < k1; ++k) {
+                    const int8_t qa = a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + k)];
+                    const int8_t qb = b_q[(size_t) (i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col + k)];
+                    partial += (int32_t) qa * (int32_t) qb;
+                }
+
+                const clip_aicas_scale_shift32 scale_a =
+                    a_scale[(size_t) (a_i3 * a_s_stride_i3 + a_i2 * a_s_stride_i2 + row * a_s_stride_row + kb)];
+                const clip_aicas_scale_shift32 scale_b =
+                    b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)];
+                const double partial_scale = std::ldexp(
+                        static_cast<double>(scale_a.scale) * static_cast<double>(scale_b.scale),
+                        scale_a.shift + scale_b.shift);
+                acc += static_cast<double>(partial) * partial_scale;
             }
 
-            const clip_aicas_scale_shift32 scale_a =
-                a_scale[(size_t) (a_i3 * a_s_stride_i3 + a_i2 * a_s_stride_i2 + row * a_s_stride_row + kb)];
-            const clip_aicas_scale_shift32 scale_b =
-                b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col + kb)];
-            const double partial_scale = std::ldexp(
-                    static_cast<double>(scale_a.scale) * static_cast<double>(scale_b.scale),
-                    scale_a.shift + scale_b.shift);
-            acc += static_cast<double>(partial) * partial_scale;
+            clip_tensor_set_f32_4d(dst, row, col, i2, i3, static_cast<float>(acc));
+        }
+    };
+
+    const bool can_use_npu = cfg->npu_enabled && per_tile_scale && n_kb == 1;
+    if (cfg->npu_enabled && cfg->npu_required && !can_use_npu) {
+        GGML_ABORT("AICAS_MMPROJ_BFP8M_NPU_REQUIRE=1 requires BFP8-M tile scale mode");
+    }
+
+    const auto record_common_stats = [&](int64_t cpu_accum_us = 0) {
+        if (cfg->npu_stats == nullptr) {
+            return;
+        }
+        const int64_t total_us = ggml_time_us() - custom_start_us;
+        (cfg->pv_matmul ? cfg->npu_stats->pv_custom_calls : cfg->npu_stats->qk_custom_calls)
+            .fetch_add(1, std::memory_order_relaxed);
+        (cfg->pv_matmul ? cfg->npu_stats->pv_total_us : cfg->npu_stats->qk_total_us)
+            .fetch_add(total_us, std::memory_order_relaxed);
+        cfg->npu_stats->total_us.fetch_add(total_us, std::memory_order_relaxed);
+        cfg->npu_stats->a_quant_us.fetch_add(a_quant_us, std::memory_order_relaxed);
+        cfg->npu_stats->b_quant_us.fetch_add(b_quant_us, std::memory_order_relaxed);
+        cfg->npu_stats->cpu_accum_us.fetch_add(cpu_accum_us, std::memory_order_relaxed);
+    };
+
+    if (can_use_npu) {
+#ifdef GGML_USE_NPU
+        const auto align_up_i64 = [](int64_t value, int64_t alignment) {
+            return alignment <= 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+        };
+        const int64_t m = a->ne[1];
+        const int64_t n = b->ne[1];
+        const int64_t weight_stride_m = align_up_i64(m, 16);
+        const int64_t act_stride_k = align_up_i64(k_total, 16);
+        const int64_t out_stride_m = weight_stride_m;
+        std::vector<int8_t> weight_kxm((size_t) (k_total * weight_stride_m));
+        std::vector<int8_t> act_nxk((size_t) (n * act_stride_k));
+        std::vector<int32_t> raw_nxm((size_t) (n * out_stride_m));
+
+        bool npu_ok = true;
+        int64_t pre_us_total = 0;
+        int64_t raw_us_total = 0;
+        int64_t post_us_total = 0;
+        int64_t calls = 0;
+
+        for (int64_t i3 = 0; i3 < dst->ne[3] && npu_ok; ++i3) {
+            for (int64_t i2 = 0; i2 < dst->ne[2] && npu_ok; ++i2) {
+                const int64_t a_i2 = i2 % a->ne[2];
+                const int64_t a_i3 = i3 % a->ne[3];
+
+                const int64_t pre_start_us = ggml_time_us();
+                std::fill(weight_kxm.begin(), weight_kxm.end(), 0);
+                std::fill(act_nxk.begin(), act_nxk.end(), 0);
+                for (int64_t kk = 0; kk < k_total; ++kk) {
+                    for (int64_t row = 0; row < m; ++row) {
+                        weight_kxm[(size_t) (kk * weight_stride_m + row)] =
+                            a_q[(size_t) (a_i3 * a_q_stride_i3 + a_i2 * a_q_stride_i2 + row * a_q_stride_row + kk)];
+                    }
+                }
+                for (int64_t col = 0; col < n; ++col) {
+                    std::memcpy(
+                            act_nxk.data() + col * act_stride_k,
+                            b_q.data() + i3 * b_q_stride_i3 + i2 * b_q_stride_i2 + col * b_q_stride_col,
+                            (size_t) k_total);
+                }
+                pre_us_total += ggml_time_us() - pre_start_us;
+
+                const int64_t raw_start_us = ggml_time_us();
+                npu_ok = ggml_backend_npu_i8_gemm_raw_packed(
+                        cfg->pv_matmul ? "mmproj_bfp8m_pv" : "mmproj_bfp8m_qk",
+                        weight_kxm.data(),
+                        m,
+                        k_total,
+                        weight_stride_m,
+                        act_nxk.data(),
+                        n,
+                        act_stride_k,
+                        raw_nxm.data(),
+                        out_stride_m);
+                raw_us_total += ggml_time_us() - raw_start_us;
+                if (!npu_ok) {
+                    break;
+                }
+
+                const int64_t post_start_us = ggml_time_us();
+                for (int64_t col = 0; col < n; ++col) {
+                    const clip_aicas_scale_shift32 scale_b =
+                        b_scale[(size_t) (i3 * b_s_stride_i3 + i2 * b_s_stride_i2 + col * b_s_stride_col)];
+                    const double scale_b_f = clip_scale_shift32_to_double(scale_b);
+                    for (int64_t row = 0; row < m; ++row) {
+                        const clip_aicas_scale_shift32 scale_a =
+                            a_scale[(size_t) (a_i3 * a_s_stride_i3 + a_i2 * a_s_stride_i2 + row * a_s_stride_row)];
+                        const double out_f = static_cast<double>(raw_nxm[(size_t) (col * out_stride_m + row)]) *
+                            clip_scale_shift32_to_double(scale_a) * scale_b_f;
+                        clip_tensor_set_f32_4d(dst, row, col, i2, i3, static_cast<float>(out_f));
+                    }
+                }
+                post_us_total += ggml_time_us() - post_start_us;
+                ++calls;
+            }
         }
 
-        clip_tensor_set_f32_4d(dst, row, col, i2, i3, static_cast<float>(acc));
+        if (npu_ok) {
+            if (cfg->npu_stats != nullptr) {
+                (cfg->pv_matmul ? cfg->npu_stats->pv_calls : cfg->npu_stats->qk_calls)
+                    .fetch_add(calls, std::memory_order_relaxed);
+                cfg->npu_stats->preprocess_us.fetch_add(pre_us_total, std::memory_order_relaxed);
+                cfg->npu_stats->raw_gemm_us.fetch_add(raw_us_total, std::memory_order_relaxed);
+                cfg->npu_stats->postprocess_us.fetch_add(post_us_total, std::memory_order_relaxed);
+                cfg->npu_stats->raw_acc_bytes.fetch_add(calls * n * m * (int64_t) sizeof(int32_t), std::memory_order_relaxed);
+            }
+            record_common_stats();
+            return;
+        }
+
+        if (cfg->npu_stats != nullptr) {
+            cfg->npu_stats->fallback_calls.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (cfg->npu_required) {
+            GGML_ABORT("AICAS mmproj BFP8-M NPU raw GEMM failed");
+        }
+#else
+        if (cfg->npu_stats != nullptr) {
+            cfg->npu_stats->fallback_calls.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (cfg->npu_required) {
+            GGML_ABORT("AICAS mmproj BFP8-M NPU raw GEMM requested but GGML_USE_NPU is not enabled");
+        }
+#endif
     }
+
+    const int64_t cpu_accum_start_us = ggml_time_us();
+    compute_cpu_all();
+    record_common_stats(ggml_time_us() - cpu_accum_start_us);
 }
 
 struct clip_graph {
@@ -5346,6 +5862,14 @@ private:
         return ptr;
     }
 
+    clip_aicas_bfp8m_userdata * make_mmproj_attn_bfp8m_userdata(bool pv_matmul) const {
+        auto node_cfg = std::make_unique<clip_aicas_bfp8m_userdata>(ctx->aicas_bfp8m_userdata);
+        node_cfg->pv_matmul = pv_matmul;
+        clip_aicas_bfp8m_userdata * ptr = node_cfg.get();
+        ctx->aicas_bfp8m_node_userdata.push_back(std::move(node_cfg));
+        return ptr;
+    }
+
     ggml_tensor * build_mmproj_attn_mul_mat(ggml_tensor * a, ggml_tensor * b, int il, bool pv_matmul) const {
         if (ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp16m &&
                 ctx->aicas_mmproj_attn_precision != clip_mmproj_attn_precision::bfp8m) {
@@ -5361,7 +5885,6 @@ private:
         ggml_tensor * out_template = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
         if (ctx->aicas_mmproj_attn_precision == clip_mmproj_attn_precision::bfp8m) {
             GGML_UNUSED(il);
-            GGML_UNUSED(pv_matmul);
             return ggml_map_custom3(
                 ctx0,
                 out_template,
@@ -5369,7 +5892,7 @@ private:
                 b,
                 clip_bfp8m_mul_mat_f32,
                 1,
-                &ctx->aicas_bfp8m_userdata);
+                make_mmproj_attn_bfp8m_userdata(pv_matmul));
         }
         return ggml_map_custom3(
             ctx0,
@@ -7723,6 +8246,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     const clip_image_f32_batch & imgs = *imgs_c_ptr;
     int batch_size = imgs.entries.size();
     ctx->last_mmproj_summary_json.clear();
+    ctx->aicas_bfp8m_npu_stats.reset();
     const bool collect_light_summary = clip_mmproj_light_summary_enabled();
     const int64_t summary_start_us = collect_light_summary ? ggml_time_us() : 0;
     int64_t build_graph_us = 0;
@@ -8169,6 +8693,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 {"total_observed_us", total_observed_us},
             }},
             {"graph", graph_summary},
+            {"bfp8m_npu", ctx->aicas_bfp8m_npu_stats.to_json()},
         };
         ctx->last_mmproj_summary_json = summary.dump();
     }
