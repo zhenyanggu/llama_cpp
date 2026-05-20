@@ -11,7 +11,8 @@ The overlay app must already be installed for xmutil.
 
 Options:
   --app-name <name>           xmutil app name (default: double_dma_overlayapp)
-  --profile <fast|full>       Test profile (default: full)
+  --profile <fast|full|versa-p>
+                               Test profile (default: full)
   --results-dir <path>        Results directory (default: <root>/runs/<timestamp>)
   --sudo-password-env <var>   Env var containing sudo password (default: KV260_SUDO_PASSWORD)
   --timeout <seconds>         Per-test timeout if timeout(1) exists (default: 300)
@@ -52,7 +53,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$PROFILE" in
-  fast|full) ;;
+  fast|full|versa-p) ;;
   *) echo "Unsupported profile: $PROFILE" >&2; exit 2 ;;
 esac
 
@@ -72,6 +73,69 @@ log() {
 
 quote_json() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+app_pl_dtsi() {
+  printf '/lib/firmware/xilinx/%s/pl.dtsi\n' "$APP_NAME"
+}
+
+app_compatibles() {
+  local pl
+  pl="$(app_pl_dtsi)"
+  [ -f "$pl" ] || return 0
+  sed -n 's/.*compatible[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$pl" | sort -u
+}
+
+driver_aliases() {
+  if command -v modinfo >/dev/null 2>&1; then
+    modinfo "$DRIVER_KO" 2>/dev/null | sed -n 's/^alias:[[:space:]]*//p'
+  fi
+}
+
+check_driver_matches_app() {
+  local pl compat saw_hw_compat=0 matched=0
+  pl="$(app_pl_dtsi)"
+  if [ ! -f "$pl" ]; then
+    log "skip driver/app compatible check: missing $pl"
+    return 0
+  fi
+  if ! command -v modinfo >/dev/null 2>&1; then
+    log "skip driver/app compatible check: modinfo not found"
+    return 0
+  fi
+
+  while IFS= read -r compat; do
+    case "$compat" in
+      ""|fixed-factor-clock|xlnx,afi-fpga|xlnx,fclk)
+        continue
+        ;;
+    esac
+    saw_hw_compat=1
+    if driver_aliases | grep -Fq "$compat"; then
+      matched=1
+      break
+    fi
+  done < <(app_compatibles)
+
+  if [ "$saw_hw_compat" -eq 0 ]; then
+    log "skip driver/app compatible check: no hardware compatible found in $pl"
+    return 0
+  fi
+  if [ "$matched" -eq 1 ]; then
+    return 0
+  fi
+
+  {
+    echo "Driver module does not match overlay app compatible strings."
+    echo "app=$APP_NAME"
+    echo "pl_dtsi=$pl"
+    echo "app compatibles:"
+    app_compatibles | sed 's/^/  /'
+    echo "driver=$DRIVER_KO"
+    echo "driver aliases:"
+    driver_aliases | sed 's/^/  /'
+  } >&2
+  return 1
 }
 
 run_sudo() {
@@ -122,6 +186,25 @@ collect_readiness() {
     echo "== app =="
     echo "$APP_NAME"
     echo
+    echo "== app pl.dtsi =="
+    pl="$(app_pl_dtsi)"
+    if [ -f "$pl" ]; then
+      echo "$pl"
+      echo "compatibles:"
+      app_compatibles | sed 's/^/  /'
+    else
+      echo "missing: $pl"
+    fi
+    echo
+    echo "== driver module =="
+    echo "$DRIVER_KO"
+    if command -v modinfo >/dev/null 2>&1; then
+      echo "aliases:"
+      driver_aliases | sed 's/^/  /'
+    else
+      echo "modinfo not found"
+    fi
+    echo
     echo "== xmutil =="
     if [ -x /usr/bin/xmutil ]; then
       run_sudo xmutil listapps || true
@@ -147,8 +230,8 @@ assert_ready() {
     echo "xmutil is not available" >&2
     return 1
   }
-  xmutil_app_loaded || {
-    echo "xmutil app is not loaded in a slot: $APP_NAME" >&2
+  xmutil_app_available || {
+    echo "xmutil app is not visible: $APP_NAME" >&2
     return 1
   }
   [ -e /dev/npu_kv260 ] || {
@@ -165,8 +248,12 @@ assert_ready() {
   }
 }
 
-xmutil_app_loaded() {
-  run_sudo xmutil listapps 2>/dev/null | grep -F "$APP_NAME" | grep -Eq '[0-9]+->[0-9]+'
+xmutil_app_available() {
+  run_sudo xmutil listapps 2>/dev/null | grep -Fq "$APP_NAME"
+}
+
+overlay_platform_present() {
+  ls /sys/bus/platform/devices 2>/dev/null | grep -Eiq 'npu|a0000000|Versa_P'
 }
 
 load_overlay_app() {
@@ -184,8 +271,8 @@ load_overlay_app() {
     return 0
   fi
 
-  if xmutil_app_loaded; then
-    log "xmutil loadapp returned rc=$rc but $APP_NAME is loaded; continuing"
+  if xmutil_app_available && overlay_platform_present; then
+    log "xmutil loadapp returned rc=$rc but $APP_NAME platform device is present; continuing"
     return 0
   fi
 
@@ -204,6 +291,7 @@ reload_overlay_and_driver() {
   if grep -q '^npu_kv260 ' /proc/modules; then
     run_sudo rmmod npu_kv260 || true
   fi
+  check_driver_matches_app || return $?
   run_sudo insmod "$DRIVER_KO" || return $?
 
   if [ -e /dev/npu_kv260 ]; then
@@ -295,6 +383,9 @@ if [ "$PROFILE" = "full" ]; then
   require_executable "$BIN_DIR/kv260_dma_double_mvin_async_test" "double MVIN async test"
   require_executable "$BIN_DIR/kv260_layer_gemm_replay_test" "GEMM replay test"
 fi
+if [ "$PROFILE" = "versa-p" ]; then
+  require_executable "$BIN_DIR/kv260_gemm_plan_test" "Versa_P GEMM plan test"
+fi
 
 cat > "$META_JSON" <<META
 {
@@ -315,7 +406,14 @@ FAIL=0
 run_case readiness /bin/true || FAIL=$?
 run_case smoke_1m "$BIN_DIR/kv260_npu_smoke_test" 1M || FAIL=$?
 run_case runtime_init env NPU_CMA_SIZE=256M "$BIN_DIR/kv260_runtime_init_test" || FAIL=$?
-run_case dma_loopback env NPU_CMA_SIZE=16M "$BIN_DIR/kv260_dma_loopback_test" || FAIL=$?
+if [ "$PROFILE" != "versa-p" ]; then
+  run_case dma_loopback env NPU_CMA_SIZE=16M "$BIN_DIR/kv260_dma_loopback_test" || FAIL=$?
+fi
+
+if [ "$PROFILE" = "versa-p" ]; then
+  run_case gemm_plan_mmproj_tail env NPU_CMA_SIZE=64M NPU_GEMM_PLAN_SKIP_REG_IO=1 NPU_GEMM_PLAN_ONLY=mmproj_tail_b64_128x64x64 "$BIN_DIR/kv260_gemm_plan_test" || FAIL=$?
+  run_case gemm_plan_mmproj_full env NPU_CMA_SIZE=64M NPU_GEMM_PLAN_SKIP_REG_IO=1 NPU_GEMM_PLAN_ONLY=mmproj_full_128x240x64 "$BIN_DIR/kv260_gemm_plan_test" || FAIL=$?
+fi
 
 if [ "$PROFILE" = "full" ]; then
   run_case smoke_256m "$BIN_DIR/kv260_npu_smoke_test" 256M || FAIL=$?

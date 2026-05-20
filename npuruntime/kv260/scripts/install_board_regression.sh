@@ -15,6 +15,9 @@ Options:
   --remote-root <path>       Board install root (default: /home/ubuntu/kv260-regression)
   --sdk-env <path>           KV260 SDK environment script
   --driver-ko <path>         npu_kv260.ko to install
+  --driver-build-script <path>
+                             Host script used to build npu_kv260.ko
+  --skip-driver-build        Reuse existing driver module
   --skip-build               Reuse existing runtime test binaries
   --ssh-password-env <var>   Env var containing SSH password (default: KV260_SSH_PASSWORD)
   --sudo-password-env <var>  Env var name documented for board sudo (default: KV260_SUDO_PASSWORD)
@@ -37,8 +40,13 @@ HOST="192.168.0.10"
 USER_NAME="ubuntu"
 REMOTE_ROOT="/home/ubuntu/kv260-regression"
 SDK_ENV="/home/gugugu/petalinux/sdk/kv260-2025.1/environment-setup-cortexa72-cortexa53-amd-linux"
-DRIVER_KO="$KV260_DIR/driver/npu_kv260.ko"
+DRIVER_BUILD_SCRIPT="${KV260_DRIVER_BUILD_SCRIPT:-/home/gugugu/work/kv260-xilinx-6.8-driver-env/build-npu-kv260.sh}"
+DRIVER_BUILD_DIR="${KV260_DRIVER_BUILD_DIR:-/home/gugugu/work/kv260-xilinx-6.8-driver-env/npu_kv260_build}"
+DRIVER_KO="${KV260_DRIVER_KO:-}"
+DRIVER_KO_USER_SET=0
+[ -n "${KV260_DRIVER_KO:-}" ] && DRIVER_KO_USER_SET=1
 SKIP_BUILD=0
+SKIP_DRIVER_BUILD=0
 SSH_PASSWORD_ENV="KV260_SSH_PASSWORD"
 SUDO_PASSWORD_ENV="KV260_SUDO_PASSWORD"
 DRY_RUN=0
@@ -49,7 +57,9 @@ while [ $# -gt 0 ]; do
     --user) USER_NAME="$2"; shift 2 ;;
     --remote-root) REMOTE_ROOT="$2"; shift 2 ;;
     --sdk-env) SDK_ENV="$2"; shift 2 ;;
-    --driver-ko) DRIVER_KO="$2"; shift 2 ;;
+    --driver-ko) DRIVER_KO="$2"; DRIVER_KO_USER_SET=1; shift 2 ;;
+    --driver-build-script) DRIVER_BUILD_SCRIPT="$2"; shift 2 ;;
+    --skip-driver-build) SKIP_DRIVER_BUILD=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --ssh-password-env) SSH_PASSWORD_ENV="$2"; shift 2 ;;
     --sudo-password-env) SUDO_PASSWORD_ENV="$2"; shift 2 ;;
@@ -130,6 +140,38 @@ build_runtime_tests() {
   make -C "$RUNTIME_DIR" all
 }
 
+default_driver_ko() {
+  if [ "$DRIVER_KO_USER_SET" -eq 1 ]; then
+    printf '%s\n' "$DRIVER_KO"
+  elif [ -f "$DRIVER_BUILD_DIR/npu_kv260.ko" ]; then
+    printf '%s\n' "$DRIVER_BUILD_DIR/npu_kv260.ko"
+  else
+    printf '%s\n' "$KV260_DIR/driver/npu_kv260.ko"
+  fi
+}
+
+build_driver_module() {
+  if [ "$SKIP_DRIVER_BUILD" -eq 1 ] || [ "$DRIVER_KO_USER_SET" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -x "$DRIVER_BUILD_SCRIPT" ]; then
+    echo "== skip driver build: missing $DRIVER_BUILD_SCRIPT =="
+    return 0
+  fi
+
+  echo "== build driver module =="
+  DRIVER_SRC_DIR="$KV260_DIR/driver" "$DRIVER_BUILD_SCRIPT"
+  DRIVER_KO="$(default_driver_ko)"
+}
+
+check_driver_module() {
+  require_file "$DRIVER_KO" "driver module"
+  if command -v modinfo >/dev/null 2>&1; then
+    echo "== driver module aliases =="
+    modinfo "$DRIVER_KO" | sed -n 's/^alias: *//p' | grep -E 'xlnx,|of:' || true
+  fi
+}
+
 RUNTIME_BINS=(
   kv260_npu_smoke_test
   kv260_runtime_init_test
@@ -137,6 +179,7 @@ RUNTIME_BINS=(
   kv260_dma_acc_int32_fp32_test
   kv260_mvin_problem_case_test
   kv260_dma_double_mvin_async_test
+  kv260_gemm_plan_test
   kv260_layer_gemm_replay_test
   kv260_mmproj_layer_asym_w8a8_test
   kv260_overlay_switch_test
@@ -149,7 +192,10 @@ else
   echo "== skip build =="
 fi
 
-require_file "$DRIVER_KO" "driver module"
+DRIVER_KO="$(default_driver_ko)"
+build_driver_module
+DRIVER_KO="$(default_driver_ko)"
+check_driver_module
 require_file "$DOC_PATH" "board documentation"
 require_executable "$BOARD_RUNNER" "board runner"
 for bin in "${RUNTIME_BINS[@]}"; do

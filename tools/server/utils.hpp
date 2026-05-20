@@ -77,6 +77,49 @@ static bool server_mtmd_cpu_op_profile_enabled() {
     return env != nullptr && env[0] != '\0' && std::string(env) != "0";
 }
 
+static std::string server_text_cpu_profile_output_path() {
+    const char * path = std::getenv("LLAMA_TEXT_CPU_PROFILE_JSON");
+    return path ? path : "";
+}
+
+static bool server_text_cpu_profile_enabled() {
+    const std::string path = server_text_cpu_profile_output_path();
+    return !path.empty();
+}
+
+static void server_text_cpu_profile_write(
+        const char * phase,
+        int32_t n_tokens,
+        int32_t seq_id,
+        int64_t wall_us,
+        const char * cpu_backend_profile_json) {
+    const std::string path = server_text_cpu_profile_output_path();
+    if (path.empty() || cpu_backend_profile_json == nullptr || cpu_backend_profile_json[0] == '\0') {
+        return;
+    }
+
+    json profile = json::parse(cpu_backend_profile_json, nullptr, false);
+    if (profile.is_discarded()) {
+        return;
+    }
+
+    json record = {
+        {"profile_kind", "llama_server_text_cpu_profile_record"},
+        {"timing_unit", "us"},
+        {"phase", phase ? phase : "unknown"},
+        {"n_tokens", n_tokens},
+        {"seq_id", seq_id},
+        {"wall_us", wall_us},
+        {"cpu_backend_profile", std::move(profile)},
+    };
+
+    std::ofstream fout(path, std::ios::app | std::ios::binary);
+    if (!fout.is_open()) {
+        return;
+    }
+    fout << record.dump() << "\n";
+}
+
 struct server_mtmd_prefill_profile {
     struct mmproj_category_aggregate {
         int64_t node_count = 0;
@@ -2011,7 +2054,22 @@ public:
         SRV_INF("decoding merged multimodal prefill, n_tokens = %zu\n", tokens.size());
         const int64_t t1 = ggml_time_ms();
         const int64_t decode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
+        const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
+        const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
+        if (collect_text_cpu_profile) {
+            ggml_backend_cpu_profile_start();
+        }
         result = llama_decode(ctx, batch);
+        const char * text_cpu_profile_json =
+            collect_text_cpu_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+        if (collect_text_cpu_profile) {
+            server_text_cpu_profile_write(
+                    "merged_prefill",
+                    (int32_t) tokens.size(),
+                    seq_id,
+                    ggml_time_us() - text_profile_start_us,
+                    text_cpu_profile_json);
+        }
         const int64_t decode_us = profile != nullptr && profile->enabled ? (ggml_time_us() - decode_start_us) : 0;
         if (result != 0) {
             SRV_ERR("failed to decode merged multimodal prefill, res = %d\n", result);

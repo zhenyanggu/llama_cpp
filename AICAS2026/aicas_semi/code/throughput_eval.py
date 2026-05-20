@@ -145,7 +145,8 @@ def main():
             "decode_ms": decode_ms,
             "total_ms": prompt_ms + decode_ms,
             "prefill_speed_tps": prefill_speed,
-            "decode_speed_tps": decode_speed
+            "decode_speed_tps": decode_speed,
+            "response_text": full_response,
         }
         
         # Use the output path from command-line arguments

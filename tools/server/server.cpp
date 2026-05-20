@@ -4232,7 +4232,37 @@ struct server_context {
                 batch.logits   + i,
             };
 
+            bool has_prompt_tokens = false;
+            int32_t profile_seq_id = -1;
+            for (const auto & slot : slots) {
+                if (slot.i_batch < (int) i || slot.i_batch >= (int) (i + n_tokens)) {
+                    continue;
+                }
+                profile_seq_id = slot.id;
+                if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT) {
+                    has_prompt_tokens = true;
+                    break;
+                }
+            }
+
+            const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
+            const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
+            if (collect_text_cpu_profile) {
+                ggml_backend_cpu_profile_start();
+            }
+
             const int ret = llama_decode(ctx, batch_view);
+
+            const char * text_cpu_profile_json =
+                collect_text_cpu_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+            if (collect_text_cpu_profile) {
+                server_text_cpu_profile_write(
+                        has_prompt_tokens ? "prefill" : "decode",
+                        n_tokens,
+                        profile_seq_id,
+                        ggml_time_us() - text_profile_start_us,
+                        text_cpu_profile_json);
+            }
 
             metrics.on_decoded(slots);
 

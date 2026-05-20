@@ -8,10 +8,15 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <vector>
+
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 namespace ggml_npu {
 
@@ -117,6 +122,64 @@ static int8_t npu_quantize_u8_payload(float shifted) {
     return static_cast<int8_t>(q);
 }
 
+#if defined(__ARM_NEON) && defined(__aarch64__)
+static inline void npu_store_u8x4_as_i8(uint8x8_t v, int8_t * dst) {
+    const uint32_t packed = vget_lane_u32(vreinterpret_u32_u8(v), 0);
+    std::memcpy(dst, &packed, sizeof(packed));
+}
+
+static inline void npu_pack_f32_scaled_row_neon(
+        const float * row,
+        const float * multiplier,
+        float zp,
+        int64_t k_cols,
+        int8_t * dst) {
+    const float32x4_t vzp = vdupq_n_f32(zp);
+    const int32x4_t vzero = vdupq_n_s32(0);
+    const int32x4_t v255 = vdupq_n_s32(255);
+    int64_t k = 0;
+    for (; k + 4 <= k_cols; k += 4) {
+        float32x4_t x = vmulq_f32(vld1q_f32(row + k), vld1q_f32(multiplier + k));
+        x = vaddq_f32(x, vzp);
+        int32x4_t q = vcvtnq_s32_f32(x);
+        q = vmaxq_s32(vzero, vminq_s32(v255, q));
+        const uint16x4_t q16 = vqmovun_s32(q);
+        const uint8x8_t q8 = vqmovn_u16(vcombine_u16(q16, vdup_n_u16(0)));
+        npu_store_u8x4_as_i8(q8, dst + k);
+    }
+    for (; k < k_cols; ++k) {
+        dst[static_cast<size_t>(k)] =
+            npu_quantize_u8_payload(row[k] * multiplier[static_cast<size_t>(k)] + zp);
+    }
+}
+
+static inline void npu_pack_f32_uniform_row_neon(
+        const float * row,
+        float multiplier,
+        float zp,
+        int64_t k_cols,
+        int8_t * dst) {
+    const float32x4_t vmul = vdupq_n_f32(multiplier);
+    const float32x4_t vzp = vdupq_n_f32(zp);
+    const int32x4_t vzero = vdupq_n_s32(0);
+    const int32x4_t v255 = vdupq_n_s32(255);
+    int64_t k = 0;
+    for (; k + 4 <= k_cols; k += 4) {
+        float32x4_t x = vmulq_f32(vld1q_f32(row + k), vmul);
+        x = vaddq_f32(x, vzp);
+        int32x4_t q = vcvtnq_s32_f32(x);
+        q = vmaxq_s32(vzero, vminq_s32(v255, q));
+        const uint16x4_t q16 = vqmovun_s32(q);
+        const uint8x8_t q8 = vqmovn_u16(vcombine_u16(q16, vdup_n_u16(0)));
+        npu_store_u8x4_as_i8(q8, dst + k);
+    }
+    for (; k < k_cols; ++k) {
+        dst[static_cast<size_t>(k)] =
+            npu_quantize_u8_payload(row[k] * multiplier + zp);
+    }
+}
+#endif
+
 std::vector<float> npu_compute_weight_output_scales(
         const struct ggml_tensor * src0,
         int64_t m0,
@@ -213,10 +276,14 @@ bool npu_pack_activation_tile_static_asym_i8(
                     (n0 + n) * src1->nb[1] +
                     k0 * src1->nb[0]);
                 int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+#if defined(__ARM_NEON) && defined(__aarch64__)
+                npu_pack_f32_scaled_row_neon(row, smooth, zp, k_cols, dst);
+#else
                 for (int64_t k = 0; k < k_cols; ++k) {
                     dst[static_cast<size_t>(k)] =
                         npu_quantize_u8_payload(row[k] * smooth[static_cast<size_t>(k)] + zp);
                 }
+#endif
             }
             return true;
         }
@@ -267,10 +334,14 @@ bool npu_pack_activation_tile_static_asym_i8(
                 (n0 + n) * src1->nb[1] +
                 k0 * src1->nb[0]);
             int8_t * dst = packed->data() + static_cast<size_t>(n * k_stride);
+#if defined(__ARM_NEON) && defined(__aarch64__)
+            npu_pack_f32_uniform_row_neon(row, inv_scale, zp, k_cols, dst);
+#else
             for (int64_t k = 0; k < k_cols; ++k) {
                 dst[static_cast<size_t>(k)] =
                     npu_quantize_u8_payload(row[k] * inv_scale + zp);
             }
+#endif
         }
         return true;
     }
@@ -337,10 +408,13 @@ bool npu_pack_weight_tile_fixed_i8_transposed(
         return false;
     }
     packed->assign(static_cast<size_t>(k_rows * m_stride), 0);
-    for (int64_t k = 0; k < k_rows; ++k) {
-        for (int64_t m = 0; m < m_cols; ++m) {
+    for (int64_t m = 0; m < m_cols; ++m) {
+        const int64_t group = m / 32;
+        const int64_t lane = m % 32;
+        for (int64_t k = 0; k < k_rows; ++k) {
             const float v = npu_read_weight_value_f32(src0, k0 + k, m0 + m);
-            (*packed)[static_cast<size_t>(k * m_stride + m)] = npu_quantize_i8(v, col_scales[m]);
+            (*packed)[static_cast<size_t>((group * k_rows + k) * 32 + lane)] =
+                npu_quantize_i8(v, col_scales[m]);
         }
     }
     return true;
@@ -376,10 +450,12 @@ bool npu_pack_weight_tile_prequant_i8_transposed(
     }
     packed->assign(static_cast<size_t>(k_rows * m_stride), 0);
     for (int64_t m = 0; m < m_cols; ++m) {
+        const int64_t group = m / 32;
+        const int64_t lane = m % 32;
         const int8_t * row_ptr = reinterpret_cast<const int8_t *>(
             static_cast<const char *>(src0->data) + (m0 + m) * src0->nb[1] + k0 * src0->nb[0]);
         for (int64_t k = 0; k < k_rows; ++k) {
-            (*packed)[static_cast<size_t>(k * m_stride + m)] = row_ptr[k];
+            (*packed)[static_cast<size_t>((group * k_rows + k) * 32 + lane)] = row_ptr[k];
         }
     }
 

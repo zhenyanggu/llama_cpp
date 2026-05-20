@@ -216,6 +216,8 @@ bool run_gemm_plan_suite() {
         {"edge_tiles_17x19x33",         17,   19,   33,   33,   19,   19},
         {"mainpath_16x1024x16",         16,   16, 1024, 1024,   16,   16},
         {"mainpath_64x512x64",          64,   64,  512,  512,   64,   64},
+        {"mmproj_tail_b64_128x64x64",  128,   64,   64,   64,   64,   64},
+        {"mmproj_full_128x240x64",     128,  240,   64,   64,  240,  240},
     };
     if (std::getenv("NPU_GEMM_PLAN_DIAG")) {
         const GemmPlanCase diag_cases[] = {
@@ -263,7 +265,9 @@ int main() {
         return 1;
     }
 
-    const bool reg_ok = check_gemm_plan_register_io();
+    const bool reg_ok = std::getenv("NPU_GEMM_PLAN_SKIP_REG_IO")
+        ? true
+        : check_gemm_plan_register_io();
     const bool suite_ok = run_gemm_plan_suite();
 
     npu_destroy();

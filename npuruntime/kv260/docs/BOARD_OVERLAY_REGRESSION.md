@@ -18,6 +18,7 @@
   - `scripts/run_regression.sh`
   - `driver/npu_kv260.ko`
 - `bin/kv260_*` 测试程序
+- `driver/npu_kv260.ko` 的 `modinfo` alias 必须匹配当前 app 的 `pl.dtsi` 里的 NPU `compatible`，例如 `xlnx,Versa-P-ip-1.0`。
 
 先确认 app 能被 `xmutil` 看到：
 
@@ -79,6 +80,7 @@ export KV260_SUDO_PASSWORD='<board-sudo-password>'
 sudo rmmod npu_kv260 || true
 sudo xmutil unloadapp || true
 sudo xmutil loadapp <app-name>
+# run_regression.sh 会先核对 app pl.dtsi compatible 和驱动 modinfo alias
 sudo insmod /home/ubuntu/kv260-regression/driver/npu_kv260.ko
 sudo chgrp <current-group> /dev/npu_kv260
 sudo chmod 660 /dev/npu_kv260
@@ -186,6 +188,7 @@ xmutil listapps
 
 - overlay 没有创建设备树 platform device。
 - `npu_kv260.ko` 和当前内核不匹配。
+- `npu_kv260.ko` 的设备树 alias 不匹配当前 app 的 `pl.dtsi` compatible。比如 app 使用 `xlnx,Versa-P-ip-1.0`，但旧驱动只支持 `xlnx,T-NPU-FPGA-1.0`。
 - 驱动加载失败。
 
 查看最新失败日志：
@@ -194,6 +197,13 @@ xmutil listapps
 latest=$(ls -dt runs/* | head -n 1)
 cat "$latest/cases/readiness.log"
 cat "$latest/cases/readiness.dmesg_tail.txt"
+```
+
+也可以直接检查：
+
+```bash
+grep compatible /lib/firmware/xilinx/<app-name>/pl.dtsi
+modinfo /home/ubuntu/kv260-regression/driver/npu_kv260.ko | grep alias
 ```
 
 ### `Missing sudo password in env var`

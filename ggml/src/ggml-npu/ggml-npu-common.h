@@ -20,7 +20,7 @@ constexpr size_t NPU_DEFAULT_GUARD_BYTES = 4u * 1024u;
 constexpr uint32_t NPU_SPM_ALIGNMENT = 32;
 constexpr uint32_t NPU_ACC_ALIGNMENT = 4;
 constexpr int64_t NPU_GEMM_PLAN_ADDR_ALIGNMENT = 16;
-constexpr int64_t NPU_GEMM_PLAN_STRIDE_ALIGNMENT = 16;
+constexpr int64_t NPU_GEMM_PLAN_STRIDE_ALIGNMENT = 32;
 
 constexpr int64_t npu_align_up_i64(int64_t value, int64_t alignment) {
     return alignment <= 0 ? value : ((value + alignment - 1) / alignment) * alignment;
