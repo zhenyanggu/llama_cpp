@@ -576,6 +576,7 @@ static void npu_remove(struct platform_device *pdev)
 
 static const struct of_device_id npu_of_match[] = {
     { .compatible = "xlnx,T-NPU-FPGA-1.0" },
+    { .compatible = "xlnx,Versa-P-ip-1.0" },
     { }
 };
 MODULE_DEVICE_TABLE(of, npu_of_match);

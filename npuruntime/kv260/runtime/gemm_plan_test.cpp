@@ -27,6 +27,7 @@ struct GemmPlanCase {
     uint16_t a_stride;
     uint16_t b_stride;
     uint16_t out_stride;
+    uint32_t b_dram_stride = 0;
 };
 
 bool write_reg32(int fd, uint32_t offset, uint32_t value) {
@@ -108,9 +109,10 @@ void fill_matrix_a(int8_t* ptr, const GemmPlanCase& tc) {
 }
 
 void fill_matrix_b(int8_t* ptr, const GemmPlanCase& tc) {
-    std::memset(ptr, 0, static_cast<size_t>(tc.k) * tc.b_stride);
+    const uint32_t b_dram_stride = tc.b_dram_stride ? tc.b_dram_stride : tc.b_stride;
+    std::memset(ptr, 0, static_cast<size_t>(tc.k) * b_dram_stride);
     for (uint16_t r = 0; r < tc.k; ++r) {
-        int8_t* row = ptr + static_cast<size_t>(r) * tc.b_stride;
+        int8_t* row = ptr + static_cast<size_t>(r) * b_dram_stride;
         for (uint16_t c = 0; c < tc.n; ++c) {
             row[c] = pattern_b(r, c);
         }
@@ -134,7 +136,8 @@ std::vector<int32_t> build_golden(const GemmPlanCase& tc) {
 
 bool run_gemm_plan_case(const GemmPlanCase& tc) {
     const size_t a_bytes = static_cast<size_t>(tc.m) * tc.a_stride;
-    const size_t b_bytes = static_cast<size_t>(tc.k) * tc.b_stride;
+    const uint32_t b_dram_stride = tc.b_dram_stride ? tc.b_dram_stride : tc.b_stride;
+    const size_t b_bytes = static_cast<size_t>(tc.k) * b_dram_stride;
     const size_t out_elems = static_cast<size_t>(tc.m) * tc.out_stride;
     const size_t out_bytes = out_elems * sizeof(int32_t);
 
@@ -154,10 +157,42 @@ bool run_gemm_plan_case(const GemmPlanCase& tc) {
     std::memset(out, 0, out_bytes);
     const std::vector<int32_t> golden = build_golden(tc);
 
-    npu_dma_mvin(a, kSpmA, static_cast<uint32_t>(tc.k - 1), static_cast<uint32_t>(tc.m - 1),
-                 tc.a_stride, tc.a_stride, 1, 0, false, false, false, 0, 0, 0);
-    npu_dma_mvin(b, kSpmB, static_cast<uint32_t>(tc.n - 1), static_cast<uint32_t>(tc.k - 1),
-                 tc.b_stride, tc.b_stride, 1, 1, false, false, false, 0, 0, 0);
+    const MvinConfig act_mvin = {
+        a,
+        kSpmA,
+        static_cast<uint32_t>(tc.k - 1),
+        static_cast<uint32_t>(tc.m - 1),
+        tc.a_stride,
+        tc.a_stride,
+        1,
+        0,
+        false,
+        false,
+        false,
+        0,
+        0,
+        0,
+    };
+    const MvinConfig weight_mvin = {
+        b,
+        kSpmB,
+        static_cast<uint32_t>(tc.n - 1),
+        static_cast<uint32_t>(tc.k - 1),
+        tc.b_stride,
+        b_dram_stride,
+        1,
+        1,
+        false,
+        false,
+        false,
+        0,
+        0,
+        0,
+    };
+    npu_dma_mvin_async(0, &act_mvin);
+    npu_dma_wait_mvin(1u << 0);
+    npu_dma_mvin_async(1, &weight_mvin);
+    npu_dma_wait_mvin(1u << 1);
 
     npu_gemm_plan_run(kSpmA, kSpmB, kAccOut, kAccScratch, 0,
                       tc.m, tc.n, tc.k,
@@ -216,6 +251,10 @@ bool run_gemm_plan_suite() {
         {"edge_tiles_17x19x33",         17,   19,   33,   33,   19,   19},
         {"mainpath_16x1024x16",         16,   16, 1024, 1024,   16,   16},
         {"mainpath_64x512x64",          64,   64,  512,  512,   64,   64},
+        {"mmproj_tail_b64_128x64x64",  128,   64,   64,   64,   64,   64},
+        {"mmproj_tail_stride240_128x64x64", 128, 64, 64, 64, 240, 240, 240},
+        {"mmproj_cma_tail_128x64x64",  128,   64,   64,   64,  240,  240, 1024},
+        {"mmproj_full_128x240x64",     128,  240,   64,   64,  240,  240, 1024},
     };
     if (std::getenv("NPU_GEMM_PLAN_DIAG")) {
         const GemmPlanCase diag_cases[] = {

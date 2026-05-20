@@ -14,9 +14,10 @@ Options:
   --user <user>                 KV260 user (default: ubuntu)
   --remote-root <path>          Remote root (default: /home/ubuntu/aicas-semi)
   --sdk-env <path>              KV260 SDK env script
-  --build-dir <path>            Cross-build dir (default: build-kv260-semi)
+  --build-dir <path>            Cross-build dir (default: build-kv260-semi-arm)
   --server-bin <path>           Reuse existing KV260 llama-server binary
   --skip-build                  Skip cross-build and reuse --server-bin/build output
+  --best-config-json <path>     Load model/mmproj/server env from a current-best config JSON
   --model <path>                Text model GGUF path
   --mmproj <path>               mmproj GGUF path
   --overlay-app <name>          Overlay app to load (required, e.g. GEMM_v6_app)
@@ -44,6 +45,8 @@ Options:
   --no-merge-prefill            Disable merged multimodal embedding prefill
   --npu-text-prefill-dynamic    Enable dynamic NPU text prefill GEMM shapes (default)
   --no-npu-text-prefill-dynamic Disable dynamic NPU text prefill GEMM shapes
+  --server-env <KEY=VALUE>      Add an environment assignment to llama-server; repeatable
+  --require-mmproj-bfp8m-npu    Require mmproj BFP8-M attention to use the NPU raw GEMM path
   --acc-sample-mode <mode>      available|official (default: available)
   --force-sync-shared           Re-upload shared assets even if same-size files exist
   --power-path <path>           Board hwmon path
@@ -62,11 +65,16 @@ HOST="192.168.0.10"
 USER_NAME="ubuntu"
 REMOTE_ROOT="/home/ubuntu/aicas-semi"
 SDK_ENV="/home/gugugu/petalinux/sdk/kv260-2025.1/environment-setup-cortexa72-cortexa53-amd-linux"
-BUILD_DIR="$REPO_DIR/build-kv260-semi"
+BUILD_DIR="$REPO_DIR/build-kv260-semi-arm"
 SERVER_BIN=""
 SKIP_BUILD=0
 MODEL_PATH="$REPO_DIR/AICAS/output/text-decode-awq-repro/calib16-a0p125-g32/text_sq_prefill_decode_awq_calib16_a0p125_g32_kvq8_scale_f16.gguf"
 MMPROJ_PATH="$REPO_DIR/AICAS/output/smoothquant/full-alpha-0_5-minmax/mmproj.gguf"
+BEST_CONFIG_JSON=""
+BEST_CONFIG_ENV=""
+EXTRA_SERVER_ENV=""
+MODEL_EXPLICIT=0
+MMPROJ_EXPLICIT=0
 OVERLAY_APP=""
 SUDO_PASSWORD="${BOARD_SUDO_PASSWORD:-123456}"
 PORT="8080"
@@ -112,8 +120,9 @@ while [ $# -gt 0 ]; do
     --build-dir) BUILD_DIR="$2"; shift 2 ;;
     --server-bin) SERVER_BIN="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
-    --model) MODEL_PATH="$2"; shift 2 ;;
-    --mmproj) MMPROJ_PATH="$2"; shift 2 ;;
+    --best-config-json) BEST_CONFIG_JSON="$2"; shift 2 ;;
+    --model) MODEL_PATH="$2"; MODEL_EXPLICIT=1; shift 2 ;;
+    --mmproj) MMPROJ_PATH="$2"; MMPROJ_EXPLICIT=1; shift 2 ;;
     --overlay-app) OVERLAY_APP="$2"; shift 2 ;;
     --sudo-password) SUDO_PASSWORD="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
@@ -137,6 +146,18 @@ while [ $# -gt 0 ]; do
     --no-merge-prefill) MERGE_PREFILL=0; shift ;;
     --npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=1; shift ;;
     --no-npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=0; shift ;;
+    --server-env)
+      if [[ "$2" != *=* ]]; then
+        echo "--server-env expects KEY=VALUE" >&2
+        exit 1
+      fi
+      EXTRA_SERVER_ENV="${EXTRA_SERVER_ENV:+$EXTRA_SERVER_ENV }$2"
+      shift 2
+      ;;
+    --require-mmproj-bfp8m-npu)
+      EXTRA_SERVER_ENV="${EXTRA_SERVER_ENV:+$EXTRA_SERVER_ENV }AICAS_MMPROJ_BFP8M_NPU=1 AICAS_MMPROJ_BFP8M_NPU_REQUIRE=1"
+      shift
+      ;;
     --acc-sample-mode) ACC_SAMPLE_MODE="$2"; shift 2 ;;
     --force-sync-shared) FORCE_SYNC_SHARED=1; shift ;;
     --power-path) POWER_PATH="$2"; shift 2 ;;
@@ -146,6 +167,54 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+load_best_config_json() {
+  [ -n "$BEST_CONFIG_JSON" ] || return 0
+
+  BEST_CONFIG_JSON="$(realpath "$BEST_CONFIG_JSON")"
+  eval "$(
+    python3 - "$BEST_CONFIG_JSON" "$REPO_DIR" "$MODEL_EXPLICIT" "$MMPROJ_EXPLICIT" <<'PY'
+import json
+import os
+import shlex
+import sys
+
+cfg_path, repo_dir, model_explicit, mmproj_explicit = sys.argv[1:5]
+with open(cfg_path, "r", encoding="utf-8") as handle:
+    cfg = json.load(handle)
+
+def repo_abs(path):
+    if not path:
+        return ""
+    return path if os.path.isabs(path) else os.path.join(repo_dir, path)
+
+assignments = []
+if model_explicit != "1":
+    assignments.append(("MODEL_PATH", repo_abs(cfg.get("text_model", ""))))
+if mmproj_explicit != "1":
+    assignments.append(("MMPROJ_PATH", repo_abs(cfg.get("mmproj", ""))))
+
+env = cfg.get("env", {})
+if not isinstance(env, dict):
+    raise SystemExit("best-config JSON field 'env' must be an object")
+env_parts = []
+for key, value in env.items():
+    if not isinstance(key, str) or not key.replace("_", "").isalnum():
+        raise SystemExit(f"invalid environment key in best config: {key!r}")
+    env_parts.append(f"{key}={shlex.quote(str(value))}")
+assignments.append(("BEST_CONFIG_ENV", " ".join(env_parts)))
+
+for key, value in assignments:
+    print(f"{key}={shlex.quote(value)}")
+PY
+  )"
+  echo "[config] loaded best config: $BEST_CONFIG_JSON"
+}
+
+load_best_config_json
+if [ -n "$EXTRA_SERVER_ENV" ]; then
+  BEST_CONFIG_ENV="${BEST_CONFIG_ENV:+$BEST_CONFIG_ENV }$EXTRA_SERVER_ENV"
+fi
 
 [ -n "$OVERLAY_APP" ] || {
   echo "--overlay-app is required (for example: --overlay-app GEMM_v6_app)" >&2
@@ -200,7 +269,11 @@ REMOTE_DATA_DIR="$REMOTE_RUN_DIR/data"
 REMOTE_RESULTS_DIR="$REMOTE_RUN_DIR/results"
 REMOTE_SERVER_BIN="$REMOTE_RUN_DIR/llama-server"
 REMOTE_MODEL="$REMOTE_SHARED_DIR/$(basename "$MODEL_PATH")"
-REMOTE_MMPROJ="$REMOTE_SHARED_DIR/$(basename "$MMPROJ_PATH")"
+REMOTE_MMPROJ_BASENAME="$(basename "$MMPROJ_PATH")"
+if [ -n "$BEST_CONFIG_JSON" ]; then
+  REMOTE_MMPROJ_BASENAME="$(printf '%s' "$MMPROJ_PATH" | sha1sum | cut -c1-10)-$REMOTE_MMPROJ_BASENAME"
+fi
+REMOTE_MMPROJ="$REMOTE_SHARED_DIR/$REMOTE_MMPROJ_BASENAME"
 REMOTE_FULL_TEST_JSON="$REMOTE_DATA_DIR/FullTest.json"
 REMOTE_IMAGE_ROOT="$REMOTE_DATA_DIR/images"
 REMOTE_TTFT_CONFIG="$REMOTE_CODE_DIR/ttft_config.remote.json"
@@ -446,7 +519,7 @@ run_remote_eval() {
     remote_acc_ori_flag="--acc-ori '$ACC_ORI'"
   fi
 
-  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' bash -s" <<EOF
+  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
 set -euo pipefail
 
 cd "\$RUN_DIR"
@@ -495,10 +568,15 @@ stop_server() {
     pid="\$(cat server.pid)"
     if [ -n "\$pid" ]; then
       echo "\$SUDO_PASSWORD" | sudo -S kill "\$pid" >/dev/null 2>&1 || true
+      sleep 1
+      if kill -0 "\$pid" >/dev/null 2>&1; then
+        echo "\$SUDO_PASSWORD" | sudo -S kill -9 "\$pid" >/dev/null 2>&1 || true
+      fi
       wait "\$pid" >/dev/null 2>&1 || true
     fi
     rm -f server.pid
   fi
+  echo "\$SUDO_PASSWORD" | sudo -S pkill -f "./llama-server --host 127.0.0.1 --port \$PORT" >/dev/null 2>&1 || true
 }
 
 start_server() {
@@ -512,6 +590,7 @@ start_server() {
   local ubatch_trace_env=""
   local npu_runtime_env="GGML_NPU_EAGER_INIT=1"
   local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
+  local best_config_env="\$BEST_CONFIG_ENV"
   if [ -n "\$REMOTE_NPU_SHAPE_TABLE" ]; then
     npu_shape_env="GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=1 GGML_NPU_SHAPE_TABLE_JSON='\$REMOTE_NPU_SHAPE_TABLE'"
   fi
@@ -528,7 +607,7 @@ start_server() {
     ubatch_trace_env="LLAMA_UBATCH_TRACE_JSONL='\$REMOTE_UBATCH_TRACE'"
   fi
 
-  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
+  echo "\$SUDO_PASSWORD" | sudo -S bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$best_config_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k q8_0 --cache-type-v q8_0 -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' --log-disable --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
 
   if ! wait_ready; then
     tail -n 120 "\$log_path" >&2 || true
