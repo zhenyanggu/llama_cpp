@@ -16,12 +16,12 @@
     "date": "2026-05-22",
     "board": "KV260",
     "overlay_app": "versa_prefill_app",
-    "run_id": "20260522Tbiascache-p0p1-summary",
+    "run_id": "20260522Tdefault-best-prefill-summary",
     "prompt_tokens": 501,
     "completion_tokens": 32,
-    "prefill_ms": 35198.484,
-    "decode_ms": 5654.72,
-    "prefill_tps": 14.233567559330114,
-    "decode_tps": 5.658989304510214
+    "prefill_ms": 34961.788,
+    "decode_ms": 5621.343,
+    "prefill_tps": 14.329930723222736,
+    "decode_tps": 5.6925898312912055
   }
 }

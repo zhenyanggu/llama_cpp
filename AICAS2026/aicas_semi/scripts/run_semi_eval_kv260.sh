@@ -18,6 +18,7 @@ Options:
   --server-bin <path>           Reuse existing KV260 llama-server binary
   --skip-build                  Skip cross-build and reuse --server-bin/build output
   --best-config-json <path>     Load model/mmproj/server env from a current-best config JSON
+                                (default: AICAS2026/aicas_semi/config/aicas-current-best-prefill-io-config.json)
   --model <path>                Text model GGUF path
   --mmproj <path>               mmproj GGUF path
   --overlay-app <name>          Overlay app to load (required, e.g. versa_prefill_app)
@@ -72,6 +73,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CODE_DIR="$REPO_DIR/AICAS2026/aicas_semi/code"
 DEFAULT_NPU_SHAPE_TABLE="$REPO_DIR/AICAS2026/aicas_semi/config/semi_npu_shapes.json"
+DEFAULT_BEST_CONFIG_JSON="$REPO_DIR/AICAS2026/aicas_semi/config/aicas-current-best-prefill-io-config.json"
 VERSA_PREFILL_OVERLAY_DIR="/mnt/c/vivado/versa_prefill/out/versa_prefill_app"
 DEFAULT_DECODE_OVERLAY_DIR="$REPO_DIR/AICAS2026/overlay/KV260_decode_overlay"
 NPU_DRIVER_KO="$REPO_DIR/npuruntime/kv260/driver/npu_kv260.ko"
@@ -85,7 +87,7 @@ SERVER_BIN=""
 SKIP_BUILD=0
 MODEL_PATH="$REPO_DIR/AICAS/output/text-decode-awq-repro/calib16-a0p125-g32/text_sq_prefill_decode_awq_calib16_a0p125_g32_kvq8_scale_f16.gguf"
 MMPROJ_PATH="$REPO_DIR/AICAS/output/smoothquant/full-alpha-0_5-minmax/mmproj.gguf"
-BEST_CONFIG_JSON=""
+BEST_CONFIG_JSON="$DEFAULT_BEST_CONFIG_JSON"
 BEST_CONFIG_ENV=""
 EXTRA_SERVER_ENV=""
 MODEL_EXPLICIT=0
