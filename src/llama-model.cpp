@@ -38,6 +38,23 @@ extern "C" bool ggml_backend_npu_w8a8_register(
         const float * smooth_scale,
         size_t smooth_scale_len);
 extern "C" bool ggml_backend_npu_w8a8_preload(const struct ggml_tensor * weight_tensor);
+extern "C" bool ggml_backend_npu_decode_w4a16_preload(
+        const char * weight_name,
+        const void * q4_data,
+        int64_t packed_k,
+        int64_t out_channels,
+        int64_t q4_nb1,
+        const void * scale_data,
+        int scale_type,
+        int64_t scale_nb0,
+        int64_t scale_nb1,
+        const void * zero_data,
+        int zero_type,
+        int64_t zero_nb0,
+        int64_t zero_nb1,
+        int64_t k,
+        const float * smooth_scale,
+        size_t smooth_scale_len);
 #endif
 
 const char * llm_type_name(llm_type type) {
@@ -6483,6 +6500,53 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 __func__, registered, register_failed);
         if (preload) {
             LLAMA_LOG_INFO("%s: preloaded %d AICAS text W8A8 tensors into NPU CMA (%d failed)\n",
+                    __func__, preloaded, preload_failed);
+        }
+    }
+    if (aicas_text_decode_awq_enabled) {
+        const char * preload_env = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD");
+        const bool preload = preload_env != nullptr && preload_env[0] != '\0' && std::strcmp(preload_env, "0") != 0;
+        if (preload) {
+            int preloaded = 0;
+            int preload_failed = 0;
+            for (const auto & kv : aicas_text_decode_awq_tensors) {
+                const llama_aicas_text_decode_awq_tensor & cfg = kv.second;
+                if (!cfg.enabled ||
+                        cfg.policy != "Q4_AWQ" ||
+                        cfg.group_size != 128 ||
+                        cfg.quant_tensor == nullptr ||
+                        cfg.scale_tensor == nullptr ||
+                        cfg.zero_tensor == nullptr ||
+                        cfg.quant_tensor->type != GGML_TYPE_I8 ||
+                        cfg.in_features <= 0 ||
+                        cfg.packed_in_features() != cfg.quant_tensor->ne[0] ||
+                        !cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
+                    continue;
+                }
+                const bool ok = ggml_backend_npu_decode_w4a16_preload(
+                        ggml_get_name(cfg.quant_tensor),
+                        cfg.quant_tensor->data,
+                        cfg.packed_in_features(),
+                        cfg.quant_tensor->ne[1],
+                        cfg.quant_tensor->nb[1],
+                        cfg.scale_tensor->data,
+                        (int) cfg.scale_tensor->type,
+                        cfg.scale_tensor->nb[0],
+                        cfg.scale_tensor->nb[1],
+                        cfg.zero_tensor->data,
+                        (int) cfg.zero_tensor->type,
+                        cfg.zero_tensor->nb[0],
+                        cfg.zero_tensor->nb[1],
+                        cfg.in_features,
+                        cfg.smooth_scale.empty() ? nullptr : cfg.smooth_scale.data(),
+                        cfg.smooth_scale.size());
+                if (ok) {
+                    ++preloaded;
+                } else {
+                    ++preload_failed;
+                }
+            }
+            LLAMA_LOG_INFO("%s: prepacked %d AICAS decode AWQ W4A16 tensors for NPU (%d failed)\n",
                     __func__, preloaded, preload_failed);
         }
     }

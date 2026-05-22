@@ -39,6 +39,30 @@ extern "C" bool ggml_backend_npu_w8a8_register(
         size_t sum_w_len,
         const float * smooth_scale,
         size_t smooth_scale_len);
+extern "C" bool ggml_backend_npu_decode_w4a16_gemv_ex(
+        const char * op_name,
+        const void * q4_data,
+        int64_t packed_k,
+        int64_t out_channels,
+        int64_t q4_nb1,
+        const void * scale_data,
+        int scale_type,
+        int64_t scale_nb0,
+        int64_t scale_nb1,
+        const void * zero_data,
+        int zero_type,
+        int64_t zero_nb0,
+        int64_t zero_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const float * smooth_scale,
+        int64_t k,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
 #endif
 
 struct llama_text_activation_stats {
@@ -289,6 +313,16 @@ static bool llama_npu_shape_table_hit(const llama_npu_shape_key & key) {
 
 static bool llama_npu_text_prefill_dynamic_enabled() {
     const char * value = std::getenv("GGML_NPU_TEXT_PREFILL_DYNAMIC");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_decode_awq_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool llama_text_decode_awq_output_f16_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_OUTPUT_F16");
     return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
 }
 
@@ -1375,6 +1409,23 @@ static float llama_decode_awq_read_act(
     }
 }
 
+static void llama_decode_awq_write_dst(
+        struct ggml_tensor * dst,
+        char * dst_col,
+        int64_t i,
+        float value) {
+    switch (dst->type) {
+        case GGML_TYPE_F32:
+            ((float *) dst_col)[i] = value;
+            break;
+        case GGML_TYPE_F16:
+            ((ggml_fp16_t *) dst_col)[i] = ggml_fp32_to_fp16(value);
+            break;
+        default:
+            GGML_ABORT("unsupported AICAS text decode AWQ destination tensor type");
+    }
+}
+
 static void llama_compute_text_decode_awq_mul_mat(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -1387,7 +1438,7 @@ static void llama_compute_text_decode_awq_mul_mat(
 
     const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
     GGML_ASSERT(cfg != nullptr);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
     GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
     GGML_ASSERT(c->type == GGML_TYPE_I8);
     GGML_ASSERT(cfg->scale_tensor != nullptr);
@@ -1425,7 +1476,7 @@ static void llama_compute_text_decode_awq_mul_mat(
         const int64_t col = task / out_channels;
         const int64_t j   = task % out_channels;
         const char * act_col = (const char *) b->data + col * b->nb[1];
-        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+        char * out_col = (char *) dst->data + col * dst->nb[1];
 
         if (cached_col != col) {
             for (int64_t i = 0; i < k; ++i) {
@@ -1452,9 +1503,62 @@ static void llama_compute_text_decode_awq_mul_mat(
                 acc += act_smooth[static_cast<size_t>(i)] * w;
             }
         }
-        out_col[j] = acc;
+        llama_decode_awq_write_dst(dst, out_col, j, acc);
     }
 }
+
+#ifdef GGML_USE_NPU
+static void llama_compute_text_decode_awq_mul_mat_npu(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+    GGML_UNUSED(nth);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
+    GGML_ASSERT(cfg->scale_tensor != nullptr);
+    GGML_ASSERT(cfg->zero_tensor != nullptr);
+
+    const bool ok = ggml_backend_npu_decode_w4a16_gemv_ex(
+            c->name,
+            c->data,
+            cfg->packed_in_features(),
+            c->ne[1],
+            c->nb[1],
+            cfg->scale_tensor->data,
+            (int) cfg->scale_tensor->type,
+            cfg->scale_tensor->nb[0],
+            cfg->scale_tensor->nb[1],
+            cfg->zero_tensor->data,
+            (int) cfg->zero_tensor->type,
+            cfg->zero_tensor->nb[0],
+            cfg->zero_tensor->nb[1],
+            b->data,
+            (int) b->type,
+            b->nb[0],
+            b->nb[1],
+            cfg->smooth_scale.data(),
+            cfg->in_features,
+            b->ne[1],
+            dst->data,
+            (int) dst->type,
+            dst->nb[1]);
+
+    if (!ok) {
+        llama_compute_text_decode_awq_mul_mat(dst, a, b, c, 0, 1, userdata);
+    }
+}
+#endif
 
 struct llama_text_activation_registry {
     std::string output_path;
@@ -2255,7 +2359,8 @@ ggml_tensor * llm_graph_context::build_cvec(
 
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
-          ggml_tensor * cur) const {
+          ggml_tensor * cur,
+          llm_graph_context::decode_awq_output_type decode_awq_out) const {
     cur = llama_maybe_observe_text_activation(ctx0, cur, w->name, cur->ne[1] > 1);
     ggml_tensor * res = nullptr;
 
@@ -2334,15 +2439,35 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 cfg.packed_in_features() == cfg.quant_tensor->ne[0] &&
                 cfg.has_valid_smooth_config() &&
                 cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
-                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur_awq->ne[1]);
+                const bool use_decode_npu =
+#ifdef GGML_USE_NPU
+                    llama_npu_text_decode_awq_enabled() && cfg.group_size == 128;
+#else
+                    false;
+#endif
+                const bool use_f16_output =
+                    decode_awq_out == decode_awq_output_type::f16_if_safe &&
+                    llama_text_decode_awq_output_f16_enabled();
+                ggml_tensor * out_template = ggml_new_tensor_2d(
+                        ctx0,
+                        use_f16_output ? GGML_TYPE_F16 : GGML_TYPE_F32,
+                        cfg.quant_tensor->ne[1],
+                        cur_awq->ne[1]);
                 res = ggml_map_custom3(
                     ctx0,
                     out_template,
                     cur_awq,
                     cfg.quant_tensor,
+#ifdef GGML_USE_NPU
+                    use_decode_npu ? llama_compute_text_decode_awq_mul_mat_npu : llama_compute_text_decode_awq_mul_mat,
+#else
                     llama_compute_text_decode_awq_mul_mat,
-                    GGML_N_TASKS_MAX,
+#endif
+                    use_decode_npu ? 1 : GGML_N_TASKS_MAX,
                     const_cast<llama_aicas_text_decode_awq_tensor *>(&cfg));
+                if (use_decode_npu) {
+                    ggml_set_name(res, use_f16_output ? "text_decode_awq_w4a16_gemv_npu_f16" : "text_decode_awq_w4a16_gemv_npu");
+                }
             }
         }
     }
@@ -2556,7 +2681,7 @@ ggml_tensor * llm_graph_context::build_ffn(
     }
 
     if (down) {
-        cur = build_lora_mm(down, cur);
+        cur = build_lora_mm(down, cur, decode_awq_output_type::f16_if_safe);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
@@ -3292,7 +3417,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur);
+        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
     }
 
     if (wo_b) {
@@ -3381,7 +3506,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur);
+        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
@@ -3448,7 +3573,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur);
+        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
     }
 
     if (wo_b) {
@@ -3503,7 +3628,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur);
+        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
     }
 
     if (wo_b) {

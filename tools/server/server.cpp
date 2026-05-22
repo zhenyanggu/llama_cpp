@@ -4232,21 +4232,31 @@ struct server_context {
                 batch.logits   + i,
             };
 
-            bool has_prompt_tokens = false;
+	            bool has_prompt_tokens = n_tokens > 1;
             int32_t profile_seq_id = -1;
-            for (const auto & slot : slots) {
-                if (slot.i_batch < (int) i || slot.i_batch >= (int) (i + n_tokens)) {
-                    continue;
-                }
-                profile_seq_id = slot.id;
-                if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT) {
-                    has_prompt_tokens = true;
-                    break;
-                }
-            }
+	            for (const auto & slot : slots) {
+	                if (slot.i_batch < (int) i || slot.i_batch >= (int) (i + n_tokens)) {
+	                    continue;
+	                }
+	                profile_seq_id = slot.id;
+	                if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT) {
+	                    has_prompt_tokens = true;
+	                    break;
+	                }
+	            }
 
-            const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
-            const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
+	            if (!server_run_npu_overlay_switch_cmd(
+	                    has_prompt_tokens ? "AICAS_NPU_PREFILL_SWITCH_CMD" : "AICAS_NPU_DECODE_SWITCH_CMD",
+	                    has_prompt_tokens ? "prefill" : "decode")) {
+	                for (auto & slot : slots) {
+	                    send_error(slot, "failed to switch NPU overlay", ERROR_TYPE_SERVER);
+	                    slot.release();
+	                }
+	                return;
+	            }
+
+	            const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
+	            const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
             if (collect_text_cpu_profile) {
                 ggml_backend_cpu_profile_start();
             }

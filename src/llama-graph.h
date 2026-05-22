@@ -594,6 +594,11 @@ struct llm_graph_context {
 
     void cb(ggml_tensor * cur, const char * name, int il) const;
 
+    enum class decode_awq_output_type {
+        f32,
+        f16_if_safe,
+    };
+
     //
     // common
     //
@@ -603,9 +608,10 @@ struct llm_graph_context {
                      int   il) const;
 
     // do mat_mul, while optionally apply lora
-    ggml_tensor * build_lora_mm(
+ ggml_tensor * build_lora_mm(
               ggml_tensor * w,
-              ggml_tensor * cur) const;
+              ggml_tensor * cur,
+              decode_awq_output_type decode_awq_out = decode_awq_output_type::f32) const;
 
     // do mat_mul_id, while optionally apply lora
     ggml_tensor * build_lora_mm_id(

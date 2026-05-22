@@ -89,6 +89,7 @@ static double profile_accounted_us(const npu_profile_node_record & node) {
         node.bias_prepare_us_total +
         node.dma_in_pair_us_total +
         node.dma_in_bias_us_total +
+        node.w_prefetch_wait_us_total +
         node.gemm_us_total +
         node.dma_out_us_total +
         node.postprocess_us_total;
@@ -220,6 +221,12 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"writes_output", tile.writes_output},
         {"weight_pack_index", tile.weight_pack_index},
         {"bias_pack_index", tile.bias_pack_index},
+        {"activation_already_in_spm", tile.activation_already_in_spm},
+        {"weight_already_in_spm", tile.weight_already_in_spm},
+        {"mvin_mask", tile.mvin_mask},
+        {"w_bank", tile.w_bank},
+        {"w_prefetch_issued", tile.w_prefetch_issued},
+        {"w_prefetch_hit", tile.w_prefetch_hit},
         {"activation_bytes", tile.activation_bytes},
         {"weight_bytes", tile.weight_bytes},
         {"bias_bytes", tile.bias_bytes},
@@ -233,6 +240,7 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"dma_in_weight_us", tile.dma_in_weight_us},
         {"dma_in_bias_us", tile.dma_in_bias_us},
         {"dma_in_pair_us", tile.dma_in_pair_us},
+        {"w_prefetch_wait_us", tile.w_prefetch_wait_us},
         {"gemm_us", tile.gemm_us},
         {"dma_out_us", tile.dma_out_us},
         {"postprocess_us", tile.postprocess_us},
@@ -292,12 +300,21 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_weight_calls", node.dma_in_weight_calls},
         {"dma_in_bias_calls", node.dma_in_bias_calls},
         {"dma_in_pair_calls", node.dma_in_pair_calls},
+        {"spm_activation_reuse_hits", node.spm_activation_reuse_hits},
+        {"spm_weight_reuse_hits", node.spm_weight_reuse_hits},
         {"gemm_calls", node.gemm_calls},
         {"gemm_plan_calls", node.gemm_plan_calls},
         {"dma_out_calls", node.dma_out_calls},
         {"postprocess_calls", node.postprocess_calls},
+        {"raw_acc_mvout_nodes", node.raw_acc_mvout_nodes},
+        {"raw_acc_mvout_tiles", node.raw_acc_mvout_tiles},
+        {"w_prefetch_calls", node.w_prefetch_calls},
+        {"w_prefetch_hits", node.w_prefetch_hits},
+        {"w_prefetch_conflicts", node.w_prefetch_conflicts},
         {"packed_activation_bytes_total", node.packed_activation_bytes_total},
         {"copied_weight_bytes_total", node.copied_weight_bytes_total},
+        {"dma_in_activation_bytes_total", node.dma_in_activation_bytes_total},
+        {"dma_in_weight_bytes_total", node.dma_in_weight_bytes_total},
         {"bias_bytes_total", node.bias_bytes_total},
         {"acc_readback_bytes_total", node.acc_readback_bytes_total},
         {"output_write_bytes_total", node.output_write_bytes_total},
@@ -314,6 +331,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_weight_us_total", node.dma_in_weight_us_total},
         {"dma_in_bias_us_total", node.dma_in_bias_us_total},
         {"dma_in_pair_us_total", node.dma_in_pair_us_total},
+        {"w_prefetch_wait_us_total", node.w_prefetch_wait_us_total},
+        {"w_prefetch_hidden_candidate_us_total", node.w_prefetch_hidden_candidate_us_total},
         {"dma_in_total_us", total_dma_in_us},
         {"gemm_us_total", node.gemm_us_total},
         {"dma_out_us_total", node.dma_out_us_total},
@@ -357,6 +376,21 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
         {"bias_prepare_us_total", node.bias_prepare_us_total},
         {"dma_in_pair_us_total", node.dma_in_pair_us_total},
+        {"dma_in_activation_calls", node.dma_in_activation_calls},
+        {"dma_in_weight_calls", node.dma_in_weight_calls},
+        {"dma_in_bias_calls", node.dma_in_bias_calls},
+        {"dma_in_pair_calls", node.dma_in_pair_calls},
+        {"spm_activation_reuse_hits", node.spm_activation_reuse_hits},
+        {"spm_weight_reuse_hits", node.spm_weight_reuse_hits},
+        {"dma_in_activation_bytes_total", node.dma_in_activation_bytes_total},
+        {"dma_in_weight_bytes_total", node.dma_in_weight_bytes_total},
+        {"w_prefetch_calls", node.w_prefetch_calls},
+        {"w_prefetch_hits", node.w_prefetch_hits},
+        {"w_prefetch_conflicts", node.w_prefetch_conflicts},
+        {"w_prefetch_wait_us_total", node.w_prefetch_wait_us_total},
+        {"w_prefetch_hidden_candidate_us_total", node.w_prefetch_hidden_candidate_us_total},
+        {"raw_acc_mvout_nodes", node.raw_acc_mvout_nodes},
+        {"raw_acc_mvout_tiles", node.raw_acc_mvout_tiles},
         {"dma_in_bias_us_total", node.dma_in_bias_us_total},
         {"gemm_us_total", node.gemm_us_total},
         {"dma_out_us_total", node.dma_out_us_total},
@@ -552,12 +586,25 @@ void npu_profile_flush() {
     double total_bias_prepare_us = 0.0;
     double total_dma_in_pair_us = 0.0;
     double total_dma_in_bias_us = 0.0;
+    double total_w_prefetch_wait_us = 0.0;
+    double total_w_prefetch_hidden_candidate_us = 0.0;
     double total_gemm_us = 0.0;
     double total_dma_out_us = 0.0;
     double total_postprocess_us = 0.0;
     int64_t total_bias_prepare_calls = 0;
+    int64_t total_dma_in_activation_calls = 0;
+    int64_t total_dma_in_weight_calls = 0;
     int64_t total_dma_in_pair_calls = 0;
     int64_t total_dma_in_bias_calls = 0;
+    int64_t total_spm_activation_reuse_hits = 0;
+    int64_t total_spm_weight_reuse_hits = 0;
+    int64_t total_raw_acc_mvout_nodes = 0;
+    int64_t total_raw_acc_mvout_tiles = 0;
+    int64_t total_w_prefetch_calls = 0;
+    int64_t total_w_prefetch_hits = 0;
+    int64_t total_w_prefetch_conflicts = 0;
+    int64_t total_dma_in_activation_bytes = 0;
+    int64_t total_dma_in_weight_bytes = 0;
 
     std::sort(snapshot.begin(), snapshot.end(), [](const auto & lhs, const auto & rhs) {
         return lhs.layer_id < rhs.layer_id;
@@ -586,14 +633,27 @@ void npu_profile_flush() {
         total_bias_prepare_us += node.bias_prepare_us_total;
         total_dma_in_pair_us += node.dma_in_pair_us_total;
         total_dma_in_bias_us += node.dma_in_bias_us_total;
+        total_w_prefetch_wait_us += node.w_prefetch_wait_us_total;
+        total_w_prefetch_hidden_candidate_us += node.w_prefetch_hidden_candidate_us_total;
         total_gemm_us += node.gemm_us_total;
         total_dma_out_us += node.dma_out_us_total;
         total_postprocess_us += node.postprocess_us_total;
         total_accounted_us += node.accounted_us_total;
         total_unaccounted_us += node.unaccounted_us_total;
         total_bias_prepare_calls += node.bias_prepare_calls;
+        total_dma_in_activation_calls += node.dma_in_activation_calls;
+        total_dma_in_weight_calls += node.dma_in_weight_calls;
         total_dma_in_pair_calls += node.dma_in_pair_calls;
         total_dma_in_bias_calls += node.dma_in_bias_calls;
+        total_spm_activation_reuse_hits += node.spm_activation_reuse_hits;
+        total_spm_weight_reuse_hits += node.spm_weight_reuse_hits;
+        total_raw_acc_mvout_nodes += node.raw_acc_mvout_nodes;
+        total_raw_acc_mvout_tiles += node.raw_acc_mvout_tiles;
+        total_w_prefetch_calls += node.w_prefetch_calls;
+        total_w_prefetch_hits += node.w_prefetch_hits;
+        total_w_prefetch_conflicts += node.w_prefetch_conflicts;
+        total_dma_in_activation_bytes += node.dma_in_activation_bytes_total;
+        total_dma_in_weight_bytes += node.dma_in_weight_bytes_total;
         total_gemm_plan_calls += node.gemm_plan_calls;
     }
 
@@ -662,14 +722,27 @@ void npu_profile_flush() {
             {"total_dma_in_us", total_dma_in_pair_us + total_dma_in_bias_us},
             {"total_dma_in_pair_us", total_dma_in_pair_us},
             {"total_dma_in_pair_calls", total_dma_in_pair_calls},
+            {"total_dma_in_activation_calls", total_dma_in_activation_calls},
+            {"total_dma_in_weight_calls", total_dma_in_weight_calls},
             {"total_dma_in_bias_us", total_dma_in_bias_us},
             {"total_dma_in_bias_calls", total_dma_in_bias_calls},
+            {"total_dma_in_activation_bytes", total_dma_in_activation_bytes},
+            {"total_dma_in_weight_bytes", total_dma_in_weight_bytes},
+            {"total_spm_activation_reuse_hits", total_spm_activation_reuse_hits},
+            {"total_spm_weight_reuse_hits", total_spm_weight_reuse_hits},
             {"total_mvinbias_us", total_dma_in_bias_us},
             {"total_mvinbias_calls", total_dma_in_bias_calls},
+            {"total_w_prefetch_calls", total_w_prefetch_calls},
+            {"total_w_prefetch_hits", total_w_prefetch_hits},
+            {"total_w_prefetch_conflicts", total_w_prefetch_conflicts},
+            {"total_w_prefetch_wait_us", total_w_prefetch_wait_us},
+            {"total_w_prefetch_hidden_candidate_us", total_w_prefetch_hidden_candidate_us},
             {"total_gemm_us", total_gemm_us},
             {"total_gemm_plan_calls", total_gemm_plan_calls},
             {"total_dma_out_us", total_dma_out_us},
             {"total_postprocess_us", total_postprocess_us},
+            {"total_raw_acc_mvout_nodes", total_raw_acc_mvout_nodes},
+            {"total_raw_acc_mvout_tiles", total_raw_acc_mvout_tiles},
             {"total_accounted_us", total_accounted_us},
             {"total_unaccounted_us", total_unaccounted_us},
             {"accounted_share_pct", pct(total_accounted_us, total_us)},
@@ -773,12 +846,21 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_weight_calls += delta.dma_in_weight_calls;
     summary.dma_in_bias_calls += delta.dma_in_bias_calls;
     summary.dma_in_pair_calls += delta.dma_in_pair_calls;
+    summary.spm_activation_reuse_hits += delta.spm_activation_reuse_hits;
+    summary.spm_weight_reuse_hits += delta.spm_weight_reuse_hits;
     summary.gemm_calls += delta.gemm_calls;
     summary.gemm_plan_calls += delta.gemm_plan_calls;
     summary.dma_out_calls += delta.dma_out_calls;
     summary.postprocess_calls += delta.postprocess_calls;
+    summary.raw_acc_mvout_nodes += delta.raw_acc_mvout_nodes;
+    summary.raw_acc_mvout_tiles += delta.raw_acc_mvout_tiles;
+    summary.w_prefetch_calls += delta.w_prefetch_calls;
+    summary.w_prefetch_hits += delta.w_prefetch_hits;
+    summary.w_prefetch_conflicts += delta.w_prefetch_conflicts;
     summary.packed_activation_bytes_total += delta.packed_activation_bytes_total;
     summary.copied_weight_bytes_total += delta.copied_weight_bytes_total;
+    summary.dma_in_activation_bytes_total += delta.dma_in_activation_bytes_total;
+    summary.dma_in_weight_bytes_total += delta.dma_in_weight_bytes_total;
     summary.bias_bytes_total += delta.bias_bytes_total;
     summary.acc_readback_bytes_total += delta.acc_readback_bytes_total;
     summary.output_write_bytes_total += delta.output_write_bytes_total;
@@ -796,6 +878,8 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_weight_us_total += delta.dma_in_weight_us_total;
     summary.dma_in_bias_us_total += delta.dma_in_bias_us_total;
     summary.dma_in_pair_us_total += delta.dma_in_pair_us_total;
+    summary.w_prefetch_wait_us_total += delta.w_prefetch_wait_us_total;
+    summary.w_prefetch_hidden_candidate_us_total += delta.w_prefetch_hidden_candidate_us_total;
     summary.gemm_us_total += delta.gemm_us_total;
     summary.dma_out_us_total += delta.dma_out_us_total;
     summary.postprocess_us_total += delta.postprocess_us_total;

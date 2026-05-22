@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <cinttypes>
 #include <fstream>
 #include <cstdlib>
@@ -60,6 +61,93 @@ using raw_buffer = std::vector<uint8_t>;
 static std::string server_mtmd_profile_output_path() {
     const char * path = std::getenv("LLAMA_MTMD_PREFILL_SUMMARY_JSON");
     return path ? path : "";
+}
+
+static std::string server_npu_overlay_profile_output_path() {
+    const char * path = std::getenv("AICAS_NPU_OVERLAY_PROFILE_JSONL");
+    return path ? path : "";
+}
+
+static void server_npu_overlay_profile_write(
+        const char * phase,
+        const char * env_name,
+        int rc,
+        int64_t cleanup_us,
+        int64_t switch_us,
+        int64_t total_us) {
+    const std::string path = server_npu_overlay_profile_output_path();
+    if (path.empty()) {
+        return;
+    }
+
+    static std::mutex mutex;
+    json payload;
+    payload["profile_kind"] = "aicas_npu_overlay_switch";
+    payload["phase"] = phase != nullptr ? phase : "";
+    payload["env_name"] = env_name != nullptr ? env_name : "";
+    payload["rc"] = rc;
+    payload["time_us"] = {
+        {"cleanup_runtime", cleanup_us},
+        {"xmutil_switch", switch_us},
+        {"total", total_us},
+    };
+
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(path, std::ios::app);
+    if (out.good()) {
+        out << payload.dump() << '\n';
+    }
+}
+
+static bool server_run_npu_overlay_switch_cmd(const char * env_name, const char * phase) {
+#ifdef GGML_USE_NPU
+	    const char * cmd = std::getenv(env_name);
+	    if (cmd == nullptr || cmd[0] == '\0') {
+	        return true;
+	    }
+
+	    static std::mutex overlay_phase_mutex;
+	    static std::string active_phase;
+	    const std::string requested_phase = phase != nullptr ? phase : "";
+	    {
+	        std::lock_guard<std::mutex> lock(overlay_phase_mutex);
+	        if (active_phase == requested_phase) {
+	            return true;
+	        }
+	    }
+
+	    SRV_INF("switching NPU overlay for %s\n", phase);
+	    const int64_t total_start_us = ggml_time_us();
+	    const int64_t cleanup_start_us = total_start_us;
+    ggml_backend_npu_w8a8_preload_clear();
+    ggml_backend_npu_runtime_shutdown();
+    ggml_backend_npu_decode_runtime_shutdown();
+    if (std::strcmp(phase, "prefill") == 0) {
+        ggml_backend_npu_decode_overlay_mark_inactive();
+    }
+    const int64_t cleanup_us = ggml_time_us() - cleanup_start_us;
+    const int64_t switch_start_us = ggml_time_us();
+    const int rc = std::system(cmd);
+    const int64_t switch_us = ggml_time_us() - switch_start_us;
+    const int64_t total_us = ggml_time_us() - total_start_us;
+    server_npu_overlay_profile_write(phase, env_name, rc, cleanup_us, switch_us, total_us);
+    if (rc != 0) {
+        SRV_ERR("NPU overlay switch command failed for %s, rc = %d\n", phase, rc);
+        return false;
+    }
+	    if (std::strcmp(phase, "decode") == 0) {
+	        ggml_backend_npu_decode_overlay_mark_active();
+	    }
+	    {
+	        std::lock_guard<std::mutex> lock(overlay_phase_mutex);
+	        active_phase = requested_phase;
+	    }
+	    return true;
+#else
+    GGML_UNUSED(env_name);
+    GGML_UNUSED(phase);
+    return true;
+#endif
 }
 
 static bool server_mtmd_profile_enabled() {
@@ -146,6 +234,7 @@ struct server_mtmd_prefill_profile {
     std::vector<json> cpu_backend_profile_details;
 #ifdef GGML_USE_NPU
     ggml_npu_profile_summary npu = {};
+    ggml_npu_profile_summary text_prefill_npu = {};
 #endif
 
     void reset(bool enable) {
@@ -167,8 +256,132 @@ struct server_mtmd_prefill_profile {
         cpu_backend_profile_details.clear();
 #ifdef GGML_USE_NPU
         npu = {};
+        text_prefill_npu = {};
 #endif
     }
+
+#ifdef GGML_USE_NPU
+    static void add_npu_summary(ggml_npu_profile_summary & dst, const ggml_npu_profile_summary & src) {
+        dst.used_npu |= src.used_npu;
+        dst.node_count += src.node_count;
+        dst.exec_tile_count += src.exec_tile_count;
+        dst.weight_pack_count += src.weight_pack_count;
+        dst.bias_pack_count += src.bias_pack_count;
+        dst.activation_pack_calls += src.activation_pack_calls;
+        dst.host_copy_activation_calls += src.host_copy_activation_calls;
+        dst.host_copy_weight_calls += src.host_copy_weight_calls;
+        dst.bias_prepare_calls += src.bias_prepare_calls;
+        dst.dma_in_activation_calls += src.dma_in_activation_calls;
+        dst.dma_in_weight_calls += src.dma_in_weight_calls;
+        dst.dma_in_bias_calls += src.dma_in_bias_calls;
+        dst.dma_in_pair_calls += src.dma_in_pair_calls;
+        dst.spm_activation_reuse_hits += src.spm_activation_reuse_hits;
+        dst.spm_weight_reuse_hits += src.spm_weight_reuse_hits;
+        dst.gemm_calls += src.gemm_calls;
+        dst.gemm_plan_calls += src.gemm_plan_calls;
+        dst.dma_out_calls += src.dma_out_calls;
+        dst.postprocess_calls += src.postprocess_calls;
+        dst.raw_acc_mvout_nodes += src.raw_acc_mvout_nodes;
+        dst.raw_acc_mvout_tiles += src.raw_acc_mvout_tiles;
+        dst.w_prefetch_calls += src.w_prefetch_calls;
+        dst.w_prefetch_hits += src.w_prefetch_hits;
+        dst.w_prefetch_conflicts += src.w_prefetch_conflicts;
+        dst.packed_activation_bytes_total += src.packed_activation_bytes_total;
+        dst.copied_weight_bytes_total += src.copied_weight_bytes_total;
+        dst.dma_in_activation_bytes_total += src.dma_in_activation_bytes_total;
+        dst.dma_in_weight_bytes_total += src.dma_in_weight_bytes_total;
+        dst.bias_bytes_total += src.bias_bytes_total;
+        dst.acc_readback_bytes_total += src.acc_readback_bytes_total;
+        dst.output_write_bytes_total += src.output_write_bytes_total;
+        dst.total_node_us += src.total_node_us;
+        dst.activation_pack_us_total += src.activation_pack_us_total;
+        dst.host_copy_activation_us_total += src.host_copy_activation_us_total;
+        dst.host_copy_weight_us_total += src.host_copy_weight_us_total;
+        dst.bias_prepare_us_total += src.bias_prepare_us_total;
+        dst.dma_in_activation_us_total += src.dma_in_activation_us_total;
+        dst.dma_in_weight_us_total += src.dma_in_weight_us_total;
+        dst.dma_in_bias_us_total += src.dma_in_bias_us_total;
+        dst.dma_in_pair_us_total += src.dma_in_pair_us_total;
+        dst.w_prefetch_wait_us_total += src.w_prefetch_wait_us_total;
+        dst.w_prefetch_hidden_candidate_us_total += src.w_prefetch_hidden_candidate_us_total;
+        dst.gemm_us_total += src.gemm_us_total;
+        dst.dma_out_us_total += src.dma_out_us_total;
+        dst.postprocess_us_total += src.postprocess_us_total;
+        dst.accounted_us_total += src.accounted_us_total;
+        dst.unaccounted_us_total += src.unaccounted_us_total;
+        dst.runtime_total_us += src.runtime_total_us;
+        dst.runtime_dma_in_us += src.runtime_dma_in_us;
+        dst.runtime_compute_us += src.runtime_compute_us;
+        dst.runtime_compute_exclusive_us += src.runtime_compute_exclusive_us;
+        dst.runtime_dma_out_us += src.runtime_dma_out_us;
+        dst.runtime_layout_us += src.runtime_layout_us;
+        dst.runtime_layout_exclusive_us += src.runtime_layout_exclusive_us;
+        dst.runtime_wait_irq_us += src.runtime_wait_irq_us;
+        dst.runtime_mvin_calls += src.runtime_mvin_calls;
+        dst.runtime_compute_calls += src.runtime_compute_calls;
+        dst.runtime_gemm_plan_calls += src.runtime_gemm_plan_calls;
+        dst.runtime_mvout_calls += src.runtime_mvout_calls;
+        dst.runtime_layout_calls += src.runtime_layout_calls;
+    }
+
+    static json npu_summary_to_json(const ggml_npu_profile_summary & summary) {
+        return {
+            {"used_npu", summary.used_npu != 0},
+            {"node_count", summary.node_count},
+            {"exec_tile_count", summary.exec_tile_count},
+            {"weight_pack_count", summary.weight_pack_count},
+            {"bias_pack_count", summary.bias_pack_count},
+            {"gemm_calls", summary.gemm_calls},
+            {"gemm_plan_calls", summary.gemm_plan_calls},
+            {"dma_out_calls", summary.dma_out_calls},
+            {"postprocess_calls", summary.postprocess_calls},
+            {"dma_in_activation_calls", summary.dma_in_activation_calls},
+            {"dma_in_weight_calls", summary.dma_in_weight_calls},
+            {"dma_in_bias_calls", summary.dma_in_bias_calls},
+            {"dma_in_pair_calls", summary.dma_in_pair_calls},
+            {"spm_activation_reuse_hits", summary.spm_activation_reuse_hits},
+            {"spm_weight_reuse_hits", summary.spm_weight_reuse_hits},
+            {"dma_in_activation_bytes", summary.dma_in_activation_bytes_total},
+            {"dma_in_weight_bytes", summary.dma_in_weight_bytes_total},
+            {"acc_readback_bytes", summary.acc_readback_bytes_total},
+            {"output_write_bytes", summary.output_write_bytes_total},
+            {"w_pingpong_enabled", summary.w_prefetch_calls > 0 || summary.w_prefetch_hits > 0},
+            {"w_prefetch_calls", summary.w_prefetch_calls},
+            {"w_prefetch_hits", summary.w_prefetch_hits},
+            {"w_prefetch_conflicts", summary.w_prefetch_conflicts},
+            {"w_prefetch_wait_us", summary.w_prefetch_wait_us_total},
+            {"w_prefetch_hidden_candidate_us", summary.w_prefetch_hidden_candidate_us_total},
+            {"raw_acc_mvout_nodes", summary.raw_acc_mvout_nodes},
+            {"raw_acc_mvout_tiles", summary.raw_acc_mvout_tiles},
+            {"total_node_us", summary.total_node_us},
+            {"accounted_us", summary.accounted_us_total},
+            {"unaccounted_us", summary.unaccounted_us_total},
+            {"accounted_share_pct", summary.total_node_us == 0 ? 0.0 :
+                static_cast<double>(summary.accounted_us_total) / static_cast<double>(summary.total_node_us) * 100.0},
+            {"activation_pack_us", summary.activation_pack_us_total},
+            {"host_copy_activation_us", summary.host_copy_activation_us_total},
+            {"host_copy_weight_us", summary.host_copy_weight_us_total},
+            {"bias_prepare_us", summary.bias_prepare_us_total},
+            {"postprocess_us", summary.postprocess_us_total},
+            {"runtime_total_us", summary.runtime_total_us},
+            {"runtime_dma_in_us", summary.runtime_dma_in_us},
+            {"runtime_compute_us", summary.runtime_compute_us},
+            {"runtime_compute_exclusive_us", summary.runtime_compute_exclusive_us},
+            {"runtime_dma_out_us", summary.runtime_dma_out_us},
+            {"runtime_layout_us", summary.runtime_layout_us},
+            {"runtime_layout_exclusive_us", summary.runtime_layout_exclusive_us},
+            {"runtime_wait_irq_us", summary.runtime_wait_irq_us},
+            {"runtime_compute_calls", summary.runtime_compute_calls},
+            {"runtime_gemm_plan_calls", summary.runtime_gemm_plan_calls},
+            {"runtime_mvin_calls", summary.runtime_mvin_calls},
+            {"runtime_mvout_calls", summary.runtime_mvout_calls},
+            {"dma_in_activation_us", summary.dma_in_activation_us_total},
+            {"dma_in_weight_us", summary.dma_in_weight_us_total},
+            {"dma_in_bias_us", summary.dma_in_bias_us_total},
+            {"dma_in_pair_us", summary.dma_in_pair_us_total},
+        };
+    }
+#endif
 
     void add_chunk(
             const mtmd_input_chunk * chunk,
@@ -214,59 +427,18 @@ struct server_mtmd_prefill_profile {
         }
 
 #ifdef GGML_USE_NPU
-        npu.used_npu |= npu_summary.used_npu;
-        npu.node_count += npu_summary.node_count;
-        npu.exec_tile_count += npu_summary.exec_tile_count;
-        npu.weight_pack_count += npu_summary.weight_pack_count;
-        npu.bias_pack_count += npu_summary.bias_pack_count;
-        npu.activation_pack_calls += npu_summary.activation_pack_calls;
-        npu.host_copy_activation_calls += npu_summary.host_copy_activation_calls;
-        npu.host_copy_weight_calls += npu_summary.host_copy_weight_calls;
-        npu.bias_prepare_calls += npu_summary.bias_prepare_calls;
-        npu.dma_in_activation_calls += npu_summary.dma_in_activation_calls;
-        npu.dma_in_weight_calls += npu_summary.dma_in_weight_calls;
-        npu.dma_in_bias_calls += npu_summary.dma_in_bias_calls;
-        npu.dma_in_pair_calls += npu_summary.dma_in_pair_calls;
-        npu.gemm_calls += npu_summary.gemm_calls;
-        npu.gemm_plan_calls += npu_summary.gemm_plan_calls;
-        npu.dma_out_calls += npu_summary.dma_out_calls;
-        npu.postprocess_calls += npu_summary.postprocess_calls;
-        npu.packed_activation_bytes_total += npu_summary.packed_activation_bytes_total;
-        npu.copied_weight_bytes_total += npu_summary.copied_weight_bytes_total;
-        npu.bias_bytes_total += npu_summary.bias_bytes_total;
-        npu.acc_readback_bytes_total += npu_summary.acc_readback_bytes_total;
-        npu.output_write_bytes_total += npu_summary.output_write_bytes_total;
-        npu.total_node_us += npu_summary.total_node_us;
-        npu.activation_pack_us_total += npu_summary.activation_pack_us_total;
-        npu.host_copy_activation_us_total += npu_summary.host_copy_activation_us_total;
-        npu.host_copy_weight_us_total += npu_summary.host_copy_weight_us_total;
-        npu.bias_prepare_us_total += npu_summary.bias_prepare_us_total;
-        npu.dma_in_activation_us_total += npu_summary.dma_in_activation_us_total;
-        npu.dma_in_weight_us_total += npu_summary.dma_in_weight_us_total;
-        npu.dma_in_bias_us_total += npu_summary.dma_in_bias_us_total;
-        npu.dma_in_pair_us_total += npu_summary.dma_in_pair_us_total;
-        npu.gemm_us_total += npu_summary.gemm_us_total;
-        npu.dma_out_us_total += npu_summary.dma_out_us_total;
-        npu.postprocess_us_total += npu_summary.postprocess_us_total;
-        npu.accounted_us_total += npu_summary.accounted_us_total;
-        npu.unaccounted_us_total += npu_summary.unaccounted_us_total;
-        npu.runtime_total_us += npu_summary.runtime_total_us;
-        npu.runtime_dma_in_us += npu_summary.runtime_dma_in_us;
-        npu.runtime_compute_us += npu_summary.runtime_compute_us;
-        npu.runtime_compute_exclusive_us += npu_summary.runtime_compute_exclusive_us;
-        npu.runtime_dma_out_us += npu_summary.runtime_dma_out_us;
-        npu.runtime_layout_us += npu_summary.runtime_layout_us;
-        npu.runtime_layout_exclusive_us += npu_summary.runtime_layout_exclusive_us;
-        npu.runtime_wait_irq_us += npu_summary.runtime_wait_irq_us;
-        npu.runtime_mvin_calls += npu_summary.runtime_mvin_calls;
-        npu.runtime_compute_calls += npu_summary.runtime_compute_calls;
-        npu.runtime_gemm_plan_calls += npu_summary.runtime_gemm_plan_calls;
-        npu.runtime_mvout_calls += npu_summary.runtime_mvout_calls;
-        npu.runtime_layout_calls += npu_summary.runtime_layout_calls;
+        add_npu_summary(npu, npu_summary);
 #endif
     }
 
-    void set_merged_prefill(int64_t n_merged_tokens, int64_t n_text_tokens, int64_t decode_us) {
+    void set_merged_prefill(
+            int64_t n_merged_tokens,
+            int64_t n_text_tokens,
+            int64_t decode_us
+#ifdef GGML_USE_NPU
+            , const ggml_npu_profile_summary * npu_summary = nullptr
+#endif
+            ) {
         if (!enabled) {
             return;
         }
@@ -275,6 +447,11 @@ struct server_mtmd_prefill_profile {
         merged_tokens = n_merged_tokens;
         text_tokens = n_text_tokens;
         merged_decode_us = decode_us;
+#ifdef GGML_USE_NPU
+        if (npu_summary != nullptr) {
+            add_npu_summary(text_prefill_npu, *npu_summary);
+        }
+#endif
     }
 
     json aggregate_mmproj_phase_us() const {
@@ -425,8 +602,11 @@ struct server_mtmd_prefill_profile {
             {"runtime_compute_calls", 0},
             {"runtime_gemm_plan_calls", 0},
         };
+        json text_npu_json = npu_json;
         double npu_host_us = 0.0;
         double npu_total_node_us = 0.0;
+        double text_npu_host_us = 0.0;
+        double text_npu_total_node_us = 0.0;
 
 #ifdef GGML_USE_NPU
         npu_host_us =
@@ -436,37 +616,19 @@ struct server_mtmd_prefill_profile {
                                 npu.bias_prepare_us_total +
                                 npu.postprocess_us_total);
         npu_total_node_us = static_cast<double>(npu.total_node_us);
-        npu_json = {
-            {"used_npu", npu.used_npu != 0},
-            {"node_count", npu.node_count},
-            {"exec_tile_count", npu.exec_tile_count},
-            {"gemm_calls", npu.gemm_calls},
-            {"gemm_plan_calls", npu.gemm_plan_calls},
-            {"total_node_us", npu.total_node_us},
-            {"accounted_us", npu.accounted_us_total},
-            {"unaccounted_us", npu.unaccounted_us_total},
-            {"accounted_share_pct", npu.total_node_us == 0 ? 0.0 :
-                static_cast<double>(npu.accounted_us_total) / static_cast<double>(npu.total_node_us) * 100.0},
-            {"activation_pack_us", npu.activation_pack_us_total},
-            {"host_copy_activation_us", npu.host_copy_activation_us_total},
-            {"host_copy_weight_us", npu.host_copy_weight_us_total},
-            {"bias_prepare_us", npu.bias_prepare_us_total},
-            {"postprocess_us", npu.postprocess_us_total},
-            {"runtime_total_us", npu.runtime_total_us},
-            {"runtime_dma_in_us", npu.runtime_dma_in_us},
-            {"runtime_compute_us", npu.runtime_compute_us},
-            {"runtime_compute_exclusive_us", npu.runtime_compute_exclusive_us},
-            {"runtime_dma_out_us", npu.runtime_dma_out_us},
-            {"runtime_layout_us", npu.runtime_layout_us},
-            {"runtime_layout_exclusive_us", npu.runtime_layout_exclusive_us},
-            {"runtime_wait_irq_us", npu.runtime_wait_irq_us},
-            {"runtime_compute_calls", npu.runtime_compute_calls},
-            {"runtime_gemm_plan_calls", npu.runtime_gemm_plan_calls},
-            {"dma_in_pair_us", npu.dma_in_pair_us_total},
-        };
+        text_npu_host_us =
+            static_cast<double>(text_prefill_npu.activation_pack_us_total +
+                                text_prefill_npu.host_copy_activation_us_total +
+                                text_prefill_npu.host_copy_weight_us_total +
+                                text_prefill_npu.bias_prepare_us_total +
+                                text_prefill_npu.postprocess_us_total);
+        text_npu_total_node_us = static_cast<double>(text_prefill_npu.total_node_us);
+        npu_json = npu_summary_to_json(npu);
+        text_npu_json = npu_summary_to_json(text_prefill_npu);
 #endif
 
         const double residual_cpu_us = std::max(0.0, static_cast<double>(mmproj_encode_us) - npu_total_node_us);
+        const double text_residual_us = std::max(0.0, static_cast<double>(merged_decode_us) - text_npu_total_node_us);
 
         return {
             {"profile_kind", "llama_server_mtmd_prefill_summary"},
@@ -493,6 +655,18 @@ struct server_mtmd_prefill_profile {
                 {"cpu_backend_profile_details", cpu_backend_profile_details},
             }},
             {"npu", npu_json},
+            {"text_prefill", {
+                {"decode_us", merged_decode_us},
+                {"tokens", merged_tokens},
+                {"text_tokens", text_tokens},
+                {"media_tokens", media_tokens},
+                {"npu", text_npu_json},
+                {"derived", {
+                    {"npu_host_us", static_cast<int64_t>(text_npu_host_us)},
+                    {"npu_total_node_us", static_cast<int64_t>(text_npu_total_node_us)},
+                    {"residual_cpu_or_other_us", static_cast<int64_t>(text_residual_us)},
+                }},
+            }},
             {"derived", {
                 {"npu_host_us", static_cast<int64_t>(npu_host_us)},
                 {"npu_total_node_us", static_cast<int64_t>(npu_total_node_us)},
@@ -1843,17 +2017,25 @@ public:
         int32_t result = 0;
         llama_pos new_n_past = n_past;
 
-        if (mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
-            result = mtmd_helper_eval_chunk_single(mctx, ctx,
-                chunk.get(),
-                n_past,
+	        if (mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+	            if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_PREFILL_SWITCH_CMD", "prefill")) {
+	                n_pos_out = n_past;
+	                return -1;
+	            }
+	            result = mtmd_helper_eval_chunk_single(mctx, ctx,
+	                chunk.get(),
+	                n_past,
                 seq_id,
                 n_batch,
                 true,
-                &new_n_past);
-        } else {
-#ifdef GGML_USE_NPU
-            const bool collect_npu_summary = profile != nullptr && profile->enabled;
+	                &new_n_past);
+	        } else {
+	            if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_PREFILL_SWITCH_CMD", "prefill")) {
+	                n_pos_out = n_past;
+	                return -1;
+	            }
+	#ifdef GGML_USE_NPU
+	            const bool collect_npu_summary = profile != nullptr && profile->enabled;
             ggml_npu_profile_summary npu_summary = {};
             if (collect_npu_summary) {
                 ggml_backend_npu_profile_summary_start();
@@ -1933,6 +2115,10 @@ public:
         }
         if (tokens.empty() || tokens.size() > (size_t) llama_n_batch(ctx)) {
             return false;
+        }
+        if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_PREFILL_SWITCH_CMD", "prefill")) {
+            result = -1;
+            return true;
         }
 
         const llama_model * model = llama_get_model(ctx);
@@ -2054,6 +2240,13 @@ public:
         SRV_INF("decoding merged multimodal prefill, n_tokens = %zu\n", tokens.size());
         const int64_t t1 = ggml_time_ms();
         const int64_t decode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
+#ifdef GGML_USE_NPU
+        const bool collect_text_npu_summary = profile != nullptr && profile->enabled;
+        ggml_npu_profile_summary text_npu_summary = {};
+        if (collect_text_npu_summary) {
+            ggml_backend_npu_profile_summary_start();
+        }
+#endif
         const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
         const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
         if (collect_text_cpu_profile) {
@@ -2062,6 +2255,11 @@ public:
         result = llama_decode(ctx, batch);
         const char * text_cpu_profile_json =
             collect_text_cpu_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
+#ifdef GGML_USE_NPU
+        if (collect_text_npu_summary) {
+            ggml_backend_npu_profile_summary_stop(&text_npu_summary);
+        }
+#endif
         if (collect_text_cpu_profile) {
             server_text_cpu_profile_write(
                     "merged_prefill",
@@ -2077,8 +2275,20 @@ public:
         }
 
         SRV_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
+        if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_DECODE_SWITCH_CMD", "decode")) {
+            SRV_ERR("%s", "failed to switch NPU overlay for decode\n");
+            result = -1;
+            return true;
+        }
         if (profile != nullptr && profile->enabled) {
-            profile->set_merged_prefill((int64_t) tokens.size(), text_token_count, decode_us);
+            profile->set_merged_prefill(
+                    (int64_t) tokens.size(),
+                    text_token_count,
+                    decode_us
+#ifdef GGML_USE_NPU
+                    , &text_npu_summary
+#endif
+                    );
         }
         n_pos_out = (llama_pos) tokens.size();
         return true;
