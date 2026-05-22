@@ -6,6 +6,7 @@ artifacts
 *.a
 *.bat
 *.bin
+*.bit.bin.bak-*
 *.d
 *.dll
 *.dot
