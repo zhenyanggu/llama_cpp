@@ -293,6 +293,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"bias_accumulator_offset", node.bias_accumulator_offset},
         {"output_accumulator_offset", node.output_accumulator_offset},
         {"activation_pack_calls", node.activation_pack_calls},
+        {"activation_pack_async_jobs", node.activation_pack_async_jobs},
+        {"activation_pack_async_hits", node.activation_pack_async_hits},
         {"host_copy_activation_calls", node.host_copy_activation_calls},
         {"host_copy_weight_calls", node.host_copy_weight_calls},
         {"bias_prepare_calls", node.bias_prepare_calls},
@@ -324,6 +326,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"setup_cache_alloc_us_total", node.setup_cache_alloc_us_total},
         {"setup_profile_begin_us_total", node.setup_profile_begin_us_total},
         {"activation_pack_us_total", node.activation_pack_us_total},
+        {"activation_pack_async_us_total", node.activation_pack_async_us_total},
+        {"activation_pack_wait_us_total", node.activation_pack_wait_us_total},
         {"host_copy_activation_us_total", node.host_copy_activation_us_total},
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
         {"bias_prepare_us_total", node.bias_prepare_us_total},
@@ -372,6 +376,10 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"setup_cache_alloc_us_total", node.setup_cache_alloc_us_total},
         {"setup_profile_begin_us_total", node.setup_profile_begin_us_total},
         {"activation_pack_us_total", node.activation_pack_us_total},
+        {"activation_pack_async_us_total", node.activation_pack_async_us_total},
+        {"activation_pack_wait_us_total", node.activation_pack_wait_us_total},
+        {"activation_pack_async_jobs", node.activation_pack_async_jobs},
+        {"activation_pack_async_hits", node.activation_pack_async_hits},
         {"host_copy_activation_us_total", node.host_copy_activation_us_total},
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
         {"bias_prepare_us_total", node.bias_prepare_us_total},
@@ -581,6 +589,8 @@ void npu_profile_flush() {
     double total_setup_cache_alloc_us = 0.0;
     double total_setup_profile_begin_us = 0.0;
     double total_activation_pack_us = 0.0;
+    double total_activation_pack_async_us = 0.0;
+    double total_activation_pack_wait_us = 0.0;
     double total_host_copy_activation_us = 0.0;
     double total_host_copy_weight_us = 0.0;
     double total_bias_prepare_us = 0.0;
@@ -592,6 +602,8 @@ void npu_profile_flush() {
     double total_dma_out_us = 0.0;
     double total_postprocess_us = 0.0;
     int64_t total_bias_prepare_calls = 0;
+    int64_t total_activation_pack_async_jobs = 0;
+    int64_t total_activation_pack_async_hits = 0;
     int64_t total_dma_in_activation_calls = 0;
     int64_t total_dma_in_weight_calls = 0;
     int64_t total_dma_in_pair_calls = 0;
@@ -628,6 +640,8 @@ void npu_profile_flush() {
         total_setup_cache_alloc_us += node.setup_cache_alloc_us_total;
         total_setup_profile_begin_us += node.setup_profile_begin_us_total;
         total_activation_pack_us += node.activation_pack_us_total;
+        total_activation_pack_async_us += node.activation_pack_async_us_total;
+        total_activation_pack_wait_us += node.activation_pack_wait_us_total;
         total_host_copy_activation_us += node.host_copy_activation_us_total;
         total_host_copy_weight_us += node.host_copy_weight_us_total;
         total_bias_prepare_us += node.bias_prepare_us_total;
@@ -640,6 +654,8 @@ void npu_profile_flush() {
         total_postprocess_us += node.postprocess_us_total;
         total_accounted_us += node.accounted_us_total;
         total_unaccounted_us += node.unaccounted_us_total;
+        total_activation_pack_async_jobs += node.activation_pack_async_jobs;
+        total_activation_pack_async_hits += node.activation_pack_async_hits;
         total_bias_prepare_calls += node.bias_prepare_calls;
         total_dma_in_activation_calls += node.dma_in_activation_calls;
         total_dma_in_weight_calls += node.dma_in_weight_calls;
@@ -715,6 +731,10 @@ void npu_profile_flush() {
             {"total_setup_cache_alloc_us", total_setup_cache_alloc_us},
             {"total_setup_profile_begin_us", total_setup_profile_begin_us},
             {"total_activation_pack_us", total_activation_pack_us},
+            {"total_activation_pack_async_us", total_activation_pack_async_us},
+            {"total_activation_pack_wait_us", total_activation_pack_wait_us},
+            {"total_activation_pack_async_jobs", total_activation_pack_async_jobs},
+            {"total_activation_pack_async_hits", total_activation_pack_async_hits},
             {"total_host_copy_activation_us", total_host_copy_activation_us},
             {"total_host_copy_weight_us", total_host_copy_weight_us},
             {"total_bias_prepare_us", total_bias_prepare_us},
@@ -839,6 +859,8 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.weight_pack_count += delta.weight_pack_count;
     summary.bias_pack_count += delta.bias_pack_count;
     summary.activation_pack_calls += delta.activation_pack_calls;
+    summary.activation_pack_async_jobs += delta.activation_pack_async_jobs;
+    summary.activation_pack_async_hits += delta.activation_pack_async_hits;
     summary.host_copy_activation_calls += delta.host_copy_activation_calls;
     summary.host_copy_weight_calls += delta.host_copy_weight_calls;
     summary.bias_prepare_calls += delta.bias_prepare_calls;
@@ -871,6 +893,8 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.setup_cache_alloc_us_total += delta.setup_cache_alloc_us_total;
     summary.setup_profile_begin_us_total += delta.setup_profile_begin_us_total;
     summary.activation_pack_us_total += delta.activation_pack_us_total;
+    summary.activation_pack_async_us_total += delta.activation_pack_async_us_total;
+    summary.activation_pack_wait_us_total += delta.activation_pack_wait_us_total;
     summary.host_copy_activation_us_total += delta.host_copy_activation_us_total;
     summary.host_copy_weight_us_total += delta.host_copy_weight_us_total;
     summary.bias_prepare_us_total += delta.bias_prepare_us_total;

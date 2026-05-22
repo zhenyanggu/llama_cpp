@@ -268,6 +268,8 @@ struct server_mtmd_prefill_profile {
         dst.weight_pack_count += src.weight_pack_count;
         dst.bias_pack_count += src.bias_pack_count;
         dst.activation_pack_calls += src.activation_pack_calls;
+        dst.activation_pack_async_jobs += src.activation_pack_async_jobs;
+        dst.activation_pack_async_hits += src.activation_pack_async_hits;
         dst.host_copy_activation_calls += src.host_copy_activation_calls;
         dst.host_copy_weight_calls += src.host_copy_weight_calls;
         dst.bias_prepare_calls += src.bias_prepare_calls;
@@ -295,6 +297,8 @@ struct server_mtmd_prefill_profile {
         dst.output_write_bytes_total += src.output_write_bytes_total;
         dst.total_node_us += src.total_node_us;
         dst.activation_pack_us_total += src.activation_pack_us_total;
+        dst.activation_pack_async_us_total += src.activation_pack_async_us_total;
+        dst.activation_pack_wait_us_total += src.activation_pack_wait_us_total;
         dst.host_copy_activation_us_total += src.host_copy_activation_us_total;
         dst.host_copy_weight_us_total += src.host_copy_weight_us_total;
         dst.bias_prepare_us_total += src.bias_prepare_us_total;
@@ -359,6 +363,10 @@ struct server_mtmd_prefill_profile {
             {"accounted_share_pct", summary.total_node_us == 0 ? 0.0 :
                 static_cast<double>(summary.accounted_us_total) / static_cast<double>(summary.total_node_us) * 100.0},
             {"activation_pack_us", summary.activation_pack_us_total},
+            {"activation_pack_async_us", summary.activation_pack_async_us_total},
+            {"activation_pack_wait_us", summary.activation_pack_wait_us_total},
+            {"activation_pack_async_jobs", summary.activation_pack_async_jobs},
+            {"activation_pack_async_hits", summary.activation_pack_async_hits},
             {"host_copy_activation_us", summary.host_copy_activation_us_total},
             {"host_copy_weight_us", summary.host_copy_weight_us_total},
             {"bias_prepare_us", summary.bias_prepare_us_total},

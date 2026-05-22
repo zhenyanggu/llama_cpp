@@ -734,6 +734,14 @@ static bool npu_env_to_f64(const char * name, double * out) {
     return true;
 }
 
+static bool npu_env_enabled_default(const char * name, bool default_value) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    return std::strcmp(value, "0") != 0;
+}
+
 static int64_t npu_round_down_multiple(int64_t value, int64_t multiple) {
     return (value / multiple) * multiple;
 }
@@ -1042,7 +1050,12 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     const uint32_t bias_acc_bytes = plan->bias != nullptr || plan->aicas_w8a8.valid
         ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(int32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
         : 0;
-    const uint32_t bias_cache_bytes = 0;
+    const bool bias_cache_enabled =
+        npu_env_enabled_default("GGML_NPU_BIAS_CACHE", true) &&
+        (plan->bias != nullptr || plan->aicas_w8a8.valid);
+    const uint32_t bias_cache_bytes = bias_cache_enabled
+        ? npu_align_u32(static_cast<uint32_t>(plan->m * sizeof(int32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
+        : 0;
     const uint32_t scale_cache_bytes =
         (plan->aicas_w8a8.valid && plan->aicas_w8a8.weight_scale.size() > 1)
         ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(uint32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
@@ -1384,7 +1397,11 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     int64_t first_stage_tk = 0;
     npu_gemm_tiling_result tiling;
     npu_shape_table_hint shape_hint;
+    const bool reserve_bias_cache =
+        npu_env_enabled_default("GGML_NPU_BIAS_CACHE", true) &&
+        (plan.bias != nullptr || plan.aicas_w8a8.valid);
     if (plan.use_gemm_plan &&
+            !reserve_bias_cache &&
             npu_lookup_shape_table_hint(plan.src0, plan.m, plan.n, plan.k, plan.bias != nullptr, &shape_hint)) {
         first_stage_tm = shape_hint.tm;
         first_stage_tn = shape_hint.tn;
@@ -1408,6 +1425,9 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         params.sa_cols = plan.config.sa_cols;
         params.tk_align = 16;
         params.metadata_words_per_channel = metadata_words;
+        if (reserve_bias_cache) {
+            params.fixed_acc_words = plan.m;
+        }
         params.acc_tile_buffers = 3;
         params.max_u = 255;
         params.max_v = 255;

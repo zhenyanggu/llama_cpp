@@ -125,7 +125,8 @@ npu_gemm_tiling_result npu_search_gemm_tiling(const npu_gemm_tiling_params & par
             // scratch, postprocess scale/output workspace, plus per-channel
             // metadata. Using only output+metadata can select 240x240 tiles
             // that hang GEMM_PLAN on hardware.
-            if (v * (params.acc_tile_buffers * u + params.metadata_words_per_channel) > acc_words) {
+            if (v * (params.acc_tile_buffers * u + params.metadata_words_per_channel) +
+                    params.fixed_acc_words > acc_words) {
                 continue;
             }
 

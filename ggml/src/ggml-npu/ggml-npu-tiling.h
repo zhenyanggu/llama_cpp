@@ -21,6 +21,7 @@ struct npu_gemm_tiling_params {
     int64_t sa_cols = 16;
     int64_t tk_align = 16;
     int64_t metadata_words_per_channel = 0;
+    int64_t fixed_acc_words = 0;
     int64_t acc_tile_buffers = 3;
     int64_t spm_factor_a = 1;
     int64_t spm_factor_b = 1;

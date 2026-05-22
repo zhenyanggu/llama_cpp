@@ -21,6 +21,8 @@ typedef struct ggml_npu_profile_summary {
     int64_t weight_pack_count;
     int64_t bias_pack_count;
     int64_t activation_pack_calls;
+    int64_t activation_pack_async_jobs;
+    int64_t activation_pack_async_hits;
     int64_t host_copy_activation_calls;
     int64_t host_copy_weight_calls;
     int64_t bias_prepare_calls;
@@ -53,6 +55,8 @@ typedef struct ggml_npu_profile_summary {
     int64_t setup_cache_alloc_us_total;
     int64_t setup_profile_begin_us_total;
     int64_t activation_pack_us_total;
+    int64_t activation_pack_async_us_total;
+    int64_t activation_pack_wait_us_total;
     int64_t host_copy_activation_us_total;
     int64_t host_copy_weight_us_total;
     int64_t bias_prepare_us_total;

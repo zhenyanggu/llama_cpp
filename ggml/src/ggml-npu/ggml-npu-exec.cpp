@@ -9,13 +9,18 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
@@ -524,6 +529,14 @@ static float npu_env_f32(const char * name, float default_v) {
     return parsed;
 }
 
+static bool npu_env_enabled_default(const char * name, bool default_value) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    return std::strcmp(value, "0") != 0;
+}
+
 static npu_tile_align_debug_cfg npu_get_tile_align_debug_cfg() {
     npu_tile_align_debug_cfg cfg;
     cfg.enabled = std::getenv("GGML_NPU_TILE_ALIGN_DEBUG") != nullptr;
@@ -647,6 +660,188 @@ struct npu_activation_tile_key_hash {
     }
 };
 
+struct npu_activation_pack_async_stats {
+    int64_t jobs = 0;
+    int64_t async_us = 0;
+    int64_t bytes = 0;
+};
+
+struct npu_activation_pack_async_entry {
+    npu_activation_tile_key key;
+    std::vector<int8_t> data;
+    std::string error;
+    bool ready = false;
+    bool failed = false;
+    std::mutex mutex;
+    std::condition_variable cv;
+};
+
+class npu_activation_pack_scheduler {
+public:
+    npu_activation_pack_scheduler(
+            const npu_node_plan & plan,
+            float activation_scale,
+            int64_t window)
+        : plan_(plan),
+          activation_scale_(activation_scale),
+          window_(std::max<int64_t>(1, window)) {
+        worker_ = std::thread([this]() { this->worker_loop(); });
+    }
+
+    ~npu_activation_pack_scheduler() {
+        stop();
+    }
+
+    npu_activation_pack_scheduler(const npu_activation_pack_scheduler &) = delete;
+    npu_activation_pack_scheduler & operator=(const npu_activation_pack_scheduler &) = delete;
+
+    void schedule_window(size_t start_idx) {
+        int64_t scheduled = 0;
+        for (size_t idx = start_idx; idx < plan_.exec_tiles.size() && scheduled < window_; ++idx) {
+            const npu_exec_tile & tile = plan_.exec_tiles[idx];
+            const npu_activation_tile_key key {
+                tile.n0,
+                tile.n,
+                tile.k0,
+                tile.k,
+            };
+            if (schedule_one(key)) {
+                scheduled += 1;
+            }
+        }
+    }
+
+    std::shared_ptr<npu_activation_pack_async_entry> wait_ready(
+            const npu_activation_tile_key & key,
+            std::string * error,
+            bool * ready_before_wait) {
+        std::shared_ptr<npu_activation_pack_async_entry> entry;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = entries_.find(key);
+            if (it != entries_.end()) {
+                entry = it->second;
+            }
+        }
+        if (entry == nullptr) {
+            schedule_one(key);
+            std::lock_guard<std::mutex> lock(mutex_);
+            entry = entries_[key];
+        }
+
+        std::unique_lock<std::mutex> entry_lock(entry->mutex);
+        if (ready_before_wait != nullptr) {
+            *ready_before_wait = entry->ready;
+        }
+        entry->cv.wait(entry_lock, [&entry]() { return entry->ready; });
+        if (entry->failed) {
+            if (error != nullptr) {
+                *error = entry->error;
+            }
+            return nullptr;
+        }
+        return entry;
+    }
+
+    npu_activation_pack_async_stats stats() const {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        return stats_;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_) {
+                return;
+            }
+            stop_ = true;
+            queue_.clear();
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+private:
+    bool schedule_one(const npu_activation_tile_key & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (entries_.find(key) != entries_.end()) {
+            return false;
+        }
+        auto entry = std::make_shared<npu_activation_pack_async_entry>();
+        entry->key = key;
+        entries_.emplace(key, entry);
+        queue_.push_back(entry);
+        cv_.notify_one();
+        return true;
+    }
+
+    void worker_loop() {
+        for (;;) {
+            std::shared_ptr<npu_activation_pack_async_entry> entry;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this]() { return stop_ || !queue_.empty(); });
+                if (stop_ && queue_.empty()) {
+                    return;
+                }
+                entry = queue_.front();
+                queue_.pop_front();
+            }
+
+            std::vector<int8_t> data;
+            std::string local_error;
+            const int64_t start_us = ggml_time_us();
+            const bool ok = npu_pack_activation_tile_static_asym_i8(
+                plan_.src1,
+                entry->key.n0,
+                entry->key.n,
+                entry->key.k0,
+                entry->key.k,
+                npu_align_up_i64(entry->key.k, NPU_GEMM_PLAN_STRIDE_ALIGNMENT),
+                activation_scale_,
+                plan_.activation_quant.zero_point_u8,
+                plan_.aicas_w8a8.smooth_scale.empty() ? nullptr : &plan_.aicas_w8a8.smooth_scale,
+                &data,
+                &local_error);
+            const int64_t pack_us = ggml_time_us() - start_us;
+            const int64_t bytes = static_cast<int64_t>(data.size());
+
+            {
+                std::lock_guard<std::mutex> lock(entry->mutex);
+                entry->failed = !ok;
+                entry->error = local_error;
+                if (ok) {
+                    entry->data = std::move(data);
+                }
+                entry->ready = true;
+            }
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.jobs += 1;
+                stats_.async_us += pack_us;
+                if (ok) {
+                    stats_.bytes += bytes;
+                }
+            }
+            entry->cv.notify_all();
+        }
+    }
+
+    const npu_node_plan & plan_;
+    float activation_scale_ = 1.0f;
+    int64_t window_ = 1;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    std::deque<std::shared_ptr<npu_activation_pack_async_entry>> queue_;
+    std::unordered_map<npu_activation_tile_key, std::shared_ptr<npu_activation_pack_async_entry>, npu_activation_tile_key_hash> entries_;
+    mutable std::mutex stats_mutex_;
+    npu_activation_pack_async_stats stats_;
+    std::thread worker_;
+};
+
 struct npu_output_tile_key {
     int64_t m0;
     int64_t n0;
@@ -713,6 +908,23 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     std::unordered_map<npu_output_tile_key, bool, npu_output_tile_key_hash> tile_align_bias_in_accumulator;
     std::unordered_map<npu_output_tile_key, bool, npu_output_tile_key_hash> output_bias_in_accumulator;
     void * full_output_buf = nullptr;
+    std::unique_ptr<npu_activation_pack_scheduler> activation_scheduler;
+    bool activation_scheduler_stats_merged = false;
+
+    auto merge_activation_scheduler_stats = [&]() {
+        if (activation_scheduler == nullptr || activation_scheduler_stats_merged) {
+            return;
+        }
+        activation_scheduler->stop();
+        if (collect_stage_profile) {
+            const npu_activation_pack_async_stats stats = activation_scheduler->stats();
+            exec_summary.delta.activation_pack_calls += stats.jobs;
+            exec_summary.delta.activation_pack_async_jobs += stats.jobs;
+            exec_summary.delta.activation_pack_async_us_total += stats.async_us;
+            exec_summary.delta.packed_activation_bytes_total += stats.bytes;
+        }
+        activation_scheduler_stats_merged = true;
+    };
 
     auto cleanup_buffers = [](
             void * activation_buf,
@@ -750,6 +962,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             npu_profile_end(layer_id);
             runtime_profile_started = false;
         }
+        merge_activation_scheduler_stats();
 
         if (collect_stage_profile) {
             exec_summary.delta.total_node_us = ggml_time_us() - node_start_us;
@@ -779,6 +992,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
 
         if (collect_detailed_profile) {
             profile_record.activation_pack_calls = exec_summary.delta.activation_pack_calls;
+            profile_record.activation_pack_async_jobs = exec_summary.delta.activation_pack_async_jobs;
+            profile_record.activation_pack_async_hits = exec_summary.delta.activation_pack_async_hits;
             profile_record.host_copy_activation_calls = exec_summary.delta.host_copy_activation_calls;
             profile_record.host_copy_weight_calls = exec_summary.delta.host_copy_weight_calls;
             profile_record.bias_prepare_calls = exec_summary.delta.bias_prepare_calls;
@@ -809,6 +1024,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.setup_cache_alloc_us_total = exec_summary.delta.setup_cache_alloc_us_total;
             profile_record.setup_profile_begin_us_total = exec_summary.delta.setup_profile_begin_us_total;
             profile_record.activation_pack_us_total = exec_summary.delta.activation_pack_us_total;
+            profile_record.activation_pack_async_us_total = exec_summary.delta.activation_pack_async_us_total;
+            profile_record.activation_pack_wait_us_total = exec_summary.delta.activation_pack_wait_us_total;
             profile_record.host_copy_activation_us_total = exec_summary.delta.host_copy_activation_us_total;
             profile_record.host_copy_weight_us_total = exec_summary.delta.host_copy_weight_us_total;
             profile_record.bias_prepare_us_total = exec_summary.delta.bias_prepare_us_total;
@@ -930,7 +1147,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     }
     const bool mvout_per_channel = fold_output_reconstruction && plan.aicas_w8a8.weight_scale.size() > 1;
     const float per_tensor_weight_scale = fold_output_reconstruction ? plan.aicas_w8a8.weight_scale[0] : 1.0f;
-    const bool use_bias_cache = false;
+    const bool use_bias_cache =
+        npu_env_enabled_default("GGML_NPU_BIAS_CACHE", true) &&
+        plan.config.layout.bias_cache.bytes >= static_cast<uint32_t>(plan.m * sizeof(int32_t)) &&
+        (plan.bias != nullptr || fold_compensation_into_init_bias);
     const bool use_scale_cache = false;
     std::vector<float> acc_scaled_values;
     std::vector<int32_t> acc_raw_values_host;
@@ -1012,6 +1232,16 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     }
 
     activation_tile_cache.reserve(plan.exec_tiles.size());
+    if (npu_env_enabled_default("GGML_NPU_ACT_PACK_ASYNC", true) &&
+            !plan.exec_tiles.empty() &&
+            !tile_align_debug_cfg.enabled) {
+        const int64_t async_window =
+            std::max<int64_t>(1, npu_env_i64("GGML_NPU_ACT_PACK_ASYNC_WINDOW", 8));
+        activation_scheduler = std::make_unique<npu_activation_pack_scheduler>(
+            plan,
+            activation_scale,
+            async_window);
+    }
 
     int64_t active_m0 = -1;
     int64_t active_n0 = -1;
@@ -1088,49 +1318,85 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         };
 
         const std::vector<int8_t> * packed_activation_view = nullptr;
-        const auto cache_it = activation_tile_cache.find(activation_key);
-        if (cache_it != activation_tile_cache.end()) {
-            packed_activation_view = &cache_it->second;
-            if (collect_tile_profile) {
-                tile_record.activation_pack_us = 0.0;
-            }
-        } else {
-            const int64_t activation_pack_start_us = collect_stage_profile ? ggml_time_us() : 0;
-            auto inserted = activation_tile_cache.try_emplace(activation_key);
-            std::vector<int8_t> & cached_activation = inserted.first->second;
-            if (!npu_pack_activation_tile_static_asym_i8(
-                        plan.src1,
-                        exec_tile.n0,
-                        exec_tile.n,
-                        exec_tile.k0,
-                        exec_tile.k,
-                        exec_tile.a_stride,
-                        activation_scale,
-                        plan.activation_quant.zero_point_u8,
-                        plan.aicas_w8a8.smooth_scale.empty() ? nullptr : &plan.aicas_w8a8.smooth_scale,
-                        &cached_activation,
-                        error)) {
-                const int64_t activation_pack_us = collect_stage_profile ? (ggml_time_us() - activation_pack_start_us) : 0;
+        std::shared_ptr<npu_activation_pack_async_entry> async_activation_entry;
+        if (activation_scheduler != nullptr) {
+            activation_scheduler->schedule_window(exec_tile_idx);
+            bool ready_before_wait = false;
+            const int64_t activation_wait_start_us = collect_stage_profile ? ggml_time_us() : 0;
+            async_activation_entry = activation_scheduler->wait_ready(
+                activation_key,
+                error,
+                &ready_before_wait);
+            const int64_t activation_wait_us =
+                collect_stage_profile ? (ggml_time_us() - activation_wait_start_us) : 0;
+            if (async_activation_entry == nullptr) {
                 if (collect_stage_profile) {
-                    exec_summary.delta.activation_pack_calls += 1;
-                    exec_summary.delta.activation_pack_us_total += activation_pack_us;
+                    exec_summary.delta.activation_pack_us_total += activation_wait_us;
+                    exec_summary.delta.activation_pack_wait_us_total += activation_wait_us;
                 }
                 if (collect_tile_profile) {
-                    tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
+                    tile_record.activation_pack_us = static_cast<double>(activation_wait_us);
                     profile_record.tiles.push_back(std::move(tile_record));
                 }
-                activation_tile_cache.erase(inserted.first);
                 cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
-            packed_activation_view = &cached_activation;
+            packed_activation_view = &async_activation_entry->data;
             if (collect_stage_profile) {
-                const int64_t activation_pack_us = ggml_time_us() - activation_pack_start_us;
-                exec_summary.delta.activation_pack_calls += 1;
-                exec_summary.delta.activation_pack_us_total += activation_pack_us;
-                exec_summary.delta.packed_activation_bytes_total += static_cast<int64_t>(packed_activation_view->size());
+                exec_summary.delta.activation_pack_us_total += activation_wait_us;
+                exec_summary.delta.activation_pack_wait_us_total += activation_wait_us;
+                if (ready_before_wait) {
+                    exec_summary.delta.activation_pack_async_hits += 1;
+                }
                 if (collect_tile_profile) {
-                    tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
+                    tile_record.activation_pack_us = static_cast<double>(activation_wait_us);
+                }
+            }
+        } else {
+            const auto cache_it = activation_tile_cache.find(activation_key);
+            if (cache_it != activation_tile_cache.end()) {
+                packed_activation_view = &cache_it->second;
+                if (collect_tile_profile) {
+                    tile_record.activation_pack_us = 0.0;
+                }
+            } else {
+                const int64_t activation_pack_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                auto inserted = activation_tile_cache.try_emplace(activation_key);
+                std::vector<int8_t> & cached_activation = inserted.first->second;
+                if (!npu_pack_activation_tile_static_asym_i8(
+                            plan.src1,
+                            exec_tile.n0,
+                            exec_tile.n,
+                            exec_tile.k0,
+                            exec_tile.k,
+                            exec_tile.a_stride,
+                            activation_scale,
+                            plan.activation_quant.zero_point_u8,
+                            plan.aicas_w8a8.smooth_scale.empty() ? nullptr : &plan.aicas_w8a8.smooth_scale,
+                            &cached_activation,
+                            error)) {
+                    const int64_t activation_pack_us = collect_stage_profile ? (ggml_time_us() - activation_pack_start_us) : 0;
+                    if (collect_stage_profile) {
+                        exec_summary.delta.activation_pack_calls += 1;
+                        exec_summary.delta.activation_pack_us_total += activation_pack_us;
+                    }
+                    if (collect_tile_profile) {
+                        tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
+                        profile_record.tiles.push_back(std::move(tile_record));
+                    }
+                    activation_tile_cache.erase(inserted.first);
+                    cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
+                    return finalize_status(GGML_STATUS_FAILED);
+                }
+                packed_activation_view = &cached_activation;
+                if (collect_stage_profile) {
+                    const int64_t activation_pack_us = ggml_time_us() - activation_pack_start_us;
+                    exec_summary.delta.activation_pack_calls += 1;
+                    exec_summary.delta.activation_pack_us_total += activation_pack_us;
+                    exec_summary.delta.packed_activation_bytes_total += static_cast<int64_t>(packed_activation_view->size());
+                    if (collect_tile_profile) {
+                        tile_record.activation_pack_us = static_cast<double>(activation_pack_us);
+                    }
                 }
             }
         }
@@ -1416,12 +1682,14 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
-            if (tile_has_model_bias && use_bias_cache) {
+            if (use_bias_cache) {
                 if (loaded_bias_cache_n0 != exec_tile.n0) {
                     const int64_t bias_prepare_start_us = collect_stage_profile ? ggml_time_us() : 0;
                     int32_t * bias_cache_words = reinterpret_cast<int32_t *>(bias_cache_buf);
                     for (int64_t global_m = 0; global_m < plan.m; ++global_m) {
-                        const float bias_f32 = npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0);
+                        const float bias_f32 = plan.bias != nullptr
+                            ? npu_read_bias_value_f32_exec(plan.bias, global_m, exec_tile.n0)
+                            : 0.0f;
                         const float w_scale =
                             static_cast<size_t>(global_m) < plan.aicas_w8a8.weight_scale.size()
                             ? plan.aicas_w8a8.weight_scale[static_cast<size_t>(global_m)]
