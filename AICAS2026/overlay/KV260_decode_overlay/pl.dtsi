@@ -1,0 +1,85 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/fpga-region";
+        __overlay__ {
+            firmware-name = "KV260_decode.bit.bin";
+            pid = <0x0>;
+            uid = <0x0>;
+            resets = <&zynqmp_reset 116>;
+            clocking0: clocking0 {
+                        compatible = "xlnx,fclk";
+                        status = "okay";
+                        assigned-clocks = <&zynqmp_clk 71>;
+                        assigned-clock-rates = <199998001>;
+                        #clock-cells = <0>;
+                        clock-output-names = "fabric_clk";
+                        clocks = <&zynqmp_clk 71>;
+                    };
+            afi0: afi0 {
+                        status = "okay";
+                        compatible = "xlnx,afi-fpga";
+                        resets = <&zynqmp_reset 116>, <&zynqmp_reset 117>, <&zynqmp_reset 118>, <&zynqmp_reset 119>;
+                        config-afi = < 0 0>, <1 0>, <2 0>, <3 0>, <4 0>, <5 0>, <6 0>, <7 0>, <8 0>, <9 0>, <10 0>, <11 0>, <12 0>, <13 0>, <14 0xa00>, <15 0x000>;
+                    };
+        };
+    };
+
+    fragment@1 {
+        target-path = "/axi";
+        __overlay__ {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            T_NPU_FPGA_v_0: T_NPU_FPGA_v@a0000000 {
+                        interrupts = < 0 89 4 >;
+                        xlnx,disable-resample = <1>;
+                        compatible = "xlnx,T-NPU-FPGA-v-1.0";
+                        xlnx,spm-fpga-sram = <1>;
+                        xlnx,rd-ports = <2>;
+                        xlnx,disable-softmax = <1>;
+                        xlnx,rf-data-width = <64>;
+                        xlnx,alpha-1 = <6656>;
+                        xlnx,disable-acc-int32-to-int8 = <1>;
+                        xlnx,alpha-2 = <13312>;
+                        interrupt-parent = <&gic>;
+                        xlnx,mmio-axi-addr-width = <32>;
+                        xlnx,alpha-3 = <656>;
+                        xlnx,disable-acc-to-spm-path = <1>;
+                        xlnx,ip-name = "T_NPU_FPGA_v";
+                        xlnx,axi-addr-width = <32>;
+                        xlnx,spm-size = <524288>;
+                        xlnx,disable-transpose = <1>;
+                        xlnx,disable-mvin-int8-to-int32 = <1>;
+                        xlnx,disable-gemv = <0>;
+                        reg = <0x0 0xa0000000 0x0 0x10000>;
+                        clocks = <&zynqmp_clk 71>;
+                        xlnx,pe-data-width = <8>;
+                        xlnx,disable-accumulator = <0>;
+                        xlnx,axi-id-width = <4>;
+                        xlnx,pe-width = <16>;
+                        xlnx,gelu-num = <4>;
+                        xlnx,disable-layernorm = <1>;
+                        xlnx,axi-max-outstanding = <16>;
+                        xlnx,pe-fpga-dsp = <1>;
+                        xlnx,edk-iptype = "PERIPHERAL";
+                        xlnx,pe-data-width-in = <8>;
+                        xlnx,mmio-axi-data-width = <64>;
+                        xlnx,pe-data-width-out = <32>;
+                        xlnx,dsp-pe-num = <0>;
+                        xlnx,disable-gelu = <1>;
+                        xlnx,axi-max-burst-beats = <16>;
+                        status = "okay";
+                        xlnx,axi-data-width = <128>;
+                        clock-names = "clk";
+                        xlnx,disable-systolic-array = <1>;
+                        xlnx,disable-sfu = <1>;
+                        xlnx,disable-im2col = <1>;
+                        xlnx,acc-size = <524288>;
+                        interrupt-names = "irq";
+                        xlnx,name = "T_NPU_FPGA_v_0";
+                    };
+        };
+    };
+};
