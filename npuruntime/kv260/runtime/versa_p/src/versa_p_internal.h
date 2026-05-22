@@ -34,6 +34,8 @@ struct versa_p_device {
     uint8_t pending_mvin_w_bank = 0;
     uint16_t pending_mvin_w_k = 0;
     uint16_t pending_mvin_w_n = 0;
+    uint32_t pending_mvout_dma_addr = 0;
+    uint32_t pending_mvout_bytes = 0;
 };
 
 static inline bool versa_p_is_aligned(uint64_t value, uint32_t alignment)
@@ -49,5 +51,8 @@ static inline uint32_t versa_p_align_up(uint32_t value, uint32_t alignment)
 uint32_t versa_p_status_offset(versa_p_api api);
 int versa_p_hw_error_to_status(uint8_t error_code);
 void versa_p_mark_api_complete(versa_p_device *dev, versa_p_api api);
+int versa_p_sync_dma_range(versa_p_device *dev, uint32_t dma_addr,
+                           size_t bytes, uint32_t target,
+                           uint32_t direction);
 
 #endif

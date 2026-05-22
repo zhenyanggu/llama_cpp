@@ -13,21 +13,91 @@
 
 namespace {
 
+uint32_t parse_size_env(const char *env, uint32_t fallback)
+{
+    if (!env || env[0] == '\0') {
+        return fallback;
+    }
+
+    char *end = nullptr;
+    unsigned long long parsed = strtoull(env, &end, 0);
+    if (end == env || parsed == 0) {
+        return fallback;
+    }
+
+    while (*end == ' ' || *end == '\t') {
+        ++end;
+    }
+
+    unsigned long long multiplier = 1;
+    if (*end != '\0') {
+        if (*end == 'k' || *end == 'K') {
+            multiplier = 1024ull;
+            ++end;
+        } else if (*end == 'm' || *end == 'M') {
+            multiplier = 1024ull * 1024ull;
+            ++end;
+        } else if (*end == 'g' || *end == 'G') {
+            multiplier = 1024ull * 1024ull * 1024ull;
+            ++end;
+        } else {
+            return fallback;
+        }
+        if (*end == 'i' || *end == 'I') {
+            ++end;
+        }
+        if (*end == 'b' || *end == 'B') {
+            ++end;
+        }
+        while (*end == ' ' || *end == '\t') {
+            ++end;
+        }
+        if (*end != '\0') {
+            return fallback;
+        }
+    }
+
+    if (parsed > std::numeric_limits<uint32_t>::max() / multiplier) {
+        return fallback;
+    }
+    return (uint32_t)(parsed * multiplier);
+}
+
 uint32_t resolve_cma_size(const versa_p_options *options)
 {
     if (options && options->cma_size != 0) {
         return options->cma_size;
     }
-    const char *env = getenv("VERSA_P_CMA_SIZE");
-    if (env && env[0] != '\0') {
-        char *end = nullptr;
-        unsigned long parsed = strtoul(env, &end, 0);
-        if (end != env && parsed != 0 &&
-            parsed <= std::numeric_limits<uint32_t>::max()) {
-            return (uint32_t)parsed;
-        }
+    return parse_size_env(getenv("VERSA_P_CMA_SIZE"), VERSA_P_DEFAULT_CMA_BYTES);
+}
+
+uint32_t resolve_heap_offset(void)
+{
+    return parse_size_env(getenv("VERSA_P_CMA_HEAP_OFFSET"), 0);
+}
+
+uint32_t resolve_heap_size(uint32_t cma_size, uint32_t heap_offset)
+{
+    if (heap_offset >= cma_size) {
+        return 0;
     }
-    return VERSA_P_DEFAULT_CMA_BYTES;
+    return parse_size_env(getenv("VERSA_P_CMA_HEAP_SIZE"), cma_size - heap_offset);
+}
+
+uint32_t resolve_cma_alloc_flags(void)
+{
+    const char *env = getenv("VERSA_P_CMA_CACHEABLE");
+    if (!env || env[0] == '\0') {
+        env = getenv("NPU_CMA_CACHEABLE");
+    }
+    if (!env || env[0] == '\0' || env[0] == '0') {
+        return 0;
+    }
+    uint32_t flags = NPU_KV260_BUFFER_FLAG_CACHEABLE;
+    if (strcmp(env, "required") == 0 || strcmp(env, "require") == 0) {
+        flags |= NPU_KV260_BUFFER_FLAG_CACHEABLE_REQUIRED;
+    }
+    return flags;
 }
 
 const char *resolve_dev_path(const versa_p_options *options)
@@ -49,6 +119,8 @@ void reset_software_state(versa_p_device *dev)
     dev->pending_mvin_w_bank = 0;
     dev->pending_mvin_w_k = 0;
     dev->pending_mvin_w_n = 0;
+    dev->pending_mvout_dma_addr = 0;
+    dev->pending_mvout_bytes = 0;
 }
 
 } // namespace
@@ -90,8 +162,29 @@ int versa_p_init(versa_p_device **out_dev, const versa_p_options *options)
     }
 
     npu_kv260_buffer_request req = {};
-    req.size = resolve_cma_size(options);
-    if (ioctl(dev->fd, NPU_KV260_IOC_ALLOC_BUFFER, &req) < 0) {
+    npu_kv260_buffer_request_ex req_ex = {};
+    const uint32_t alloc_flags = resolve_cma_alloc_flags();
+    bool allocated = false;
+    if (alloc_flags != 0) {
+        req_ex.size = resolve_cma_size(options);
+        req_ex.flags = alloc_flags;
+        if (ioctl(dev->fd, NPU_KV260_IOC_ALLOC_BUFFER_EX, &req_ex) == 0) {
+            allocated = true;
+            req.size = req_ex.size;
+            req.dma_addr = req_ex.dma_addr;
+        } else if ((alloc_flags & NPU_KV260_BUFFER_FLAG_CACHEABLE_REQUIRED) != 0) {
+            close(dev->fd);
+            delete dev;
+            return VERSA_P_ERR_IO;
+        }
+    }
+    if (!allocated) {
+        req.size = resolve_cma_size(options);
+        if (ioctl(dev->fd, NPU_KV260_IOC_ALLOC_BUFFER, &req) == 0) {
+            allocated = true;
+        }
+    }
+    if (!allocated) {
         close(dev->fd);
         delete dev;
         return VERSA_P_ERR_IO;
@@ -129,7 +222,13 @@ int versa_p_init(versa_p_device **out_dev, const versa_p_options *options)
     }
 
     (void)ioctl(dev->fd, NPU_KV260_IOC_GET_INFO, &dev->info);
-    dev->blocks.push_back(VersaPBlock{0, dev->cma_size, true});
+    const uint32_t heap_offset = resolve_heap_offset();
+    const uint32_t heap_size = resolve_heap_size(dev->cma_size, heap_offset);
+    if (heap_size == 0 || heap_size > dev->cma_size - heap_offset) {
+        versa_p_destroy(dev);
+        return VERSA_P_ERR_INVAL;
+    }
+    dev->blocks.push_back(VersaPBlock{heap_offset, heap_size, true});
     reset_software_state(dev);
 
     int rc = versa_p_reset(dev);
@@ -279,4 +378,92 @@ uint32_t versa_p_dma_addr(versa_p_device *dev, const void *ptr)
         return 0;
     }
     return dev->cma_dma + (uint32_t)(p - base);
+}
+
+int versa_p_sync_dma_range(versa_p_device *dev, uint32_t dma_addr,
+                           size_t bytes, uint32_t target,
+                           uint32_t direction)
+{
+    if (!dev || bytes == 0) {
+        return VERSA_P_ERR_INVAL;
+    }
+    if (dma_addr < dev->cma_dma ||
+        (uint64_t)dma_addr + bytes > (uint64_t)dev->cma_dma + dev->cma_size) {
+        return VERSA_P_ERR_INVAL;
+    }
+    if ((dev->info.flags & NPU_KV260_INFO_FLAG_CACHEABLE_BUFFER) == 0) {
+        return VERSA_P_OK;
+    }
+
+    npu_kv260_buffer_sync sync = {};
+    sync.cma_offset = (uint64_t)(dma_addr - dev->cma_dma);
+    sync.size = bytes;
+    sync.target = target;
+    sync.direction = direction;
+    if (ioctl(dev->fd, NPU_KV260_IOC_SYNC_BUFFER, &sync) != 0) {
+        return VERSA_P_ERR_IO;
+    }
+    return VERSA_P_OK;
+}
+
+int versa_p_sync_for_cpu(versa_p_device *dev, const void *cma_ptr,
+                         size_t bytes)
+{
+    uint32_t dma_addr = versa_p_dma_addr(dev, cma_ptr);
+    if (dma_addr == 0) {
+        return VERSA_P_ERR_INVAL;
+    }
+    return versa_p_sync_dma_range(dev, dma_addr, bytes,
+                                  NPU_KV260_SYNC_FOR_CPU,
+                                  NPU_KV260_SYNC_FROM_DEVICE);
+}
+
+int versa_p_sync_for_device(versa_p_device *dev, const void *cma_ptr,
+                            size_t bytes)
+{
+    uint32_t dma_addr = versa_p_dma_addr(dev, cma_ptr);
+    if (dma_addr == 0) {
+        return VERSA_P_ERR_INVAL;
+    }
+    return versa_p_sync_dma_range(dev, dma_addr, bytes,
+                                  NPU_KV260_SYNC_FOR_DEVICE,
+                                  NPU_KV260_SYNC_TO_DEVICE);
+}
+
+int versa_p_dma_copy_from_cma(versa_p_device *dev, const void *cma_ptr,
+                              void *dst, size_t bytes,
+                              uint32_t chunk_bytes)
+{
+    if (!dev || !cma_ptr || !dst || bytes == 0 || !dev->cma) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    const uint8_t *base = (const uint8_t *)dev->cma;
+    const uint8_t *p = (const uint8_t *)cma_ptr;
+    if (p < base || p > base + dev->cma_size) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    const uint64_t offset = (uint64_t)(p - base);
+    if (offset > dev->cma_size || bytes > (size_t)(dev->cma_size - offset)) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    npu_kv260_dma_copy copy = {};
+    int rc = versa_p_sync_for_cpu(dev, cma_ptr, bytes);
+    if (rc != VERSA_P_OK) {
+        return rc;
+    }
+    copy.cma_offset = offset;
+    copy.user_addr = (uint64_t)(uintptr_t)dst;
+    copy.size = bytes;
+    copy.direction = NPU_KV260_DMA_COPY_CMA_TO_USER;
+    copy.chunk_bytes = chunk_bytes;
+    if (ioctl(dev->fd, NPU_KV260_IOC_DMA_COPY, &copy) != 0) {
+        if (errno == EOPNOTSUPP || errno == ENOTTY || errno == EINVAL) {
+            return VERSA_P_ERR_UNSUPPORTED_MODE;
+        }
+        return VERSA_P_ERR_IO;
+    }
+    return VERSA_P_OK;
 }

@@ -204,6 +204,18 @@ int versa_p_wait(versa_p_device *dev, versa_p_api api, uint32_t timeout_ms)
             return versa_p_hw_error_to_status(status.error_code);
         }
         if (status.done) {
+            if (api == VERSA_P_API_MVOUT && dev->pending_mvout_bytes != 0) {
+                rc = versa_p_sync_dma_range(
+                    dev, dev->pending_mvout_dma_addr, dev->pending_mvout_bytes,
+                    NPU_KV260_SYNC_FOR_CPU,
+                    NPU_KV260_SYNC_FROM_DEVICE);
+                if (rc != VERSA_P_OK) {
+                    dev->api_inflight[(int)api] = false;
+                    return rc;
+                }
+                dev->pending_mvout_dma_addr = 0;
+                dev->pending_mvout_bytes = 0;
+            }
             versa_p_mark_api_complete(dev, api);
             versa_p_write64(dev, versa_p_status_offset(api), VERSA_P_STATUS_DONE_MASK);
             return VERSA_P_OK;

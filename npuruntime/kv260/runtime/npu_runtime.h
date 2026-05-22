@@ -318,6 +318,7 @@ public:
     // --- Memory Allocator (Heap) ---
     void* alloc(size_t size);
     void free(void* ptr);
+    int dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes);
 
 private:
     static constexpr uint32_t DMA_CHANNEL_COUNT = 3;
@@ -454,6 +455,10 @@ extern "C" {
     // ptr: 必须是 npu_mem_alloc 返回值；传 nullptr 时无操作。
     void npu_mem_free(void* ptr);
 
+    // 使用 driver DMAengine ioctl 将 Runtime CMA 内存复制到普通用户态内存。
+    // 返回 0 表示成功；失败返回负 errno 风格错误码。
+    int npu_dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes);
+
     // ---------------------------------------------------------------------
     // DMA Operations
     // ---------------------------------------------------------------------
@@ -545,6 +550,8 @@ extern "C" {
     void npu_dma_mvout_async(uint32_t dma_id, const MvoutConfig* cfg);
     void npu_dma_wait_mvin(uint32_t dma_mask);
     void npu_dma_wait_mvout(uint32_t dma_mask);
+    void npu_dma_mvin_w_async_bank(uint8_t w_bank, const MvinConfig* cfg);
+    void npu_dma_wait_w_bank(uint8_t w_bank);
 
     // 便捷接口：DMA0 和 DMA1 并发执行两个 SPM MVIN，内部等待两路都完成。
     void npu_dma_double_mvin(const MvinConfig* dma0_cfg, const MvinConfig* dma1_cfg);
@@ -812,6 +819,43 @@ extern "C" {
 
     // Extended GEMM plan block API for software-managed outer tiling.
     void npu_gemm_plan_run_ex(
+        uint32_t a_addr,
+        uint32_t b_addr,
+        uint32_t out_addr,
+        uint32_t scratch_addr,
+        uint32_t bias_addr,
+        uint16_t block_m,
+        uint16_t block_n,
+        uint16_t block_k,
+        uint16_t a_stride,
+        uint16_t b_stride,
+        uint16_t out_stride,
+        uint16_t bias_stride,
+        bool     have_bias,
+        bool     is_accumulate,
+        bool     asymmetric_activations
+    );
+    void npu_gemm_plan_start_ex_bank(
+        uint8_t  w_bank,
+        uint32_t a_addr,
+        uint32_t b_addr,
+        uint32_t out_addr,
+        uint32_t scratch_addr,
+        uint32_t bias_addr,
+        uint16_t block_m,
+        uint16_t block_n,
+        uint16_t block_k,
+        uint16_t a_stride,
+        uint16_t b_stride,
+        uint16_t out_stride,
+        uint16_t bias_stride,
+        bool     have_bias,
+        bool     is_accumulate,
+        bool     asymmetric_activations
+    );
+    void npu_gemm_plan_wait();
+    void npu_gemm_plan_run_ex_bank(
+        uint8_t  w_bank,
         uint32_t a_addr,
         uint32_t b_addr,
         uint32_t out_addr,

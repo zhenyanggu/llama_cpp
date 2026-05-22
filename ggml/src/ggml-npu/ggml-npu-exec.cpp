@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <map>
 #include <string>
 #include <limits>
 #include <unordered_map>
@@ -336,6 +338,156 @@ static bool npu_force_raw_acc_mvout() {
 #endif
 }
 
+static bool npu_w_pingpong_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_W_PINGPONG");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static size_t npu_cma_read_chunk_bytes() {
+    static bool initialized = false;
+    static size_t chunk_bytes = 0;
+    if (!initialized) {
+        initialized = true;
+        const char * value = std::getenv("GGML_NPU_CMA_READ_CHUNK_BYTES");
+        if (value != nullptr && value[0] != '\0') {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed > 0) {
+                chunk_bytes = static_cast<size_t>(parsed);
+            }
+        }
+    }
+    return chunk_bytes;
+}
+
+static bool npu_cma_read_dma_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_CMA_READ_DMA");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static bool npu_full_output_cma_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_FULL_OUTPUT_CMA");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static uint32_t npu_cma_read_dma_chunk_bytes() {
+    static bool initialized = false;
+    static uint32_t chunk_bytes = 1024u * 1024u;
+    if (!initialized) {
+        initialized = true;
+        const char * value = std::getenv("GGML_NPU_CMA_READ_DMA_CHUNK_BYTES");
+        if (value != nullptr && value[0] != '\0') {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed > 0) {
+                chunk_bytes = static_cast<uint32_t>(parsed);
+            }
+        }
+    }
+    return chunk_bytes;
+}
+
+static size_t npu_cma_read_dma_min_bytes() {
+    static bool initialized = false;
+    static size_t min_bytes = 1024u * 1024u;
+    if (!initialized) {
+        initialized = true;
+        const char * value = std::getenv("GGML_NPU_CMA_READ_DMA_MIN_BYTES");
+        if (value != nullptr && value[0] != '\0') {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed >= 0) {
+                min_bytes = static_cast<size_t>(parsed);
+            }
+        }
+    }
+    return min_bytes;
+}
+
+static void npu_copy_from_cma(void * dst, const void * src, size_t bytes) {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    if (npu_cma_read_dma_enabled() && bytes >= npu_cma_read_dma_min_bytes()) {
+        const int rc = npu_dma_copy_from_cma(src, dst, bytes, npu_cma_read_dma_chunk_bytes());
+        if (rc == 0) {
+            return;
+        }
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            std::fprintf(stderr,
+                "npu_copy_from_cma: driver DMA copy failed rc=%d; falling back to CPU memcpy\n",
+                rc);
+        }
+    }
+#endif
+    const size_t chunk_bytes = npu_cma_read_chunk_bytes();
+    if (chunk_bytes == 0 || chunk_bytes >= bytes) {
+        std::memcpy(dst, src, bytes);
+        return;
+    }
+    size_t offset = 0;
+    while (offset < bytes) {
+        const size_t n = std::min(chunk_bytes, bytes - offset);
+        std::memcpy(
+            static_cast<char *>(dst) + offset,
+            static_cast<const char *>(src) + offset,
+            n);
+        offset += n;
+    }
+}
+
+struct npu_full_output_span {
+    int64_t n0 = 0;
+    int64_t n = 0;
+    int64_t hw_n = 0;
+    int64_t padded_row0 = 0;
+};
+
+static std::vector<npu_full_output_span> npu_build_full_output_spans(const npu_node_plan & plan) {
+    std::map<int64_t, npu_full_output_span> by_n0;
+    int64_t padded_row = 0;
+    for (const npu_exec_tile & tile : plan.exec_tiles) {
+        if (!tile.writes_output || by_n0.find(tile.n0) != by_n0.end()) {
+            continue;
+        }
+        const int64_t hw_n = npu_hardware_n_rows(tile.n);
+        npu_full_output_span span;
+        span.n0 = tile.n0;
+        span.n = tile.n;
+        span.hw_n = hw_n;
+        span.padded_row0 = padded_row;
+        by_n0.emplace(tile.n0, span);
+        padded_row += hw_n;
+    }
+
+    std::vector<npu_full_output_span> spans;
+    spans.reserve(by_n0.size());
+    for (const auto & entry : by_n0) {
+        spans.push_back(entry.second);
+    }
+    return spans;
+}
+
+static const npu_full_output_span * npu_find_full_output_span(
+        const std::vector<npu_full_output_span> & spans,
+        int64_t n0) {
+    for (const npu_full_output_span & span : spans) {
+        if (span.n0 == n0) {
+            return &span;
+        }
+    }
+    return nullptr;
+}
+
 struct npu_tile_align_debug_cfg {
     bool enabled = false;
     int64_t layer_id = -1;
@@ -560,6 +712,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     std::unordered_map<npu_output_tile_key, std::vector<int32_t>, npu_output_tile_key_hash> tile_align_acc_ref_alt_layout;
     std::unordered_map<npu_output_tile_key, bool, npu_output_tile_key_hash> tile_align_bias_in_accumulator;
     std::unordered_map<npu_output_tile_key, bool, npu_output_tile_key_hash> output_bias_in_accumulator;
+    void * full_output_buf = nullptr;
 
     auto cleanup_buffers = [](
             void * activation_buf,
@@ -589,6 +742,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     };
 
     auto finalize_status = [&](enum ggml_status status) {
+        if (full_output_buf) {
+            npu_mem_free(full_output_buf);
+            full_output_buf = nullptr;
+        }
         if (runtime_profile_started) {
             npu_profile_end(layer_id);
             runtime_profile_started = false;
@@ -608,6 +765,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 exec_summary.delta.bias_prepare_us_total +
                 exec_summary.delta.dma_in_pair_us_total +
                 exec_summary.delta.dma_in_bias_us_total +
+                exec_summary.delta.w_prefetch_wait_us_total +
                 exec_summary.delta.gemm_us_total +
                 exec_summary.delta.dma_out_us_total +
                 exec_summary.delta.postprocess_us_total;
@@ -627,12 +785,21 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.dma_in_activation_calls = exec_summary.delta.dma_in_activation_calls;
             profile_record.dma_in_weight_calls = exec_summary.delta.dma_in_weight_calls;
             profile_record.dma_in_bias_calls = exec_summary.delta.dma_in_bias_calls;
+            profile_record.spm_activation_reuse_hits = exec_summary.delta.spm_activation_reuse_hits;
+            profile_record.spm_weight_reuse_hits = exec_summary.delta.spm_weight_reuse_hits;
             profile_record.gemm_calls = exec_summary.delta.gemm_calls;
             profile_record.gemm_plan_calls = exec_summary.delta.gemm_plan_calls;
             profile_record.dma_out_calls = exec_summary.delta.dma_out_calls;
             profile_record.postprocess_calls = exec_summary.delta.postprocess_calls;
+            profile_record.raw_acc_mvout_nodes = exec_summary.delta.raw_acc_mvout_nodes;
+            profile_record.raw_acc_mvout_tiles = exec_summary.delta.raw_acc_mvout_tiles;
+            profile_record.w_prefetch_calls = exec_summary.delta.w_prefetch_calls;
+            profile_record.w_prefetch_hits = exec_summary.delta.w_prefetch_hits;
+            profile_record.w_prefetch_conflicts = exec_summary.delta.w_prefetch_conflicts;
             profile_record.packed_activation_bytes_total = exec_summary.delta.packed_activation_bytes_total;
             profile_record.copied_weight_bytes_total = exec_summary.delta.copied_weight_bytes_total;
+            profile_record.dma_in_activation_bytes_total = exec_summary.delta.dma_in_activation_bytes_total;
+            profile_record.dma_in_weight_bytes_total = exec_summary.delta.dma_in_weight_bytes_total;
             profile_record.bias_bytes_total = exec_summary.delta.bias_bytes_total;
             profile_record.acc_readback_bytes_total = exec_summary.delta.acc_readback_bytes_total;
             profile_record.output_write_bytes_total = exec_summary.delta.output_write_bytes_total;
@@ -650,6 +817,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.dma_in_bias_us_total = exec_summary.delta.dma_in_bias_us_total;
             profile_record.dma_in_pair_calls = exec_summary.delta.dma_in_pair_calls;
             profile_record.dma_in_pair_us_total = exec_summary.delta.dma_in_pair_us_total;
+            profile_record.w_prefetch_wait_us_total = exec_summary.delta.w_prefetch_wait_us_total;
+            profile_record.w_prefetch_hidden_candidate_us_total = exec_summary.delta.w_prefetch_hidden_candidate_us_total;
             profile_record.gemm_us_total = exec_summary.delta.gemm_us_total;
             profile_record.dma_out_us_total = exec_summary.delta.dma_out_us_total;
             profile_record.postprocess_us_total = exec_summary.delta.postprocess_us_total;
@@ -749,6 +918,16 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     const bool apply_output_compensation =
         apply_compensation && !fold_compensation_into_accumulator;
     const bool raw_acc_mvout = npu_force_raw_acc_mvout();
+    if (raw_acc_mvout) {
+        static bool raw_acc_mvout_warned = false;
+        if (!raw_acc_mvout_warned) {
+            const char * root_name = plan.root && plan.root->name[0] != '\0' ? plan.root->name : "(unnamed)";
+            GGML_LOG_WARN("%s: raw int32 accumulator MVOUT is active for root=%s; postprocess will dequantize on CPU\n",
+                    __func__, root_name);
+            raw_acc_mvout_warned = true;
+        }
+        exec_summary.delta.raw_acc_mvout_nodes = 1;
+    }
     const bool mvout_per_channel = fold_output_reconstruction && plan.aicas_w8a8.weight_scale.size() > 1;
     const float per_tensor_weight_scale = fold_output_reconstruction ? plan.aicas_w8a8.weight_scale[0] : 1.0f;
     const bool use_bias_cache = false;
@@ -757,6 +936,59 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     std::vector<int32_t> acc_raw_values_host;
     std::vector<float> bias_tile_values;
     std::vector<int32_t> bias_values;
+    std::vector<npu_full_output_span> full_output_spans;
+    bool full_output_cma_active = false;
+
+    if (npu_full_output_cma_enabled() &&
+        fold_output_reconstruction &&
+        !raw_acc_mvout &&
+        !apply_output_compensation &&
+        !tile_align_debug_cfg.enabled &&
+        npu_dst_is_dense_f32(plan.dst) &&
+        plan.m > 0) {
+        std::unordered_map<npu_output_tile_key, bool, npu_output_tile_key_hash> prescan_bias_in_accumulator;
+        bool all_outputs_are_final_f32 = true;
+        for (const npu_exec_tile & tile : plan.exec_tiles) {
+            const npu_output_tile_key key{ tile.m0, tile.n0, tile.m, tile.n };
+            const bool tile_has_model_bias =
+                plan.bias != nullptr && tile.needs_bias && tile.bias_pack_index >= 0;
+            const bool tile_uses_init_bias =
+                tile.needs_bias && fold_compensation_into_init_bias;
+            const bool tile_uses_bias = tile_has_model_bias || tile_uses_init_bias;
+            if (tile_has_model_bias) {
+                prescan_bias_in_accumulator[key] = true;
+            }
+            const auto bias_it = prescan_bias_in_accumulator.find(key);
+            const bool output_has_bias_in_accumulator =
+                bias_it != prescan_bias_in_accumulator.end() && bias_it->second;
+            if (tile.writes_output &&
+                !(tile_uses_bias || output_has_bias_in_accumulator || plan.bias == nullptr)) {
+                all_outputs_are_final_f32 = false;
+                break;
+            }
+        }
+
+        if (all_outputs_are_final_f32) {
+            full_output_spans = npu_build_full_output_spans(plan);
+            int64_t padded_rows = 0;
+            for (const npu_full_output_span & span : full_output_spans) {
+                padded_rows = std::max(padded_rows, span.padded_row0 + span.hw_n);
+            }
+            const uint64_t full_output_bytes =
+                static_cast<uint64_t>(padded_rows) *
+                static_cast<uint64_t>(plan.m) *
+                sizeof(float);
+            if (full_output_bytes != 0 &&
+                full_output_bytes <= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+                full_output_buf = npu_mem_alloc(static_cast<size_t>(full_output_bytes));
+                full_output_cma_active = full_output_buf != nullptr;
+                if (!full_output_cma_active && npu_debug_log_enabled()) {
+                    GGML_LOG_WARN("%s: GGML_NPU_FULL_OUTPUT_CMA requested but full output allocation failed, bytes=%" PRIu64 "\n",
+                        __func__, full_output_bytes);
+                }
+            }
+        }
+    }
 
     const int64_t setup_cache_alloc_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (use_bias_cache &&
@@ -791,6 +1023,25 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     npu_activation_tile_key loaded_activation_key;
     bool loaded_activation_valid = false;
     int32_t loaded_weight_pack_index = -1;
+    const bool w_pingpong_enabled =
+        npu_w_pingpong_enabled() && plan.use_gemm_plan && !force_reload_weights;
+    bool resident_weight_valid[2] = { false, false };
+    bool resident_weight_prefetched[2] = { false, false };
+    int32_t resident_weight_pack_index[2] = { -1, -1 };
+    uint8_t last_gemm_w_bank = 1;
+    auto find_resident_weight_bank = [&](int32_t weight_pack_index) -> int {
+        for (int bank = 0; bank < 2; ++bank) {
+            if (resident_weight_valid[bank] && resident_weight_pack_index[bank] == weight_pack_index) {
+                return bank;
+            }
+        }
+        return -1;
+    };
+    auto mark_weight_bank_loaded = [&](uint8_t bank, int32_t weight_pack_index, bool prefetched) {
+        resident_weight_valid[bank] = true;
+        resident_weight_pack_index[bank] = weight_pack_index;
+        resident_weight_prefetched[bank] = prefetched;
+    };
     if (collect_runtime_profile) {
         const int64_t setup_profile_begin_start_us = collect_stage_profile ? ggml_time_us() : 0;
         npu_profile_begin(layer_id);
@@ -904,10 +1155,38 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             tile_record.weight_bytes = static_cast<int64_t>(packed_weight.packed.size());
         }
 
+        int current_w_bank = -1;
+        const int resident_weight_bank = w_pingpong_enabled
+            ? find_resident_weight_bank(exec_tile.weight_pack_index)
+            : -1;
         const bool activation_already_in_spm =
             !force_reload_activations && loaded_activation_valid && loaded_activation_key == activation_key;
-        const bool weight_already_in_spm =
-            !force_reload_weights && loaded_weight_pack_index == exec_tile.weight_pack_index;
+        const bool weight_already_in_spm = w_pingpong_enabled
+            ? resident_weight_bank >= 0
+            : (!force_reload_weights && loaded_weight_pack_index == exec_tile.weight_pack_index);
+        if (weight_already_in_spm && resident_weight_bank >= 0) {
+            current_w_bank = resident_weight_bank;
+            if (resident_weight_prefetched[resident_weight_bank]) {
+                exec_summary.delta.w_prefetch_hits += 1;
+                resident_weight_prefetched[resident_weight_bank] = false;
+                if (collect_tile_profile) {
+                    tile_record.w_prefetch_hit = true;
+                }
+            }
+        }
+        if (collect_stage_profile) {
+            if (activation_already_in_spm) {
+                exec_summary.delta.spm_activation_reuse_hits += 1;
+            }
+            if (weight_already_in_spm) {
+                exec_summary.delta.spm_weight_reuse_hits += 1;
+            }
+        }
+        if (collect_tile_profile) {
+            tile_record.activation_already_in_spm = activation_already_in_spm;
+            tile_record.weight_already_in_spm = weight_already_in_spm;
+            tile_record.w_bank = current_w_bank;
+        }
 
         const int64_t activation_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
         if (!activation_already_in_spm) {
@@ -1038,23 +1317,55 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     plan.config.layout.weight.offset);
         }
         uint32_t mvin_mask = 0;
+        uint32_t waited_mvin_mask = 0;
+        bool weight_mvin_issued = false;
+        uint8_t loaded_w_bank_now = 0;
         if (!activation_already_in_spm) {
             npu_dma_mvin_async(0, &activation_mvin_cfg);
             mvin_mask |= (1u << 0);
+            waited_mvin_mask |= (1u << 0);
         }
         if (!weight_already_in_spm) {
-            npu_dma_mvin_async(1, &weight_mvin_cfg);
-            mvin_mask |= (1u << 1);
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+            if (w_pingpong_enabled) {
+                loaded_w_bank_now = static_cast<uint8_t>(last_gemm_w_bank ^ 1u);
+                resident_weight_valid[loaded_w_bank_now] = false;
+                resident_weight_pack_index[loaded_w_bank_now] = -1;
+                resident_weight_prefetched[loaded_w_bank_now] = false;
+                npu_dma_mvin_w_async_bank(loaded_w_bank_now, &weight_mvin_cfg);
+                weight_mvin_issued = true;
+                current_w_bank = loaded_w_bank_now;
+                mvin_mask |= (1u << 1);
+            } else
+#endif
+            {
+                npu_dma_mvin_async(1, &weight_mvin_cfg);
+                mvin_mask |= (1u << 1);
+                waited_mvin_mask |= (1u << 1);
+            }
         }
-        if (mvin_mask != 0) {
-            npu_dma_wait_mvin(mvin_mask);
+        if (waited_mvin_mask != 0) {
+            npu_dma_wait_mvin(waited_mvin_mask);
         }
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+        if (weight_mvin_issued) {
+            npu_dma_wait_w_bank(loaded_w_bank_now);
+        }
+#endif
         if (!activation_already_in_spm) {
             loaded_activation_key = activation_key;
             loaded_activation_valid = true;
         }
         if (!weight_already_in_spm) {
-            loaded_weight_pack_index = exec_tile.weight_pack_index;
+            if (w_pingpong_enabled) {
+                mark_weight_bank_loaded(loaded_w_bank_now, exec_tile.weight_pack_index, false);
+            } else {
+                loaded_weight_pack_index = exec_tile.weight_pack_index;
+            }
+        }
+        if (collect_tile_profile) {
+            tile_record.mvin_mask = mvin_mask;
+            tile_record.w_bank = current_w_bank;
         }
         if (collect_stage_profile && mvin_mask != 0) {
             const int64_t dma_in_pair_us = ggml_time_us() - dma_in_pair_start_us;
@@ -1062,9 +1373,11 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             exec_summary.delta.dma_in_pair_us_total += dma_in_pair_us;
             if (!activation_already_in_spm) {
                 exec_summary.delta.dma_in_activation_calls += 1;
+                exec_summary.delta.dma_in_activation_bytes_total += static_cast<int64_t>(packed_activation_view->size());
             }
             if (!weight_already_in_spm) {
                 exec_summary.delta.dma_in_weight_calls += 1;
+                exec_summary.delta.dma_in_weight_bytes_total += static_cast<int64_t>(packed_weight.packed.size());
             }
             if (collect_tile_profile) {
                 tile_record.dma_in_pair_us = static_cast<double>(dma_in_pair_us);
@@ -1251,6 +1564,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
 
         const int64_t gemm_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        int64_t gemm_us = 0;
+        int64_t w_prefetch_wait_us = 0;
         if (npu_debug_log_enabled()) {
                 GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " GEMM n=%" PRId64 " m=%" PRId64 " k=%" PRId64 " bias_acc=0x%08x out_acc=0x%08x\n",
                     __func__,
@@ -1266,6 +1581,127 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 ? plan.config.layout.bias_cache.offset + static_cast<uint32_t>(exec_tile.m0 * sizeof(int32_t))
                 : plan.config.layout.bias_accumulator.offset)
             : (!exec_tile.needs_bias ? plan.config.layout.output_accumulator.offset : plan.config.layout.bias_accumulator.offset);
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+        if (plan.use_gemm_plan && w_pingpong_enabled) {
+            if (current_w_bank < 0) {
+                if (error) {
+                    *error = "W pingpong selected but no weight bank is resident";
+                }
+                if (collect_tile_profile) {
+                    profile_record.tiles.push_back(std::move(tile_record));
+                }
+                cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
+                return finalize_status(GGML_STATUS_FAILED);
+            }
+            npu_gemm_plan_start_ex_bank(
+                static_cast<uint8_t>(current_w_bank),
+                /*a_addr=*/plan.config.layout.activation.offset,
+                /*b_addr=*/plan.config.layout.weight.offset,
+                /*out_addr=*/plan.config.layout.output_accumulator.offset,
+                /*scratch_addr=*/plan.config.layout.scratch_accumulator.offset,
+                /*bias_addr=*/use_hardware_bias ? gemm_biaspsum_addr : 0,
+                /*block_m=*/static_cast<uint16_t>(hw_n),
+                /*block_n=*/static_cast<uint16_t>(exec_tile.m),
+                /*block_k=*/static_cast<uint16_t>(exec_tile.k),
+                /*a_stride=*/static_cast<uint16_t>(exec_tile.a_stride),
+                /*b_stride=*/static_cast<uint16_t>(exec_tile.b_stride),
+                /*out_stride=*/static_cast<uint16_t>(exec_tile.out_stride),
+                /*bias_stride=*/static_cast<uint16_t>(exec_tile.bias_stride),
+                /*have_bias=*/use_hardware_bias,
+                /*is_accumulate=*/use_accumulate,
+                /*asymmetric_activations=*/hardware_asymmetric_activations);
+
+            bool prefetch_issued = false;
+            uint8_t prefetch_w_bank = static_cast<uint8_t>(current_w_bank ^ 1);
+            int32_t prefetch_weight_pack_index = -1;
+            for (size_t next_idx = exec_tile_idx + 1; next_idx < plan.exec_tiles.size(); ++next_idx) {
+                const npu_exec_tile & next_tile = plan.exec_tiles[next_idx];
+                if (next_tile.weight_pack_index < 0 ||
+                    static_cast<size_t>(next_tile.weight_pack_index) >= plan.weight_packs.size()) {
+                    continue;
+                }
+                if (find_resident_weight_bank(next_tile.weight_pack_index) >= 0) {
+                    continue;
+                }
+                prefetch_weight_pack_index = next_tile.weight_pack_index;
+                const npu_prepacked_weight & next_weight =
+                    plan.weight_packs[static_cast<size_t>(next_tile.weight_pack_index)];
+                bool prefetch_weight_copied = false;
+                const int64_t prefetch_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                if (!npu_ensure_weight_pack_cma(next_weight, error, &prefetch_weight_copied)) {
+                    npu_gemm_plan_wait();
+                    if (collect_tile_profile) {
+                        profile_record.tiles.push_back(std::move(tile_record));
+                    }
+                    cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
+                    return finalize_status(GGML_STATUS_FAILED);
+                }
+                if (collect_stage_profile && prefetch_weight_copied) {
+                    const int64_t prefetch_copy_us = ggml_time_us() - prefetch_copy_start_us;
+                    exec_summary.delta.host_copy_weight_calls += 1;
+                    exec_summary.delta.host_copy_weight_us_total += prefetch_copy_us;
+                    exec_summary.delta.copied_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
+                }
+                const MvinConfig prefetch_weight_mvin_cfg {
+                    next_weight.cma_packed,
+                    plan.config.layout.weight.offset,
+                    static_cast<uint32_t>(next_tile.m),
+                    static_cast<uint32_t>(next_tile.k),
+                    static_cast<uint16_t>(next_weight.stride_m),
+                    static_cast<uint32_t>(next_weight.stride_m),
+                    1,
+                    1,
+                    false,
+                    false,
+                    false,
+                    0,
+                    0,
+                    0,
+                };
+                try {
+                    npu_dma_mvin_w_async_bank(prefetch_w_bank, &prefetch_weight_mvin_cfg);
+                    resident_weight_valid[prefetch_w_bank] = false;
+                    resident_weight_pack_index[prefetch_w_bank] = -1;
+                    resident_weight_prefetched[prefetch_w_bank] = false;
+                    prefetch_issued = true;
+                    if (collect_stage_profile) {
+                        exec_summary.delta.w_prefetch_calls += 1;
+                        exec_summary.delta.dma_in_weight_calls += 1;
+                        exec_summary.delta.dma_in_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
+                    }
+                    if (collect_tile_profile) {
+                        tile_record.w_prefetch_issued = true;
+                    }
+                } catch (const std::exception & ex) {
+                    if (collect_stage_profile) {
+                        exec_summary.delta.w_prefetch_conflicts += 1;
+                    }
+                    if (npu_debug_log_enabled()) {
+                        GGML_LOG_INFO("%s: W prefetch skipped bank=%u weight_pack=%" PRId32 ": %s\n",
+                                __func__, static_cast<unsigned>(prefetch_w_bank), prefetch_weight_pack_index, ex.what());
+                    }
+                }
+                break;
+            }
+
+            npu_gemm_plan_wait();
+            if (collect_stage_profile) {
+                gemm_us = ggml_time_us() - gemm_start_us;
+            }
+            if (prefetch_issued) {
+                const int64_t prefetch_wait_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                npu_dma_wait_w_bank(prefetch_w_bank);
+                if (collect_stage_profile) {
+                    w_prefetch_wait_us = ggml_time_us() - prefetch_wait_start_us;
+                    exec_summary.delta.w_prefetch_wait_us_total += w_prefetch_wait_us;
+                    exec_summary.delta.w_prefetch_hidden_candidate_us_total +=
+                        std::max<int64_t>(0, gemm_us - w_prefetch_wait_us);
+                }
+                mark_weight_bank_loaded(prefetch_w_bank, prefetch_weight_pack_index, true);
+            }
+            last_gemm_w_bank = static_cast<uint8_t>(current_w_bank);
+        } else
+#endif
         if (plan.use_gemm_plan) {
             npu_gemm_plan_run_ex(
                 /*a_addr=*/plan.config.layout.activation.offset,
@@ -1315,7 +1751,9 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 /*asymmetric_activations=*/hardware_asymmetric_activations);
         }
         if (collect_stage_profile) {
-            const int64_t gemm_us = ggml_time_us() - gemm_start_us;
+            if (gemm_us == 0) {
+                gemm_us = ggml_time_us() - gemm_start_us;
+            }
             exec_summary.delta.gemm_calls += 1;
             if (plan.use_gemm_plan) {
                 exec_summary.delta.gemm_plan_calls += 1;
@@ -1323,6 +1761,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             exec_summary.delta.gemm_us_total += gemm_us;
             if (collect_tile_profile) {
                 tile_record.gemm_us = static_cast<double>(gemm_us);
+                tile_record.w_prefetch_wait_us = static_cast<double>(w_prefetch_wait_us);
             }
         }
 
@@ -1385,8 +1824,11 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
 
         if (exec_tile.writes_output) {
+            if (collect_stage_profile && raw_acc_mvout) {
+                exec_summary.delta.raw_acc_mvout_tiles += 1;
+            }
             if (collect_tile_profile) {
-                tile_record.acc_readback_bytes = static_cast<int64_t>(exec_tile.n * exec_tile.m * sizeof(int32_t));
+                tile_record.acc_readback_bytes = static_cast<int64_t>(hw_n * exec_tile.m * sizeof(float));
             }
 
             const int64_t dma_out_start_us = collect_stage_profile ? ggml_time_us() : 0;
@@ -1460,13 +1902,24 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     0,
                     0);
             }
+            void * mvout_buf = acc_buf;
+            uint32_t mvout_dram_stride = static_cast<uint32_t>(exec_tile.m);
+            if (full_output_cma_active) {
+                const npu_full_output_span * span =
+                    npu_find_full_output_span(full_output_spans, exec_tile.n0);
+                if (span != nullptr) {
+                    mvout_buf = static_cast<char *>(full_output_buf) +
+                        static_cast<size_t>(span->padded_row0 * plan.m + exec_tile.m0) * sizeof(float);
+                    mvout_dram_stride = static_cast<uint32_t>(plan.m);
+                }
+            }
             npu_dma_mvout_ex(
-                acc_buf,
+                mvout_buf,
                 plan.config.layout.output_accumulator.offset,
                 static_cast<uint32_t>(exec_tile.m),
                 static_cast<uint32_t>(hw_n),
                 static_cast<uint16_t>(exec_tile.out_stride),
-                static_cast<uint32_t>(exec_tile.m),
+                mvout_dram_stride,
                 1,
                 1,
                 true,
@@ -1481,13 +1934,17 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 const int64_t dma_out_us = ggml_time_us() - dma_out_start_us;
                 exec_summary.delta.dma_out_calls += 1;
                 exec_summary.delta.dma_out_us_total += dma_out_us;
-                exec_summary.delta.acc_readback_bytes_total += static_cast<int64_t>(exec_tile.n * exec_tile.m * sizeof(int32_t));
+                exec_summary.delta.acc_readback_bytes_total += static_cast<int64_t>(hw_n * exec_tile.m * sizeof(float));
                 if (collect_tile_profile) {
                     tile_record.dma_out_us = static_cast<double>(dma_out_us);
                 }
             }
 
-            if (fold_output_reconstruction) {
+            if (full_output_cma_active) {
+                if (collect_tile_profile) {
+                    tile_record.output_write_bytes = 0;
+                }
+            } else if (fold_output_reconstruction) {
                 const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
                 const size_t tile_elems = static_cast<size_t>(exec_tile.n * exec_tile.m);
                 const bool output_is_final_f32 =
@@ -1501,7 +1958,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         float * dst_tile = reinterpret_cast<float *>(
                             static_cast<char *>(plan.dst->data) +
                             exec_tile.n0 * plan.dst->nb[1]);
-                        std::memcpy(
+                        npu_copy_from_cma(
                             dst_tile,
                             acc_f32,
                             static_cast<size_t>(exec_tile.n * exec_tile.m * sizeof(float)));
@@ -1512,12 +1969,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                                 (exec_tile.n0 + n) * plan.dst->nb[1] +
                                 exec_tile.m0 * sizeof(float));
                             const float * acc_row = acc_f32 + static_cast<size_t>(n * exec_tile.m);
-                            std::memcpy(dst_row, acc_row, static_cast<size_t>(exec_tile.m * sizeof(float)));
+                            npu_copy_from_cma(dst_row, acc_row, static_cast<size_t>(exec_tile.m * sizeof(float)));
                         }
                     }
                 } else if (raw_acc_mvout) {
                     acc_raw_values_host.resize(tile_elems);
-                    std::memcpy(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
+                    npu_copy_from_cma(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
                     if (npu_should_dump_tile(layer_id, static_cast<int64_t>(exec_tile_idx))) {
                         npu_dump_tile_blob(
                             npu_tile_dump_dir(),
@@ -1529,7 +1986,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     }
                 } else {
                     acc_scaled_values.resize(tile_elems);
-                    std::memcpy(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
+                    npu_copy_from_cma(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
                 }
                 if (!fast_output_copy) {
                     npu_prepare_bias_tile_f32_exec(
@@ -1643,10 +2100,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 const size_t tile_elems = static_cast<size_t>(exec_tile.n * exec_tile.m);
                 if (raw_acc_mvout) {
                     acc_raw_values_host.resize(tile_elems);
-                    std::memcpy(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
+                    npu_copy_from_cma(acc_raw_values_host.data(), acc_buf, tile_elems * sizeof(int32_t));
                 } else {
                     acc_scaled_values.resize(tile_elems);
-                    std::memcpy(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
+                    npu_copy_from_cma(acc_scaled_values.data(), acc_buf, tile_elems * sizeof(float));
                 }
                 npu_prepare_bias_tile_f32_exec(
                     (tile_uses_bias || output_has_bias_in_accumulator) ? nullptr : plan.bias,
@@ -1886,12 +2343,47 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 tile_record.bias_prepare_us +
                 tile_record.dma_in_pair_us +
                 tile_record.dma_in_bias_us +
+                tile_record.w_prefetch_wait_us +
                 tile_record.gemm_us +
                 tile_record.dma_out_us +
                 tile_record.postprocess_us;
             tile_record.unaccounted_us =
                 std::max(0.0, tile_record.total_us - tile_record.accounted_us);
             profile_record.tiles.push_back(std::move(tile_record));
+        }
+    }
+
+    if (full_output_cma_active) {
+        const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;
+        int64_t copied_bytes = 0;
+        for (const npu_full_output_span & span : full_output_spans) {
+            if (span.n <= 0) {
+                continue;
+            }
+            const char * src_base = static_cast<const char *>(full_output_buf) +
+                static_cast<size_t>(span.padded_row0 * plan.m) * sizeof(float);
+            char * dst_base = static_cast<char *>(plan.dst->data) +
+                span.n0 * plan.dst->nb[1];
+            const size_t row_bytes = static_cast<size_t>(plan.m) * sizeof(float);
+            if (static_cast<size_t>(plan.dst->nb[1]) == row_bytes) {
+                const size_t bytes = static_cast<size_t>(span.n) * row_bytes;
+                npu_copy_from_cma(dst_base, src_base, bytes);
+                copied_bytes += static_cast<int64_t>(bytes);
+            } else {
+                for (int64_t n = 0; n < span.n; ++n) {
+                    npu_copy_from_cma(
+                        dst_base + n * plan.dst->nb[1],
+                        src_base + static_cast<size_t>(n) * row_bytes,
+                        row_bytes);
+                    copied_bytes += static_cast<int64_t>(row_bytes);
+                }
+            }
+        }
+        if (collect_stage_profile) {
+            const int64_t postprocess_us = ggml_time_us() - postprocess_start_us;
+            exec_summary.delta.postprocess_calls += static_cast<int64_t>(full_output_spans.size());
+            exec_summary.delta.postprocess_us_total += postprocess_us;
+            exec_summary.delta.output_write_bytes_total += copied_bytes;
         }
     }
 

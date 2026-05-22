@@ -117,6 +117,20 @@ void mark_started(versa_p_device *dev, versa_p_api api)
     dev->api_inflight[(int)api] = true;
 }
 
+size_t strided_span_bytes(uint32_t rows, uint32_t row_bytes, uint32_t stride_bytes)
+{
+    if (rows == 0 || row_bytes == 0) {
+        return 0;
+    }
+    return (size_t)(rows - 1u) * stride_bytes + row_bytes;
+}
+
+size_t packed_w_span_bytes(uint32_t k, uint32_t n)
+{
+    const uint32_t groups = (n + 31u) / 32u;
+    return (size_t)k * groups * 32u;
+}
+
 } // namespace
 
 int versa_p_start_mvin_a(versa_p_device *dev, const versa_p_mvin_a_desc *desc)
@@ -131,6 +145,14 @@ int versa_p_start_mvin_a(versa_p_device *dev, const versa_p_mvin_a_desc *desc)
         return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
     int rc = validate_mvin_a(desc);
+    if (rc != VERSA_P_OK) {
+        return rc;
+    }
+    rc = versa_p_sync_dma_range(
+        dev, desc->dram_base,
+        strided_span_bytes(desc->m, desc->k, desc->dram_row_stride_bytes),
+        NPU_KV260_SYNC_FOR_DEVICE,
+        NPU_KV260_SYNC_TO_DEVICE);
     if (rc != VERSA_P_OK) {
         return rc;
     }
@@ -156,6 +178,14 @@ int versa_p_start_mvin_w(versa_p_device *dev, const versa_p_mvin_w_desc *desc)
         return VERSA_P_ERR_BUSY;
     }
     int rc = validate_mvin_w(dev, desc);
+    if (rc != VERSA_P_OK) {
+        return rc;
+    }
+    rc = versa_p_sync_dma_range(
+        dev, desc->dram_base,
+        packed_w_span_bytes(desc->k, desc->n),
+        NPU_KV260_SYNC_FOR_DEVICE,
+        NPU_KV260_SYNC_TO_DEVICE);
     if (rc != VERSA_P_OK) {
         return rc;
     }
@@ -187,6 +217,13 @@ int versa_p_start_mvin_meta(versa_p_device *dev,
         return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
     int rc = validate_mvin_meta(desc);
+    if (rc != VERSA_P_OK) {
+        return rc;
+    }
+    rc = versa_p_sync_dma_range(
+        dev, desc->dram_base, desc->byte_count,
+        NPU_KV260_SYNC_FOR_DEVICE,
+        NPU_KV260_SYNC_TO_DEVICE);
     if (rc != VERSA_P_OK) {
         return rc;
     }
@@ -250,13 +287,19 @@ int versa_p_start_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc)
 
     uint64_t desc0 = (uint64_t)desc->dram_base |
                      ((uint64_t)desc->scale_param << 32);
+    const uint32_t output_stride_n = desc->output_stride_n ?
+                                     desc->output_stride_n : desc->n;
     uint64_t desc1 = (uint64_t)desc->m |
                      ((uint64_t)desc->n << 16) |
-                     ((uint64_t)desc->output_stride_n << 32) |
+                     ((uint64_t)output_stride_n << 32) |
                      ((uint64_t)(desc->mode & 3u) << 48) |
                      (1ull << VERSA_P_START_MVOUT_BIT);
     versa_p_write64(dev, VERSA_P_REG_MVOUT_DESC0, desc0);
     versa_p_write64(dev, VERSA_P_REG_MVOUT_DESC1, desc1);
+    dev->pending_mvout_dma_addr = desc->dram_base;
+    dev->pending_mvout_bytes =
+        (uint32_t)strided_span_bytes(desc->m, desc->n * sizeof(uint32_t),
+                                     output_stride_n * sizeof(uint32_t));
     mark_started(dev, VERSA_P_API_MVOUT);
     return VERSA_P_OK;
 }

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define VERSA_P_DEFAULT_CMA_BYTES      (64u * 1024u * 1024u)
+#define VERSA_P_DEFAULT_CMA_BYTES      (1024u * 1024u * 1024u)
 #define VERSA_P_M_TILE                 256u
 #define VERSA_P_K_TILE                 768u
 #define VERSA_P_N_TILE                 480u
@@ -36,6 +36,9 @@ typedef struct versa_p_device_info {
     uint32_t cma_size;
     void *cma_vaddr;
 } versa_p_device_info;
+
+#define VERSA_P_INFO_FLAG_DMA_COPY         0x00000001u
+#define VERSA_P_INFO_FLAG_CACHEABLE_BUFFER 0x00000002u
 
 typedef struct versa_p_buffer {
     void *vaddr;
@@ -128,6 +131,13 @@ int versa_p_mem_alloc(versa_p_device *dev, uint32_t size, uint32_t alignment,
                       versa_p_buffer *out_buffer);
 void versa_p_mem_free(versa_p_device *dev, versa_p_buffer *buffer);
 uint32_t versa_p_dma_addr(versa_p_device *dev, const void *ptr);
+int versa_p_dma_copy_from_cma(versa_p_device *dev, const void *cma_ptr,
+                              void *dst, size_t bytes,
+                              uint32_t chunk_bytes);
+int versa_p_sync_for_cpu(versa_p_device *dev, const void *cma_ptr,
+                         size_t bytes);
+int versa_p_sync_for_device(versa_p_device *dev, const void *cma_ptr,
+                            size_t bytes);
 
 uint64_t versa_p_read64(versa_p_device *dev, uint32_t offset);
 void versa_p_write64(versa_p_device *dev, uint32_t offset, uint64_t value);

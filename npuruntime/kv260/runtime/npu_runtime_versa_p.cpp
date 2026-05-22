@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,12 @@ struct RuntimeProfile {
     bool layer_active = false;
 };
 
+struct LoadedWeightBank {
+    bool valid = false;
+    uint16_t k = 0;
+    uint16_t n = 0;
+};
+
 struct VersaPRuntimeState {
     versa_p_device * dev = nullptr;
     std::unordered_map<void *, BufferRecord> buffers;
@@ -45,6 +52,12 @@ struct VersaPRuntimeState {
     bool loaded_w_valid = false;
     uint16_t loaded_w_k = 0;
     uint16_t loaded_w_n = 0;
+    LoadedWeightBank w_bank[2];
+    uint8_t pending_w_bank = 0;
+    uint16_t pending_w_k = 0;
+    uint16_t pending_w_n = 0;
+    bool gemm_inflight = false;
+    std::chrono::steady_clock::time_point gemm_start;
 };
 
 VersaPRuntimeState & state() {
@@ -85,6 +98,20 @@ void add_profile_ns(versa_p_api api, uint64_t ns) {
     }
 }
 
+void clear_weight_state(VersaPRuntimeState & s) {
+    s.active_w_bank = 1;
+    s.loaded_w_bank = 0;
+    s.loaded_w_valid = false;
+    s.loaded_w_k = 0;
+    s.loaded_w_n = 0;
+    s.w_bank[0] = {};
+    s.w_bank[1] = {};
+    s.pending_w_bank = 0;
+    s.pending_w_k = 0;
+    s.pending_w_n = 0;
+    s.gemm_inflight = false;
+}
+
 [[noreturn]] void fail_runtime(const char * call, int rc) {
     char buf[256];
     std::snprintf(buf, sizeof(buf), "%s failed: %s (%d)", call, versa_p_status_string(rc), rc);
@@ -98,8 +125,7 @@ versa_p_device * require_dev() {
         if (rc != VERSA_P_OK) {
             fail_runtime("versa_p_init", rc);
         }
-        s.active_w_bank = 1;
-        s.loaded_w_valid = false;
+        clear_weight_state(s);
     }
     return s.dev;
 }
@@ -112,7 +138,7 @@ uint32_t dma_addr_for(void * ptr) {
 }
 
 uint32_t actual_count(uint32_t value) {
-    return value + 1u;
+    return value == 0 ? 1 : value;
 }
 
 uint16_t checked_u16(uint32_t value, const char * field) {
@@ -133,12 +159,64 @@ void wait_api(versa_p_api api, uint32_t timeout_ms = kDefaultTimeoutMs) {
     }
     if (api == VERSA_P_API_MVIN_W) {
         VersaPRuntimeState & s = state();
+        s.w_bank[s.pending_w_bank & 1u].valid = true;
+        s.w_bank[s.pending_w_bank & 1u].k = s.pending_w_k;
+        s.w_bank[s.pending_w_bank & 1u].n = s.pending_w_n;
+        s.loaded_w_bank = s.pending_w_bank & 1u;
+        s.loaded_w_k = s.pending_w_k;
+        s.loaded_w_n = s.pending_w_n;
         s.loaded_w_valid = true;
         if (trace_enabled()) {
             std::fprintf(stderr, "[VERSA_P_TRACE] wait_mvin_w loaded bank=%u k=%u n=%u\n",
                          s.loaded_w_bank, s.loaded_w_k, s.loaded_w_n);
         }
     }
+}
+
+void start_mvin_w_bank(const MvinConfig & cfg, uint8_t w_bank, uint32_t dma_id) {
+    VersaPRuntimeState & s = state();
+    if (dma_id >= 3) {
+        throw std::runtime_error("npu_dma_mvin_w_async_bank: dma_id out of range");
+    }
+    if (w_bank > 1) {
+        throw std::runtime_error("npu_dma_mvin_w_async_bank: w_bank out of range");
+    }
+    if (cfg.input_type != 1) {
+        throw std::runtime_error("npu_dma_mvin_w_async_bank: cfg is not weight MVIN");
+    }
+    if (s.inflight_valid[0]) {
+        wait_api(s.inflight_api[0]);
+        s.inflight_valid[0] = false;
+    }
+    if (s.inflight_valid[dma_id]) {
+        wait_api(s.inflight_api[dma_id]);
+        s.inflight_valid[dma_id] = false;
+    }
+
+    const uint16_t k = checked_u16(actual_count(cfg.row_num), "mvin_w.k");
+    const uint16_t n = checked_u16(actual_count(cfg.col_num), "mvin_w.n");
+    versa_p_mvin_w_desc desc = {};
+    desc.dram_base = dma_addr_for(cfg.host_ptr);
+    desc.k = k;
+    desc.n = n;
+    desc.w_bank = w_bank;
+    const int rc = versa_p_start_mvin_w(require_dev(), &desc);
+    if (rc != VERSA_P_OK) {
+        fail_runtime("versa_p_start_mvin_w", rc);
+    }
+    s.w_bank[w_bank].valid = false;
+    if (s.loaded_w_bank == w_bank) {
+        s.loaded_w_valid = false;
+    }
+    s.pending_w_bank = w_bank;
+    s.pending_w_k = k;
+    s.pending_w_n = n;
+    if (trace_enabled()) {
+        std::fprintf(stderr, "[VERSA_P_TRACE] start_mvin_w bank=%u k=%u n=%u dram=0x%08x\n",
+                     w_bank, k, n, desc.dram_base);
+    }
+    s.inflight_api[dma_id] = VERSA_P_API_MVIN_W;
+    s.inflight_valid[dma_id] = true;
 }
 
 void start_mvin(const MvinConfig & cfg, uint32_t dma_id) {
@@ -178,25 +256,7 @@ void start_mvin(const MvinConfig & cfg, uint32_t dma_id) {
         if (s.loaded_w_valid && s.loaded_w_k == k && s.loaded_w_n == n) {
             bank = s.loaded_w_bank == s.active_w_bank ? static_cast<uint8_t>(s.active_w_bank ^ 1u) : s.loaded_w_bank;
         }
-        versa_p_mvin_w_desc desc = {};
-        desc.dram_base = dma_addr_for(cfg.host_ptr);
-        desc.k = k;
-        desc.n = n;
-        desc.w_bank = bank;
-        const int rc = versa_p_start_mvin_w(require_dev(), &desc);
-        if (rc != VERSA_P_OK) {
-            fail_runtime("versa_p_start_mvin_w", rc);
-        }
-        s.loaded_w_bank = bank;
-        s.loaded_w_k = k;
-        s.loaded_w_n = n;
-        s.loaded_w_valid = false;
-        if (trace_enabled()) {
-            std::fprintf(stderr, "[VERSA_P_TRACE] start_mvin_w bank=%u k=%u n=%u dram=0x%08x\n",
-                         bank, k, n, desc.dram_base);
-        }
-        s.inflight_api[dma_id] = VERSA_P_API_MVIN_W;
-        s.inflight_valid[dma_id] = true;
+        start_mvin_w_bank(cfg, bank, dma_id);
         return;
     }
 
@@ -273,8 +333,7 @@ void npu_destroy() {
         s.dev = nullptr;
     }
     s.buffers.clear();
-    s.active_w_bank = 1;
-    s.loaded_w_valid = false;
+    clear_weight_state(s);
 }
 
 void npu_reset() {
@@ -285,8 +344,7 @@ void npu_reset() {
             fail_runtime("versa_p_reset", rc);
         }
     }
-    s.active_w_bank = 1;
-    s.loaded_w_valid = false;
+    clear_weight_state(s);
 }
 
 void npu_profile_begin(int64_t layer_id) {
@@ -352,6 +410,23 @@ void npu_mem_free(void * ptr) {
     s.buffers.erase(it);
 }
 
+int npu_dma_copy_from_cma(const void * cma_ptr, void * dst, size_t bytes, uint32_t chunk_bytes) {
+    if (cma_ptr == nullptr || dst == nullptr || bytes == 0) {
+        return -EINVAL;
+    }
+    const int rc = versa_p_dma_copy_from_cma(require_dev(), cma_ptr, dst, bytes, chunk_bytes);
+    if (rc == VERSA_P_OK) {
+        return 0;
+    }
+    if (rc == VERSA_P_ERR_UNSUPPORTED_MODE) {
+        return -EOPNOTSUPP;
+    }
+    if (rc == VERSA_P_ERR_INVAL) {
+        return -EINVAL;
+    }
+    return -EIO;
+}
+
 void npu_dma_mvin_async(uint32_t dma_id, const MvinConfig * cfg) {
     if (cfg == nullptr) {
         throw std::runtime_error("npu_dma_mvin_async: null cfg");
@@ -379,6 +454,24 @@ void npu_dma_wait_mvin(uint32_t dma_mask) {
 
 void npu_dma_wait_mvout(uint32_t dma_mask) {
     npu_dma_wait_mvin(dma_mask);
+}
+
+void npu_dma_mvin_w_async_bank(uint8_t w_bank, const MvinConfig * cfg) {
+    if (cfg == nullptr) {
+        throw std::runtime_error("npu_dma_mvin_w_async_bank: null cfg");
+    }
+    start_mvin_w_bank(*cfg, w_bank, 1);
+}
+
+void npu_dma_wait_w_bank(uint8_t w_bank) {
+    if (w_bank > 1) {
+        throw std::runtime_error("npu_dma_wait_w_bank: w_bank out of range");
+    }
+    VersaPRuntimeState & s = state();
+    if (s.inflight_valid[1] && s.pending_w_bank == w_bank) {
+        wait_api(s.inflight_api[1]);
+        s.inflight_valid[1] = false;
+    }
 }
 
 void npu_dma_mvin(
@@ -417,7 +510,8 @@ void npu_dma_double_mvin(const MvinConfig * dma0_cfg, const MvinConfig * dma1_cf
     npu_dma_wait_mvin((1u << 0) | (1u << 1));
 }
 
-void npu_gemm_plan_run_ex(
+void npu_gemm_plan_start_ex_bank(
+        uint8_t w_bank,
         uint32_t a_addr, uint32_t b_addr, uint32_t out_addr, uint32_t scratch_addr,
         uint32_t bias_addr, uint16_t block_m, uint16_t block_n, uint16_t block_k,
         uint16_t a_stride, uint16_t b_stride, uint16_t out_stride, uint16_t bias_stride,
@@ -425,6 +519,71 @@ void npu_gemm_plan_run_ex(
     (void)a_addr; (void)b_addr; (void)out_addr; (void)scratch_addr;
     (void)bias_addr; (void)a_stride; (void)b_stride; (void)out_stride;
     (void)bias_stride; (void)asymmetric_activations;
+    VersaPRuntimeState & s = state();
+    if (w_bank > 1) {
+        throw std::runtime_error("npu_gemm_plan_start_ex_bank: w_bank out of range");
+    }
+    if (!s.w_bank[w_bank].valid || s.w_bank[w_bank].k != block_k || s.w_bank[w_bank].n < block_n) {
+        if (trace_enabled()) {
+            std::fprintf(stderr,
+                         "[VERSA_P_TRACE] gemm_plan missing_w bank=%u loaded=%u k=%u n=%u need_m=%u need_n=%u need_k=%u\n",
+                         w_bank, s.w_bank[w_bank].valid ? 1u : 0u, s.w_bank[w_bank].k, s.w_bank[w_bank].n,
+                         block_m, block_n, block_k);
+        }
+        throw std::runtime_error("npu_gemm_plan_start_ex_bank: W bank not loaded");
+    }
+    versa_p_gemm_i8_desc desc = {};
+    desc.m = block_m;
+    desc.n = block_n;
+    desc.k = block_k;
+    desc.w_bank = w_bank;
+    desc.accumulate_en = (is_accumulate && !have_bias) ? 1 : 0;
+    desc.add_bias_en = have_bias ? 1 : 0;
+    desc.bias_offset_bytes = kBiasMetaOffset;
+    const int rc = versa_p_start_gemm_i8(require_dev(), &desc);
+    if (rc != VERSA_P_OK) {
+        fail_runtime("versa_p_start_gemm_i8", rc);
+    }
+    s.active_w_bank = w_bank;
+    s.loaded_w_bank = w_bank;
+    s.loaded_w_valid = true;
+    s.loaded_w_k = s.w_bank[w_bank].k;
+    s.loaded_w_n = s.w_bank[w_bank].n;
+    s.gemm_start = std::chrono::steady_clock::now();
+    s.gemm_inflight = true;
+}
+
+void npu_gemm_plan_wait() {
+    VersaPRuntimeState & s = state();
+    if (!s.gemm_inflight) {
+        return;
+    }
+    const int rc = versa_p_wait(require_dev(), VERSA_P_API_GEMM_I8, kDefaultTimeoutMs);
+    add_profile_ns(VERSA_P_API_GEMM_I8, elapsed_ns(s.gemm_start));
+    s.gemm_inflight = false;
+    if (rc != VERSA_P_OK) {
+        fail_runtime("versa_p_wait(GEMM_I8)", rc);
+    }
+}
+
+void npu_gemm_plan_run_ex_bank(
+        uint8_t w_bank,
+        uint32_t a_addr, uint32_t b_addr, uint32_t out_addr, uint32_t scratch_addr,
+        uint32_t bias_addr, uint16_t block_m, uint16_t block_n, uint16_t block_k,
+        uint16_t a_stride, uint16_t b_stride, uint16_t out_stride, uint16_t bias_stride,
+        bool have_bias, bool is_accumulate, bool asymmetric_activations) {
+    npu_gemm_plan_start_ex_bank(
+        w_bank, a_addr, b_addr, out_addr, scratch_addr, bias_addr,
+        block_m, block_n, block_k, a_stride, b_stride, out_stride, bias_stride,
+        have_bias, is_accumulate, asymmetric_activations);
+    npu_gemm_plan_wait();
+}
+
+void npu_gemm_plan_run_ex(
+        uint32_t a_addr, uint32_t b_addr, uint32_t out_addr, uint32_t scratch_addr,
+        uint32_t bias_addr, uint16_t block_m, uint16_t block_n, uint16_t block_k,
+        uint16_t a_stride, uint16_t b_stride, uint16_t out_stride, uint16_t bias_stride,
+        bool have_bias, bool is_accumulate, bool asymmetric_activations) {
     VersaPRuntimeState & s = state();
     if (!s.loaded_w_valid || s.loaded_w_k != block_k || s.loaded_w_n < block_n) {
         if (trace_enabled()) {
@@ -435,21 +594,10 @@ void npu_gemm_plan_run_ex(
         }
         throw std::runtime_error("npu_gemm_plan_run_ex: W bank not loaded");
     }
-    versa_p_gemm_i8_desc desc = {};
-    desc.m = block_m;
-    desc.n = block_n;
-    desc.k = block_k;
-    desc.w_bank = s.loaded_w_bank;
-    desc.accumulate_en = (is_accumulate && !have_bias) ? 1 : 0;
-    desc.add_bias_en = have_bias ? 1 : 0;
-    desc.bias_offset_bytes = kBiasMetaOffset;
-    const auto start = std::chrono::steady_clock::now();
-    int rc = versa_p_gemm_i8(require_dev(), &desc, kDefaultTimeoutMs);
-    add_profile_ns(VERSA_P_API_GEMM_I8, elapsed_ns(start));
-    if (rc != VERSA_P_OK) {
-        fail_runtime("versa_p_gemm_i8", rc);
-    }
-    s.active_w_bank = s.loaded_w_bank;
+    npu_gemm_plan_run_ex_bank(
+        s.loaded_w_bank, a_addr, b_addr, out_addr, scratch_addr, bias_addr,
+        block_m, block_n, block_k, a_stride, b_stride, out_stride, bias_stride,
+        have_bias, is_accumulate, asymmetric_activations);
 }
 
 void npu_gemm_plan_run(

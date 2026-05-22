@@ -14,6 +14,22 @@
 #define NPU_KV260_IRQ_MODE_KERNEL    0U
 #define NPU_KV260_IRQ_MODE_USERSPACE 1U
 
+#define NPU_KV260_INFO_FLAG_DMA_COPY 0x00000001U
+#define NPU_KV260_INFO_FLAG_CACHEABLE_BUFFER 0x00000002U
+
+#define NPU_KV260_BUFFER_FLAG_CACHEABLE 0x00000001U
+#define NPU_KV260_BUFFER_FLAG_CACHEABLE_REQUIRED 0x00000002U
+
+#define NPU_KV260_DMA_COPY_CMA_TO_USER 0U
+#define NPU_KV260_DMA_COPY_USER_TO_CMA 1U
+
+#define NPU_KV260_SYNC_FOR_CPU 0U
+#define NPU_KV260_SYNC_FOR_DEVICE 1U
+
+#define NPU_KV260_SYNC_FROM_DEVICE 0U
+#define NPU_KV260_SYNC_TO_DEVICE 1U
+#define NPU_KV260_SYNC_BIDIRECTIONAL 2U
+
 struct npu_kv260_buffer_request {
     __u64 size;
     __u64 dma_addr;
@@ -22,6 +38,8 @@ struct npu_kv260_buffer_request {
 struct npu_kv260_buffer_info {
     __u64 size;
     __u64 dma_addr;
+    __u32 flags;
+    __u32 reserved;
 };
 
 struct npu_kv260_info {
@@ -37,6 +55,29 @@ struct npu_kv260_reg_access {
     __u32 value;
 };
 
+struct npu_kv260_dma_copy {
+    __u64 cma_offset;
+    __u64 user_addr;
+    __u64 size;
+    __u64 elapsed_ns;
+    __u32 direction;
+    __u32 chunk_bytes;
+};
+
+struct npu_kv260_buffer_request_ex {
+    __u64 size;
+    __u64 dma_addr;
+    __u32 flags;
+    __u32 reserved;
+};
+
+struct npu_kv260_buffer_sync {
+    __u64 cma_offset;
+    __u64 size;
+    __u32 target;
+    __u32 direction;
+};
+
 #define NPU_KV260_IOC_MAGIC 'N'
 
 #define NPU_KV260_IOC_WAIT_IRQ        _IOR(NPU_KV260_IOC_MAGIC, 1, __u32)
@@ -48,5 +89,8 @@ struct npu_kv260_reg_access {
 #define NPU_KV260_IOC_GET_INFO        _IOR(NPU_KV260_IOC_MAGIC, 7, struct npu_kv260_info)
 #define NPU_KV260_IOC_REG_READ        _IOWR(NPU_KV260_IOC_MAGIC, 8, struct npu_kv260_reg_access)
 #define NPU_KV260_IOC_REG_WRITE       _IOW(NPU_KV260_IOC_MAGIC, 9, struct npu_kv260_reg_access)
+#define NPU_KV260_IOC_DMA_COPY        _IOWR(NPU_KV260_IOC_MAGIC, 10, struct npu_kv260_dma_copy)
+#define NPU_KV260_IOC_ALLOC_BUFFER_EX _IOWR(NPU_KV260_IOC_MAGIC, 11, struct npu_kv260_buffer_request_ex)
+#define NPU_KV260_IOC_SYNC_BUFFER     _IOW(NPU_KV260_IOC_MAGIC, 12, struct npu_kv260_buffer_sync)
 
 #endif

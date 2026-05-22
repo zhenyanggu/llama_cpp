@@ -982,7 +982,7 @@ static void dumpProfilerReport(const char* pathOverride) {
 
 #define REG_MAP_OFFSET      NPU_KV260_MMAP_REGS_OFFSET
 #define REG_MAP_SIZE        NPU_KV260_REG_MMAP_SIZE
-#define DEFAULT_CMA_MAP_SIZE (768ULL * 1024ULL * 1024ULL)
+#define DEFAULT_CMA_MAP_SIZE (1024ULL * 1024ULL * 1024ULL)
 #define MIN_FALLBACK_CMA_MAP_SIZE (256ULL * 1024ULL * 1024ULL)
 
 // IOCTL Commands (Must match driver)
@@ -1228,6 +1228,37 @@ void* NpuRuntime::get_memory_base() {
 
 uint32_t NpuRuntime::get_memory_size() {
     return data_map_size;
+}
+
+int NpuRuntime::dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes) {
+    if (!cma_ptr || !dst || bytes == 0) {
+        return -EINVAL;
+    }
+    if (fd < 0 || !data_virt_base || data_map_size == 0) {
+        return -ENODEV;
+    }
+
+    const auto * base = static_cast<const uint8_t *>(data_virt_base);
+    const auto * ptr = static_cast<const uint8_t *>(cma_ptr);
+    if (ptr < base) {
+        return -EINVAL;
+    }
+
+    const uint64_t offset = static_cast<uint64_t>(ptr - base);
+    if (offset > data_map_size || bytes > static_cast<size_t>(data_map_size - offset)) {
+        return -EINVAL;
+    }
+
+    npu_kv260_dma_copy copy = {};
+    copy.cma_offset = offset;
+    copy.user_addr = reinterpret_cast<uint64_t>(dst);
+    copy.size = bytes;
+    copy.direction = NPU_KV260_DMA_COPY_CMA_TO_USER;
+    copy.chunk_bytes = chunk_bytes;
+    if (ioctl(fd, NPU_KV260_IOC_DMA_COPY, &copy) != 0) {
+        return -errno;
+    }
+    return 0;
 }
 
 // ==========================================
@@ -2608,16 +2639,29 @@ void NpuRuntime::run_nchwc32_to_nchw(const LayoutConvertConfig& cfg) {
 
 void NpuRuntime::init_allocator() {
     if (!data_virt_base) return;
-    free_list_head = (BlockHeader*)data_virt_base;
-    if (data_map_size <= sizeof(BlockHeader)) {
+    uint32_t heap_offset = static_cast<uint32_t>(parse_size_with_suffix(std::getenv("NPU_CMA_HEAP_OFFSET"), 0));
+    if (heap_offset > data_map_size) {
+        heap_offset = 0;
+    }
+    heap_offset = (heap_offset + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+    uint32_t heap_size = data_map_size - heap_offset;
+    const uint64_t requested_heap_size = parse_size_with_suffix(std::getenv("NPU_CMA_HEAP_SIZE"), heap_size);
+    if (requested_heap_size > 0 && requested_heap_size <= heap_size) {
+        heap_size = static_cast<uint32_t>(requested_heap_size);
+    }
+    heap_size &= ~(ALIGNMENT - 1);
+
+    free_list_head = (BlockHeader*)((uint8_t*)data_virt_base + heap_offset);
+    if (heap_size <= sizeof(BlockHeader)) {
         free_list_head = nullptr;
         return;
     }
-    free_list_head->size = data_map_size - sizeof(BlockHeader);
+    free_list_head->size = heap_size - sizeof(BlockHeader);
     free_list_head->is_free = true;
     free_list_head->next = nullptr;
     free_list_head->prev = nullptr;
-    NPU_LOG("Allocator initialized. Total size: 0x%X", data_map_size);
+    NPU_LOG("Allocator initialized. Heap offset: 0x%X size: 0x%X map size: 0x%X",
+            heap_offset, heap_size, data_map_size);
 }
 
 void* NpuRuntime::alloc(size_t size) {
@@ -2776,6 +2820,17 @@ void* npu_mem_alloc(size_t size) {
 void npu_mem_free(void* ptr) {
     NPU_CAPI_LOG("npu_mem_free(ptr=%p)", ptr);
     if (g_npu_runtime) g_npu_runtime->free(ptr);
+}
+
+int npu_dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes) {
+    NPU_CAPI_LOG(
+        "npu_dma_copy_from_cma(cma_ptr=%p, dst=%p, bytes=%zu, chunk=%u)",
+        cma_ptr,
+        dst,
+        bytes,
+        chunk_bytes);
+    if (!g_npu_runtime && npu_init() < 0) return -ENODEV;
+    return g_npu_runtime->dma_copy_from_cma(cma_ptr, dst, bytes, chunk_bytes);
 }
 
 void npu_dma_mvin(
