@@ -1724,7 +1724,26 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 resident_weight_valid[loaded_w_bank_now] = false;
                 resident_weight_pack_index[loaded_w_bank_now] = -1;
                 resident_weight_prefetched[loaded_w_bank_now] = false;
-                npu_dma_mvin_w_async_bank(loaded_w_bank_now, &weight_mvin_cfg);
+                try {
+                    npu_dma_mvin_w_async_bank(loaded_w_bank_now, &weight_mvin_cfg);
+                } catch (const std::exception & ex) {
+                    if (std::strstr(ex.what(), "bank conflict") == nullptr) {
+                        throw;
+                    }
+                    const uint8_t fallback_w_bank = static_cast<uint8_t>(loaded_w_bank_now ^ 1u);
+                    resident_weight_valid[fallback_w_bank] = false;
+                    resident_weight_pack_index[fallback_w_bank] = -1;
+                    resident_weight_prefetched[fallback_w_bank] = false;
+                    npu_dma_mvin_w_async_bank(fallback_w_bank, &weight_mvin_cfg);
+                    loaded_w_bank_now = fallback_w_bank;
+                    if (collect_stage_profile) {
+                        exec_summary.delta.w_prefetch_conflicts += 1;
+                    }
+                    if (npu_debug_log_enabled()) {
+                        GGML_LOG_INFO("%s: initial W load switched to bank=%u after conflict: %s\n",
+                                __func__, static_cast<unsigned>(loaded_w_bank_now), ex.what());
+                    }
+                }
                 weight_mvin_issued = true;
                 current_w_bank = loaded_w_bank_now;
                 mvin_mask |= (1u << 1);
