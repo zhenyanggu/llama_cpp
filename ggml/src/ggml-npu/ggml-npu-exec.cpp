@@ -143,7 +143,7 @@ struct npu_exec_summary {
 
 static int64_t npu_hardware_n_rows(int64_t n_rows) {
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
-    return npu_align_up_i64(n_rows, 16);
+    return npu_align_up_i64(n_rows, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
 #else
     return n_rows;
 #endif
@@ -349,6 +349,50 @@ static bool npu_w_pingpong_enabled() {
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 #else
     return false;
+#endif
+}
+
+static bool npu_full_pingpong_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_FULL_PINGPONG");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static bool npu_o_overlap_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_O_OVERLAP");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static bool npu_a_prefetch_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_A_PREFETCH");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static uint32_t npu_runtime_scale_meta_offset() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    return 2048;
+#else
+    return 0x00070000;
+#endif
+}
+
+static bool npu_strided_mvout_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_STRIDED_MVOUT");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return true;
 #endif
 }
 
@@ -979,6 +1023,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 exec_summary.delta.dma_in_pair_us_total +
                 exec_summary.delta.dma_in_bias_us_total +
                 exec_summary.delta.w_prefetch_wait_us_total +
+                exec_summary.delta.a_prefetch_wait_us_total +
+                exec_summary.delta.o_mvout_wait_us_total +
                 exec_summary.delta.gemm_us_total +
                 exec_summary.delta.dma_out_us_total +
                 exec_summary.delta.postprocess_us_total;
@@ -1011,6 +1057,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.w_prefetch_calls = exec_summary.delta.w_prefetch_calls;
             profile_record.w_prefetch_hits = exec_summary.delta.w_prefetch_hits;
             profile_record.w_prefetch_conflicts = exec_summary.delta.w_prefetch_conflicts;
+            profile_record.a_prefetch_calls = exec_summary.delta.a_prefetch_calls;
+            profile_record.a_prefetch_hits = exec_summary.delta.a_prefetch_hits;
+            profile_record.a_prefetch_conflicts = exec_summary.delta.a_prefetch_conflicts;
+            profile_record.o_mvout_async_calls = exec_summary.delta.o_mvout_async_calls;
             profile_record.packed_activation_bytes_total = exec_summary.delta.packed_activation_bytes_total;
             profile_record.copied_weight_bytes_total = exec_summary.delta.copied_weight_bytes_total;
             profile_record.dma_in_activation_bytes_total = exec_summary.delta.dma_in_activation_bytes_total;
@@ -1036,6 +1086,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.dma_in_pair_us_total = exec_summary.delta.dma_in_pair_us_total;
             profile_record.w_prefetch_wait_us_total = exec_summary.delta.w_prefetch_wait_us_total;
             profile_record.w_prefetch_hidden_candidate_us_total = exec_summary.delta.w_prefetch_hidden_candidate_us_total;
+            profile_record.a_prefetch_wait_us_total = exec_summary.delta.a_prefetch_wait_us_total;
+            profile_record.a_prefetch_hidden_candidate_us_total = exec_summary.delta.a_prefetch_hidden_candidate_us_total;
+            profile_record.o_mvout_wait_us_total = exec_summary.delta.o_mvout_wait_us_total;
+            profile_record.o_mvout_hidden_candidate_us_total = exec_summary.delta.o_mvout_hidden_candidate_us_total;
             profile_record.gemm_us_total = exec_summary.delta.gemm_us_total;
             profile_record.dma_out_us_total = exec_summary.delta.dma_out_us_total;
             profile_record.postprocess_us_total = exec_summary.delta.postprocess_us_total;
@@ -1160,6 +1214,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     bool full_output_cma_active = false;
 
     if (npu_full_output_cma_enabled() &&
+        npu_strided_mvout_enabled() &&
         fold_output_reconstruction &&
         !raw_acc_mvout &&
         !apply_output_compensation &&
@@ -1209,6 +1264,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             }
         }
     }
+    if (collect_stage_profile) {
+        exec_summary.delta.full_output_cma_nodes = full_output_cma_active ? 1 : 0;
+    }
+    if (collect_detailed_profile) {
+        profile_record.full_output_cma_active = full_output_cma_active;
+    }
 
     const int64_t setup_cache_alloc_start_us = collect_stage_profile ? ggml_time_us() : 0;
     if (use_bias_cache &&
@@ -1252,13 +1313,34 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     int64_t loaded_scale_cache_m = -1;
     npu_activation_tile_key loaded_activation_key;
     bool loaded_activation_valid = false;
+    bool loaded_activation_prefetched = false;
     int32_t loaded_weight_pack_index = -1;
     const bool w_pingpong_enabled =
         npu_w_pingpong_enabled() && plan.use_gemm_plan && !force_reload_weights;
+    const bool full_pingpong_enabled =
+        npu_full_pingpong_enabled() && w_pingpong_enabled && !force_reload_activations;
+    const bool o_overlap_enabled = full_pingpong_enabled && npu_o_overlap_enabled();
+    const bool a_prefetch_enabled = full_pingpong_enabled && npu_a_prefetch_enabled();
+    if (collect_stage_profile) {
+        exec_summary.delta.full_pingpong_nodes = full_pingpong_enabled ? 1 : 0;
+        exec_summary.delta.a_prefetch_enabled_nodes = a_prefetch_enabled ? 1 : 0;
+        exec_summary.delta.o_overlap_enabled_nodes = o_overlap_enabled ? 1 : 0;
+    }
+    if (collect_detailed_profile) {
+        profile_record.full_pingpong_enabled = full_pingpong_enabled;
+        profile_record.a_prefetch_enabled = a_prefetch_enabled;
+        profile_record.o_overlap_enabled = o_overlap_enabled;
+    }
     bool resident_weight_valid[2] = { false, false };
     bool resident_weight_prefetched[2] = { false, false };
     int32_t resident_weight_pack_index[2] = { -1, -1 };
+    uint8_t loaded_activation_bank = 0;
+    uint8_t last_gemm_a_bank = 0;
     uint8_t last_gemm_w_bank = 1;
+    uint8_t current_output_o_bank = 0;
+    int64_t active_output_tile_index = -1;
+    int pending_mvout_o_bank = -1;
+    int64_t pending_mvout_start_us = 0;
     auto find_resident_weight_bank = [&](int32_t weight_pack_index) -> int {
         for (int bank = 0; bank < 2; ++bank) {
             if (resident_weight_valid[bank] && resident_weight_pack_index[bank] == weight_pack_index) {
@@ -1271,6 +1353,25 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         resident_weight_valid[bank] = true;
         resident_weight_pack_index[bank] = weight_pack_index;
         resident_weight_prefetched[bank] = prefetched;
+    };
+    auto wait_pending_mvout = [&]() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+        if (pending_mvout_o_bank >= 0) {
+            const int64_t wait_start_us = collect_stage_profile ? ggml_time_us() : 0;
+            npu_dma_wait_o_bank(static_cast<uint8_t>(pending_mvout_o_bank));
+            if (collect_stage_profile && pending_mvout_start_us != 0) {
+                const int64_t wait_done_us = ggml_time_us();
+                const int64_t dma_out_us = wait_done_us - pending_mvout_start_us;
+                const int64_t wait_us = wait_done_us - wait_start_us;
+                exec_summary.delta.dma_out_us_total += dma_out_us;
+                exec_summary.delta.o_mvout_wait_us_total += wait_us;
+                exec_summary.delta.o_mvout_hidden_candidate_us_total +=
+                    std::max<int64_t>(0, dma_out_us - wait_us);
+            }
+            pending_mvout_o_bank = -1;
+            pending_mvout_start_us = 0;
+        }
+#endif
     };
     if (collect_runtime_profile) {
         const int64_t setup_profile_begin_start_us = collect_stage_profile ? ggml_time_us() : 0;
@@ -1306,6 +1407,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             active_n0 = exec_tile.n0;
             active_m = exec_tile.m;
             active_n = exec_tile.n;
+            active_output_tile_index += 1;
+            current_output_o_bank = static_cast<uint8_t>(active_output_tile_index & 1);
             acc_scaled_values.assign(static_cast<size_t>(active_n * active_m), 0.0f);
             bias_values.assign(static_cast<size_t>(active_m), 0);
         }
@@ -1421,6 +1524,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             tile_record.weight_bytes = static_cast<int64_t>(packed_weight.packed.size());
         }
 
+        int current_a_bank = loaded_activation_valid ? static_cast<int>(loaded_activation_bank) : -1;
         int current_w_bank = -1;
         const int resident_weight_bank = w_pingpong_enabled
             ? find_resident_weight_bank(exec_tile.weight_pack_index)
@@ -1443,6 +1547,9 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         if (collect_stage_profile) {
             if (activation_already_in_spm) {
                 exec_summary.delta.spm_activation_reuse_hits += 1;
+                if (loaded_activation_prefetched) {
+                    exec_summary.delta.a_prefetch_hits += 1;
+                }
             }
             if (weight_already_in_spm) {
                 exec_summary.delta.spm_weight_reuse_hits += 1;
@@ -1452,6 +1559,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             tile_record.activation_already_in_spm = activation_already_in_spm;
             tile_record.weight_already_in_spm = weight_already_in_spm;
             tile_record.w_bank = current_w_bank;
+            tile_record.a_bank = current_a_bank;
+            tile_record.o_bank = static_cast<int32_t>(current_output_o_bank);
+            tile_record.a_prefetch_hit = activation_already_in_spm && loaded_activation_prefetched;
+        }
+        if (activation_already_in_spm && loaded_activation_prefetched) {
+            loaded_activation_prefetched = false;
         }
 
         const int64_t activation_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
@@ -1584,12 +1697,25 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         }
         uint32_t mvin_mask = 0;
         uint32_t waited_mvin_mask = 0;
+        bool activation_mvin_issued = false;
+        uint8_t loaded_a_bank_now = 0;
         bool weight_mvin_issued = false;
         uint8_t loaded_w_bank_now = 0;
         if (!activation_already_in_spm) {
-            npu_dma_mvin_async(0, &activation_mvin_cfg);
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+            if (full_pingpong_enabled) {
+                loaded_a_bank_now = static_cast<uint8_t>(last_gemm_a_bank ^ 1u);
+                npu_dma_mvin_a_async_bank(loaded_a_bank_now, &activation_mvin_cfg);
+                activation_mvin_issued = true;
+                current_a_bank = loaded_a_bank_now;
+            } else
+#endif
+            {
+                npu_dma_mvin_async(0, &activation_mvin_cfg);
+                waited_mvin_mask |= (1u << 0);
+                current_a_bank = 0;
+            }
             mvin_mask |= (1u << 0);
-            waited_mvin_mask |= (1u << 0);
         }
         if (!weight_already_in_spm) {
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
@@ -1614,6 +1740,9 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             npu_dma_wait_mvin(waited_mvin_mask);
         }
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
+        if (activation_mvin_issued) {
+            npu_dma_wait_a_bank(loaded_a_bank_now);
+        }
         if (weight_mvin_issued) {
             npu_dma_wait_w_bank(loaded_w_bank_now);
         }
@@ -1621,6 +1750,12 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         if (!activation_already_in_spm) {
             loaded_activation_key = activation_key;
             loaded_activation_valid = true;
+            if (full_pingpong_enabled) {
+                loaded_activation_bank = loaded_a_bank_now;
+            } else {
+                loaded_activation_bank = 0;
+            }
+            loaded_activation_prefetched = false;
         }
         if (!weight_already_in_spm) {
             if (w_pingpong_enabled) {
@@ -1632,6 +1767,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         if (collect_tile_profile) {
             tile_record.mvin_mask = mvin_mask;
             tile_record.w_bank = current_w_bank;
+            tile_record.a_bank = current_a_bank;
         }
         if (collect_stage_profile && mvin_mask != 0) {
             const int64_t dma_in_pair_us = ggml_time_us() - dma_in_pair_start_us;
@@ -1714,6 +1850,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         }
                     }
                     const int64_t dma_in_bias_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                    wait_pending_mvout();
                     npu_dma_mvin(
                         bias_cache_buf,
                         plan.config.layout.bias_cache.offset,
@@ -1805,6 +1942,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 }
 
                 const int64_t dma_in_bias_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                wait_pending_mvout();
                 npu_dma_mvin(
                     bias_buf,
                     plan.config.layout.bias_accumulator.offset,
@@ -1834,6 +1972,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
         const int64_t gemm_start_us = collect_stage_profile ? ggml_time_us() : 0;
         int64_t gemm_us = 0;
         int64_t w_prefetch_wait_us = 0;
+        int64_t a_prefetch_wait_us = 0;
         if (npu_debug_log_enabled()) {
                 GGML_LOG_INFO("%s: tile m0=%" PRId64 " n0=%" PRId64 " k0=%" PRId64 " GEMM n=%" PRId64 " m=%" PRId64 " k=%" PRId64 " bias_acc=0x%08x out_acc=0x%08x\n",
                     __func__,
@@ -1851,6 +1990,21 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             : (!exec_tile.needs_bias ? plan.config.layout.output_accumulator.offset : plan.config.layout.bias_accumulator.offset);
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
         if (plan.use_gemm_plan && w_pingpong_enabled) {
+            if (pending_mvout_o_bank >= 0 &&
+                    (!o_overlap_enabled ||
+                     pending_mvout_o_bank == static_cast<int>(current_output_o_bank))) {
+                wait_pending_mvout();
+            }
+            if (full_pingpong_enabled && current_a_bank < 0) {
+                if (error) {
+                    *error = "full pingpong selected but no activation bank is resident";
+                }
+                if (collect_tile_profile) {
+                    profile_record.tiles.push_back(std::move(tile_record));
+                }
+                cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
+                return finalize_status(GGML_STATUS_FAILED);
+            }
             if (current_w_bank < 0) {
                 if (error) {
                     *error = "W pingpong selected but no weight bank is resident";
@@ -1861,28 +2015,131 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
                 return finalize_status(GGML_STATUS_FAILED);
             }
-            npu_gemm_plan_start_ex_bank(
-                static_cast<uint8_t>(current_w_bank),
-                /*a_addr=*/plan.config.layout.activation.offset,
-                /*b_addr=*/plan.config.layout.weight.offset,
-                /*out_addr=*/plan.config.layout.output_accumulator.offset,
-                /*scratch_addr=*/plan.config.layout.scratch_accumulator.offset,
-                /*bias_addr=*/use_hardware_bias ? gemm_biaspsum_addr : 0,
-                /*block_m=*/static_cast<uint16_t>(hw_n),
-                /*block_n=*/static_cast<uint16_t>(exec_tile.m),
-                /*block_k=*/static_cast<uint16_t>(exec_tile.k),
-                /*a_stride=*/static_cast<uint16_t>(exec_tile.a_stride),
-                /*b_stride=*/static_cast<uint16_t>(exec_tile.b_stride),
-                /*out_stride=*/static_cast<uint16_t>(exec_tile.out_stride),
-                /*bias_stride=*/static_cast<uint16_t>(exec_tile.bias_stride),
-                /*have_bias=*/use_hardware_bias,
-                /*is_accumulate=*/use_accumulate,
-                /*asymmetric_activations=*/hardware_asymmetric_activations);
+            if (full_pingpong_enabled) {
+                npu_gemm_plan_start_ex_banks(
+                    static_cast<uint8_t>(current_a_bank),
+                    static_cast<uint8_t>(current_w_bank),
+                    current_output_o_bank,
+                    /*a_addr=*/plan.config.layout.activation.offset,
+                    /*b_addr=*/plan.config.layout.weight.offset,
+                    /*out_addr=*/plan.config.layout.output_accumulator.offset,
+                    /*scratch_addr=*/plan.config.layout.scratch_accumulator.offset,
+                    /*bias_addr=*/use_hardware_bias ? gemm_biaspsum_addr : 0,
+                    /*block_m=*/static_cast<uint16_t>(hw_n),
+                    /*block_n=*/static_cast<uint16_t>(exec_tile.m),
+                    /*block_k=*/static_cast<uint16_t>(exec_tile.k),
+                    /*a_stride=*/static_cast<uint16_t>(exec_tile.a_stride),
+                    /*b_stride=*/static_cast<uint16_t>(exec_tile.b_stride),
+                    /*out_stride=*/static_cast<uint16_t>(exec_tile.out_stride),
+                    /*bias_stride=*/static_cast<uint16_t>(exec_tile.bias_stride),
+                    /*have_bias=*/use_hardware_bias,
+                    /*is_accumulate=*/use_accumulate,
+                    /*asymmetric_activations=*/hardware_asymmetric_activations);
+            } else {
+                npu_gemm_plan_start_ex_bank(
+                    static_cast<uint8_t>(current_w_bank),
+                    /*a_addr=*/plan.config.layout.activation.offset,
+                    /*b_addr=*/plan.config.layout.weight.offset,
+                    /*out_addr=*/plan.config.layout.output_accumulator.offset,
+                    /*scratch_addr=*/plan.config.layout.scratch_accumulator.offset,
+                    /*bias_addr=*/use_hardware_bias ? gemm_biaspsum_addr : 0,
+                    /*block_m=*/static_cast<uint16_t>(hw_n),
+                    /*block_n=*/static_cast<uint16_t>(exec_tile.m),
+                    /*block_k=*/static_cast<uint16_t>(exec_tile.k),
+                    /*a_stride=*/static_cast<uint16_t>(exec_tile.a_stride),
+                    /*b_stride=*/static_cast<uint16_t>(exec_tile.b_stride),
+                    /*out_stride=*/static_cast<uint16_t>(exec_tile.out_stride),
+                    /*bias_stride=*/static_cast<uint16_t>(exec_tile.bias_stride),
+                    /*have_bias=*/use_hardware_bias,
+                    /*is_accumulate=*/use_accumulate,
+                    /*asymmetric_activations=*/hardware_asymmetric_activations);
+            }
 
             bool prefetch_issued = false;
             uint8_t prefetch_w_bank = static_cast<uint8_t>(current_w_bank ^ 1);
             int32_t prefetch_weight_pack_index = -1;
-            for (size_t next_idx = exec_tile_idx + 1; next_idx < plan.exec_tiles.size(); ++next_idx) {
+            bool a_prefetch_issued = false;
+            uint8_t prefetch_a_bank = full_pingpong_enabled
+                ? static_cast<uint8_t>(current_a_bank ^ 1)
+                : 0;
+            npu_activation_tile_key prefetch_activation_key;
+            if (a_prefetch_enabled &&
+                    activation_scheduler != nullptr &&
+                    exec_tile_idx + 1 < plan.exec_tiles.size()) {
+                const npu_exec_tile & next_tile = plan.exec_tiles[exec_tile_idx + 1];
+                const int64_t next_hw_n = npu_hardware_n_rows(next_tile.n);
+                prefetch_activation_key = {
+                    next_tile.n0,
+                    next_tile.n,
+                    next_tile.k0,
+                    next_tile.k,
+                };
+                if (!(loaded_activation_valid && loaded_activation_key == prefetch_activation_key)) {
+                    activation_scheduler->schedule_window(exec_tile_idx + 1);
+                    bool next_ready_before_wait = false;
+                    std::string prefetch_error;
+                    std::shared_ptr<npu_activation_pack_async_entry> next_activation_entry =
+                        activation_scheduler->wait_ready(
+                            prefetch_activation_key,
+                            &prefetch_error,
+                            &next_ready_before_wait);
+                    if (next_activation_entry != nullptr) {
+                        if (next_hw_n != next_tile.n) {
+                            std::memset(
+                                activation_buf,
+                                0,
+                                static_cast<size_t>(next_hw_n * next_tile.a_stride));
+                        }
+                        std::memcpy(
+                            activation_buf,
+                            next_activation_entry->data.data(),
+                            next_activation_entry->data.size());
+                        const MvinConfig prefetch_activation_mvin_cfg {
+                            activation_buf,
+                            plan.config.layout.activation.offset,
+                            static_cast<uint32_t>(next_tile.k),
+                            static_cast<uint32_t>(next_hw_n),
+                            static_cast<uint16_t>(next_tile.a_stride),
+                            static_cast<uint32_t>(next_tile.a_stride),
+                            1,
+                            0,
+                            false,
+                            false,
+                            hardware_asymmetric_activations,
+                            0,
+                            0,
+                            0,
+                        };
+                        try {
+                            npu_dma_mvin_a_async_bank(prefetch_a_bank, &prefetch_activation_mvin_cfg);
+                            a_prefetch_issued = true;
+                            if (collect_stage_profile) {
+                                exec_summary.delta.a_prefetch_calls += 1;
+                                exec_summary.delta.dma_in_activation_calls += 1;
+                                exec_summary.delta.dma_in_activation_bytes_total +=
+                                    static_cast<int64_t>(next_activation_entry->data.size());
+                            }
+                            if (collect_tile_profile) {
+                                tile_record.a_prefetch_issued = true;
+                            }
+                        } catch (const std::exception & ex) {
+                            if (collect_stage_profile) {
+                                exec_summary.delta.a_prefetch_conflicts += 1;
+                            }
+                            if (npu_debug_log_enabled()) {
+                                GGML_LOG_INFO("%s: A prefetch skipped bank=%u: %s\n",
+                                        __func__, static_cast<unsigned>(prefetch_a_bank), ex.what());
+                            }
+                        }
+                    } else if (npu_debug_log_enabled()) {
+                        GGML_LOG_INFO("%s: A prefetch skipped: %s\n",
+                                __func__, prefetch_error.c_str());
+                    }
+                }
+            }
+            for (size_t next_idx = exec_tile_idx + 1;
+                    next_idx < plan.exec_tiles.size();
+                    ++next_idx) {
                 const npu_exec_tile & next_tile = plan.exec_tiles[next_idx];
                 if (next_tile.weight_pack_index < 0 ||
                     static_cast<size_t>(next_tile.weight_pack_index) >= plan.weight_packs.size()) {
@@ -1956,6 +2213,23 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             if (collect_stage_profile) {
                 gemm_us = ggml_time_us() - gemm_start_us;
             }
+            if (a_prefetch_issued) {
+                const int64_t prefetch_wait_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                npu_dma_wait_a_bank(prefetch_a_bank);
+                if (collect_stage_profile) {
+                    a_prefetch_wait_us = ggml_time_us() - prefetch_wait_start_us;
+                    exec_summary.delta.a_prefetch_wait_us_total += a_prefetch_wait_us;
+                    exec_summary.delta.a_prefetch_hidden_candidate_us_total +=
+                        std::max<int64_t>(0, gemm_us - a_prefetch_wait_us);
+                }
+                loaded_activation_key = prefetch_activation_key;
+                loaded_activation_valid = true;
+                loaded_activation_bank = prefetch_a_bank;
+                loaded_activation_prefetched = true;
+            }
+            if (collect_tile_profile) {
+                tile_record.a_prefetch_wait_us = static_cast<double>(a_prefetch_wait_us);
+            }
             if (prefetch_issued) {
                 const int64_t prefetch_wait_start_us = collect_stage_profile ? ggml_time_us() : 0;
                 npu_dma_wait_w_bank(prefetch_w_bank);
@@ -1966,6 +2240,9 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         std::max<int64_t>(0, gemm_us - w_prefetch_wait_us);
                 }
                 mark_weight_bank_loaded(prefetch_w_bank, prefetch_weight_pack_index, true);
+            }
+            if (full_pingpong_enabled) {
+                last_gemm_a_bank = static_cast<uint8_t>(current_a_bank);
             }
             last_gemm_w_bank = static_cast<uint8_t>(current_w_bank);
         } else
@@ -2111,7 +2388,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         raw_acc_mvout ? 0
                                       : (use_scale_cache
                                             ? plan.config.layout.scale_cache.offset
-                                            : 0x00070000));
+                                            : npu_runtime_scale_meta_offset()));
             }
             if (use_scale_cache &&
                 (loaded_scale_cache_m0 != exec_tile.m0 || loaded_scale_cache_m != exec_tile.m)) {
@@ -2125,6 +2402,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     scale_cache_words[static_cast<size_t>(local_m)] =
                         npu_float_to_q8_24_u32(activation_scale * w_scale);
                 }
+                wait_pending_mvout();
                 npu_dma_mvin(
                     scale_cache_buf,
                     plan.config.layout.scale_cache.offset,
@@ -2154,9 +2432,10 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         : per_tensor_weight_scale;
                     scale_words[static_cast<size_t>(idx)] = npu_float_to_q8_24_u32(activation_scale * w_scale);
                 }
+                wait_pending_mvout();
                 npu_dma_mvin(
                     scale_words,
-                    0x00070000,
+                    npu_runtime_scale_meta_offset(),
                     static_cast<uint32_t>(scale_count),
                     0,
                     static_cast<uint16_t>(scale_count),
@@ -2181,30 +2460,69 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     mvout_dram_stride = static_cast<uint32_t>(plan.m);
                 }
             }
-            npu_dma_mvout_ex(
-                mvout_buf,
-                plan.config.layout.output_accumulator.offset,
-                static_cast<uint32_t>(exec_tile.m),
-                static_cast<uint32_t>(hw_n),
-                static_cast<uint16_t>(exec_tile.out_stride),
-                mvout_dram_stride,
-                1,
-                1,
-                true,
-                !raw_acc_mvout,
-                0,
-                raw_acc_mvout ? 0
-                              : (use_scale_cache
-                                    ? plan.config.layout.scale_cache.offset
-                                    : 0x00070000),
-                !raw_acc_mvout && mvout_per_channel);
-            if (collect_stage_profile) {
-                const int64_t dma_out_us = ggml_time_us() - dma_out_start_us;
-                exec_summary.delta.dma_out_calls += 1;
-                exec_summary.delta.dma_out_us_total += dma_out_us;
-                exec_summary.delta.acc_readback_bytes_total += static_cast<int64_t>(hw_n * exec_tile.m * sizeof(float));
-                if (collect_tile_profile) {
-                    tile_record.dma_out_us = static_cast<double>(dma_out_us);
+            const uint32_t mvout_scale_param = raw_acc_mvout ? 0
+                : (use_scale_cache ? plan.config.layout.scale_cache.offset : npu_runtime_scale_meta_offset());
+            if (full_pingpong_enabled && full_output_cma_active) {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+                MvoutConfig mvout_cfg {
+                    mvout_buf,
+                    plan.config.layout.output_accumulator.offset,
+                    static_cast<uint32_t>(exec_tile.m),
+                    static_cast<uint32_t>(hw_n),
+                    static_cast<uint16_t>(exec_tile.out_stride),
+                    mvout_dram_stride,
+                    1,
+                    1,
+                    true,
+                    !raw_acc_mvout,
+                    0,
+                    mvout_scale_param,
+                    !raw_acc_mvout && mvout_per_channel,
+                };
+                npu_dma_mvout_async_bank(current_output_o_bank, 2, &mvout_cfg);
+                pending_mvout_o_bank = static_cast<int>(current_output_o_bank);
+                pending_mvout_start_us = dma_out_start_us;
+                if (collect_stage_profile) {
+                    exec_summary.delta.dma_out_calls += 1;
+                    exec_summary.delta.o_mvout_async_calls += 1;
+                    exec_summary.delta.acc_readback_bytes_total += static_cast<int64_t>(hw_n * exec_tile.m * sizeof(float));
+                    if (collect_tile_profile) {
+                        tile_record.dma_out_us = 0.0;
+                        tile_record.o_mvout_async = true;
+                    }
+                }
+                if (!o_overlap_enabled) {
+                    wait_pending_mvout();
+                    if (collect_stage_profile && collect_tile_profile) {
+                        tile_record.dma_out_us = 0.0;
+                    }
+                }
+#else
+                (void)dma_out_start_us;
+#endif
+            } else {
+                npu_dma_mvout_ex(
+                    mvout_buf,
+                    plan.config.layout.output_accumulator.offset,
+                    static_cast<uint32_t>(exec_tile.m),
+                    static_cast<uint32_t>(hw_n),
+                    static_cast<uint16_t>(exec_tile.out_stride),
+                    mvout_dram_stride,
+                    1,
+                    1,
+                    true,
+                    !raw_acc_mvout,
+                    0,
+                    mvout_scale_param,
+                    !raw_acc_mvout && mvout_per_channel);
+                if (collect_stage_profile) {
+                    const int64_t dma_out_us = ggml_time_us() - dma_out_start_us;
+                    exec_summary.delta.dma_out_calls += 1;
+                    exec_summary.delta.dma_out_us_total += dma_out_us;
+                    exec_summary.delta.acc_readback_bytes_total += static_cast<int64_t>(hw_n * exec_tile.m * sizeof(float));
+                    if (collect_tile_profile) {
+                        tile_record.dma_out_us = static_cast<double>(dma_out_us);
+                    }
                 }
             }
 
@@ -2612,6 +2930,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 tile_record.dma_in_pair_us +
                 tile_record.dma_in_bias_us +
                 tile_record.w_prefetch_wait_us +
+                tile_record.a_prefetch_wait_us +
+                tile_record.o_mvout_wait_us +
                 tile_record.gemm_us +
                 tile_record.dma_out_us +
                 tile_record.postprocess_us;
@@ -2620,6 +2940,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.tiles.push_back(std::move(tile_record));
         }
     }
+
+    wait_pending_mvout();
 
     if (full_output_cma_active) {
         const int64_t postprocess_start_us = collect_stage_profile ? ggml_time_us() : 0;

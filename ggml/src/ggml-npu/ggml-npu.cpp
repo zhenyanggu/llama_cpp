@@ -21,6 +21,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -61,7 +62,6 @@ extern "C" void npu_decode_dma_mvout(
         bool is_quant,
         uint32_t quant_zero,
         uint32_t scale_or_addr);
-extern "C" void npu_decode_gemv_block_run(uint16_t m, uint16_t n, uint32_t output_base_bytes);
 extern "C" void npu_decode_gemv_pingpong_run(
         void * act_ptr,
         void * scale_ptr,
@@ -69,6 +69,15 @@ extern "C" void npu_decode_gemv_pingpong_run(
         void * output_ptr,
         uint16_t m,
         uint16_t n);
+extern "C" void npu_decode_dma_mvin_async(uint32_t dma_id, const MvinConfig * cfg);
+extern "C" void npu_decode_dma_wait_mvin(uint32_t dma_mask);
+extern "C" void npu_decode_matvec_run(
+        uint32_t mat_addr,
+        uint32_t vec_addr,
+        uint16_t mat_width,
+        uint16_t mat_height,
+        uint16_t output_addr,
+        uint16_t scale_addr);
 extern "C" void * npu_decode_memory_base();
 extern "C" uint32_t npu_decode_memory_size();
 
@@ -152,6 +161,16 @@ static bool npu_decode_w4a16_debug_log_enabled() {
     return std::getenv("GGML_NPU_DEBUG_LOG") != nullptr || std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_DEBUG") != nullptr;
 }
 
+static bool npu_decode_cma_retry_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_CMA_RETRY");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_preload_cma_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD_CMA");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
 static bool npu_decode_require_active_overlay() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -197,6 +216,26 @@ static bool npu_decode_ensure_overlay_active(const char * op_name) {
     return true;
 }
 
+static int npu_decode_init_with_cma_retry(const char * op_name, bool release_prefill_runtime) {
+    if (npu_decode_init() == 0) {
+        return 0;
+    }
+    if (!npu_decode_cma_retry_enabled()) {
+        return -1;
+    }
+
+    if (npu_decode_w4a16_debug_log_enabled()) {
+        GGML_LOG_WARN("%s: decode runtime init failed for %s; releasing NPU runtime state and retrying\n",
+                __func__, op_name != nullptr ? op_name : "(unnamed)");
+    }
+    npu_decode_destroy();
+    if (release_prefill_runtime) {
+        npu_clear_preloaded_weight_cache();
+        npu_destroy();
+    }
+    return npu_decode_init();
+}
+
 constexpr uint32_t NPU_DECODE_GEMV_K_TILE = 128;
 constexpr uint32_t NPU_DECODE_GEMV_M_TILE = 32;
 constexpr uint32_t NPU_DECODE_GEMV_LINE_BYTES = 64;
@@ -209,6 +248,10 @@ constexpr uint32_t NPU_DECODE_GEMV_WEIGHT_TILE_BYTES = NPU_DECODE_GEMV_M_TILE * 
 constexpr uint8_t NPU_DECODE_GEMV_INPUT_TYPE_DATA = 0;
 constexpr uint8_t NPU_DECODE_GEMV_INPUT_TYPE_WEIGHT = 1;
 constexpr uint8_t NPU_DECODE_GEMV_INPUT_TYPE_ACT = 3;
+constexpr uint32_t NPU_DECODE_GEMV_SPM_BYTES = 512u * 1024u;
+constexpr uint32_t NPU_DECODE_GEMV_SCALE_BASE = 0x00000;
+constexpr uint32_t NPU_DECODE_GEMV_ACT_BASE = 0x00000;
+constexpr uint32_t NPU_DECODE_GEMV_OUTPUT_BASE = 0x00000;
 constexpr uint32_t NPU_DECODE_GEMV_PING_WEIGHT_BASE = 0x10000;
 constexpr uint32_t NPU_DECODE_GEMV_PONG_WEIGHT_BASE = 0x40000;
 
@@ -333,6 +376,11 @@ static bool npu_decode_profile_enabled() {
 
 static bool npu_decode_pingpong_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_PINGPONG");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_pingpong_block_mvout_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_BLOCK_MVOUT");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
@@ -552,11 +600,11 @@ static bool npu_decode_make_pingpong_layout(uint32_t m, uint32_t k, npu_decode_g
 
     const uint32_t bytes_per_row_tile = layout->col_tiles * NPU_DECODE_GEMV_WEIGHT_TILE_BYTES;
     const uint32_t ping_capacity = NPU_DECODE_GEMV_PONG_WEIGHT_BASE - NPU_DECODE_GEMV_PING_WEIGHT_BASE;
-    const uint32_t pong_capacity = NPU_DEFAULT_SPM_BYTES - NPU_DECODE_GEMV_PONG_WEIGHT_BASE;
+    const uint32_t pong_capacity = NPU_DECODE_GEMV_SPM_BYTES - NPU_DECODE_GEMV_PONG_WEIGHT_BASE;
     const uint32_t weight_capacity = std::min(ping_capacity, pong_capacity);
     return layout->act_bytes <= NPU_DECODE_GEMV_ACT_BUFFER_BYTES &&
            layout->scale_bytes <= NPU_DECODE_GEMV_PING_WEIGHT_BASE &&
-           layout->output_bytes <= NPU_DEFAULT_SPM_BYTES &&
+           layout->output_bytes <= NPU_DECODE_GEMV_SPM_BYTES &&
            layout->output_bytes <= std::numeric_limits<uint16_t>::max() + 1u &&
            bytes_per_row_tile > 0 &&
            bytes_per_row_tile <= weight_capacity &&
@@ -604,6 +652,17 @@ static uint8_t npu_decode_q4_unsigned_at(const uint8_t * row, int64_t k_idx) {
     return (k_idx & 1) == 0 ? (packed & 0x0fu) : ((packed >> 4) & 0x0fu);
 }
 
+static int8_t npu_decode_q4_signed_at(const uint8_t * row, int64_t k_idx) {
+    const uint8_t q = npu_decode_q4_unsigned_at(row, k_idx);
+    return static_cast<int8_t>(q >= 8 ? static_cast<int>(q) - 16 : static_cast<int>(q));
+}
+
+static float npu_decode_read_packed_fp16(const uint8_t * ptr) {
+    ggml_fp16_t value;
+    std::memcpy(&value, ptr, sizeof(value));
+    return ggml_fp16_to_fp32(value);
+}
+
 static void npu_decode_pack_activation(
         void * act_dst,
         size_t act_bytes,
@@ -628,6 +687,316 @@ static void npu_decode_pack_activation(
             const ggml_fp16_t fp16_value = ggml_fp32_to_fp16(value);
             std::memcpy(act + col_tile * NPU_DECODE_GEMV_ACT_TILE_BYTES + lane * 2, &fp16_value, sizeof(fp16_value));
         }
+    }
+}
+
+static void npu_decode_store_sim_output(
+        float value,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1,
+        int64_t col,
+        int64_t row) {
+    char * dst_col = static_cast<char *>(dst_data) + col * dst_nb1;
+    const ggml_fp16_t fp16_value = ggml_fp32_to_fp16(value);
+    if (dst_type == GGML_TYPE_F16) {
+        std::memcpy(dst_col + row * sizeof(ggml_fp16_t), &fp16_value, sizeof(fp16_value));
+    } else {
+        reinterpret_cast<float *>(dst_col)[row] = ggml_fp16_to_fp32(fp16_value);
+    }
+}
+
+static void npu_decode_simulate_packed_block(
+        const uint8_t * act_packed,
+        const uint8_t * packed,
+        const npu_decode_gemv_layout & layout,
+        int64_t row_base,
+        int64_t block_rows,
+        int64_t k,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1,
+        int64_t col) {
+    for (int64_t row = 0; row < block_rows; ++row) {
+        float acc = 0.0f;
+        const uint32_t row_tile = static_cast<uint32_t>(row) / NPU_DECODE_GEMV_M_TILE;
+        const uint32_t row_in_tile = static_cast<uint32_t>(row) % NPU_DECODE_GEMV_M_TILE;
+        for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
+            const uint32_t tile_index = row_tile * layout.col_tiles + col_tile;
+            const uint8_t * scale_line =
+                packed + static_cast<size_t>(tile_index) * NPU_DECODE_GEMV_LINE_BYTES;
+            const float scale =
+                npu_decode_read_packed_fp16(scale_line + row_in_tile * sizeof(ggml_fp16_t));
+            const uint8_t * weight_row =
+                packed + layout.weight_base +
+                (static_cast<size_t>(tile_index) * NPU_DECODE_GEMV_M_TILE + row_in_tile) *
+                NPU_DECODE_GEMV_WEIGHT_ROW_BYTES;
+            const uint8_t * act_tile =
+                act_packed + static_cast<size_t>(col_tile) * NPU_DECODE_GEMV_ACT_TILE_BYTES;
+            for (uint32_t lane = 0; lane < NPU_DECODE_GEMV_K_TILE; ++lane) {
+                const int64_t in_idx = static_cast<int64_t>(col_tile) * NPU_DECODE_GEMV_K_TILE + lane;
+                if (in_idx >= k) {
+                    continue;
+                }
+                const float act = npu_decode_read_packed_fp16(act_tile + lane * sizeof(ggml_fp16_t));
+                const float w = static_cast<float>(npu_decode_q4_signed_at(weight_row, lane)) * scale;
+                acc += act * w;
+            }
+        }
+        npu_decode_store_sim_output(acc, dst_data, dst_type, dst_nb1, col, row_base + row);
+    }
+}
+
+static void npu_decode_simulate_pingpong(
+        const uint8_t * act_packed,
+        const uint8_t * scale_packed,
+        const uint8_t * weight_packed,
+        const npu_decode_gemv_layout & layout,
+        int64_t out_channels,
+        int64_t k,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1,
+        int64_t col) {
+    for (int64_t row = 0; row < out_channels; ++row) {
+        float acc = 0.0f;
+        const uint32_t row_tile = static_cast<uint32_t>(row) / NPU_DECODE_GEMV_M_TILE;
+        const uint32_t row_in_tile = static_cast<uint32_t>(row) % NPU_DECODE_GEMV_M_TILE;
+        for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
+            const uint32_t tile_index = row_tile * layout.col_tiles + col_tile;
+            const uint8_t * scale_line =
+                scale_packed + static_cast<size_t>(tile_index) * NPU_DECODE_GEMV_LINE_BYTES;
+            const float scale =
+                npu_decode_read_packed_fp16(scale_line + row_in_tile * sizeof(ggml_fp16_t));
+            const uint8_t * weight_row =
+                weight_packed +
+                (static_cast<size_t>(tile_index) * NPU_DECODE_GEMV_M_TILE + row_in_tile) *
+                NPU_DECODE_GEMV_WEIGHT_ROW_BYTES;
+            const uint8_t * act_tile =
+                act_packed + static_cast<size_t>(col_tile) * NPU_DECODE_GEMV_ACT_TILE_BYTES;
+            for (uint32_t lane = 0; lane < NPU_DECODE_GEMV_K_TILE; ++lane) {
+                const int64_t in_idx = static_cast<int64_t>(col_tile) * NPU_DECODE_GEMV_K_TILE + lane;
+                if (in_idx >= k) {
+                    continue;
+                }
+                const float act = npu_decode_read_packed_fp16(act_tile + lane * sizeof(ggml_fp16_t));
+                const float w = static_cast<float>(npu_decode_q4_signed_at(weight_row, lane)) * scale;
+                acc += act * w;
+            }
+        }
+        npu_decode_store_sim_output(acc, dst_data, dst_type, dst_nb1, col, row);
+    }
+}
+
+static MvinConfig npu_decode_make_mvin_cfg(
+        void * host_ptr,
+        uint32_t sram_addr,
+        uint32_t bytes,
+        uint8_t input_type,
+        uint8_t precision) {
+    MvinConfig cfg = {};
+    cfg.host_ptr = host_ptr;
+    cfg.sram_addr = sram_addr;
+    cfg.col_num = bytes - 1u;
+    cfg.row_num = 0;
+    cfg.sram_stride = 0;
+    cfg.dram_stride = 0;
+    cfg.precision = precision;
+    cfg.input_type = input_type;
+    cfg.dest = false;
+    cfg.is_bias = false;
+    cfg.is_quant = false;
+    cfg.quant_zero = 0;
+    cfg.quant_scale = 0;
+    cfg.quant_shift = 0;
+    return cfg;
+}
+
+static uint32_t npu_decode_pingpong_max_block_rows(const npu_decode_gemv_layout & layout) {
+    const uint32_t bytes_per_row_tile = layout.col_tiles * NPU_DECODE_GEMV_WEIGHT_TILE_BYTES;
+    const uint32_t ping_capacity = NPU_DECODE_GEMV_PONG_WEIGHT_BASE - NPU_DECODE_GEMV_PING_WEIGHT_BASE;
+    const uint32_t pong_capacity = NPU_DECODE_GEMV_SPM_BYTES - NPU_DECODE_GEMV_PONG_WEIGHT_BASE;
+    const uint32_t weight_capacity = std::min(ping_capacity, pong_capacity);
+    const uint32_t max_row_tiles = bytes_per_row_tile == 0 ? 0 : weight_capacity / bytes_per_row_tile;
+    return max_row_tiles * NPU_DECODE_GEMV_M_TILE;
+}
+
+static void npu_decode_gemv_pingpong_manual_run(
+        void * act_ptr,
+        void * scale_ptr,
+        void * weight_ptr,
+        void * output_ptr,
+        const npu_decode_gemv_layout & layout,
+        uint16_t m,
+        uint16_t k) {
+    const uint32_t max_block_rows = npu_decode_pingpong_max_block_rows(layout);
+    if (max_block_rows == 0) {
+        throw std::runtime_error("manual GEMV pingpong: no row block fits");
+    }
+    const bool block_mvout = npu_decode_pingpong_block_mvout_enabled();
+    if (npu_decode_w4a16_debug_log_enabled()) {
+        GGML_LOG_WARN("%s: manual pingpong M=%u K=%u blocks<=%u block_mvout=%d"
+                " act=0x%05X scale=0x%05X out=0x%05X pingW=0x%05X pongW=0x%05X\n",
+                __func__,
+                static_cast<unsigned>(m),
+                static_cast<unsigned>(k),
+                static_cast<unsigned>((static_cast<uint32_t>(m) + max_block_rows - 1u) / max_block_rows),
+                block_mvout ? 1 : 0,
+                NPU_DECODE_GEMV_ACT_BASE,
+                NPU_DECODE_GEMV_SCALE_BASE,
+                NPU_DECODE_GEMV_OUTPUT_BASE,
+                NPU_DECODE_GEMV_PING_WEIGHT_BASE,
+                NPU_DECODE_GEMV_PONG_WEIGHT_BASE);
+    }
+    const uint32_t bytes_per_row_tile = layout.col_tiles * NPU_DECODE_GEMV_WEIGHT_TILE_BYTES;
+    auto block_rows_for = [&](uint32_t row_base) {
+        return std::min<uint32_t>(max_block_rows, static_cast<uint32_t>(m) - row_base);
+    };
+    auto weight_offset_for = [&](uint32_t row_base) {
+        return (row_base / NPU_DECODE_GEMV_M_TILE) * bytes_per_row_tile;
+    };
+    auto scale_addr_for = [&](uint32_t row_base) {
+        return NPU_DECODE_GEMV_SCALE_BASE +
+               (row_base / NPU_DECODE_GEMV_M_TILE) * layout.col_tiles * NPU_DECODE_GEMV_SCALE_TILE_BYTES;
+    };
+
+    npu_decode_dma_mvin(
+            act_ptr,
+            NPU_DECODE_GEMV_ACT_BASE,
+            layout.act_bytes - 1u,
+            0,
+            0,
+            0,
+            2,
+            NPU_DECODE_GEMV_INPUT_TYPE_ACT,
+            false,
+            false,
+            false,
+            0,
+            0,
+            0);
+    npu_decode_dma_mvin(
+            scale_ptr,
+            NPU_DECODE_GEMV_SCALE_BASE,
+            layout.scale_bytes - 1u,
+            0,
+            0,
+            0,
+            2,
+            NPU_DECODE_GEMV_INPUT_TYPE_DATA,
+            false,
+            false,
+            false,
+            0,
+            0,
+            0);
+
+    uint8_t * weight_base = static_cast<uint8_t *>(weight_ptr);
+    const uint32_t first_rows = block_rows_for(0);
+    const uint32_t first_weight_bytes =
+        npu_decode_ceil_div_u32(first_rows, NPU_DECODE_GEMV_M_TILE) * bytes_per_row_tile;
+    npu_decode_dma_mvin(
+            weight_base,
+            NPU_DECODE_GEMV_PING_WEIGHT_BASE,
+            first_weight_bytes - 1u,
+            0,
+            0,
+            0,
+            1,
+            NPU_DECODE_GEMV_INPUT_TYPE_WEIGHT,
+            false,
+            false,
+            false,
+            0,
+            0,
+            0);
+
+    uint32_t block_idx = 0;
+    for (uint32_t row_base = 0; row_base < static_cast<uint32_t>(m);
+            row_base += block_rows_for(row_base), ++block_idx) {
+        const uint32_t rows = block_rows_for(row_base);
+        const uint32_t cur_weight_spm =
+            (block_idx & 1u) ? NPU_DECODE_GEMV_PONG_WEIGHT_BASE : NPU_DECODE_GEMV_PING_WEIGHT_BASE;
+
+        bool prefetch_started = false;
+        const uint32_t next_row_base = row_base + rows;
+        if (next_row_base < static_cast<uint32_t>(m)) {
+            const uint32_t next_rows = block_rows_for(next_row_base);
+            const uint32_t next_weight_bytes =
+                npu_decode_ceil_div_u32(next_rows, NPU_DECODE_GEMV_M_TILE) * bytes_per_row_tile;
+            const uint32_t next_weight_spm =
+                ((block_idx + 1u) & 1u) ? NPU_DECODE_GEMV_PONG_WEIGHT_BASE : NPU_DECODE_GEMV_PING_WEIGHT_BASE;
+            MvinConfig next_mvin = npu_decode_make_mvin_cfg(
+                    weight_base + weight_offset_for(next_row_base),
+                    next_weight_spm,
+                    next_weight_bytes,
+                    NPU_DECODE_GEMV_INPUT_TYPE_WEIGHT,
+                    1);
+            npu_decode_dma_mvin_async(0, &next_mvin);
+            prefetch_started = true;
+        }
+
+        const uint16_t output_addr = static_cast<uint16_t>(
+                NPU_DECODE_GEMV_OUTPUT_BASE + (block_mvout ? 0u : row_base * sizeof(ggml_fp16_t)));
+        const uint16_t scale_addr = static_cast<uint16_t>(scale_addr_for(row_base));
+        if (npu_decode_w4a16_debug_log_enabled()) {
+            GGML_LOG_WARN("%s: block=%u row_base=%u rows=%u W=0x%05X Wbytes=%u"
+                    " O=0x%04X S=0x%04X K=%u prefetch=%d\n",
+                    __func__,
+                    static_cast<unsigned>(block_idx),
+                    static_cast<unsigned>(row_base),
+                    static_cast<unsigned>(rows),
+                    static_cast<unsigned>(cur_weight_spm),
+                    static_cast<unsigned>(npu_decode_ceil_div_u32(rows, NPU_DECODE_GEMV_M_TILE) * bytes_per_row_tile),
+                    static_cast<unsigned>(output_addr),
+                    static_cast<unsigned>(scale_addr),
+                    static_cast<unsigned>(k),
+                    prefetch_started ? 1 : 0);
+        }
+
+        npu_decode_matvec_run(
+                cur_weight_spm,
+                NPU_DECODE_GEMV_ACT_BASE,
+                k,
+                static_cast<uint16_t>(rows),
+                output_addr,
+                scale_addr);
+
+        if (prefetch_started) {
+            npu_decode_dma_wait_mvin(1u << 0);
+        }
+
+        if (block_mvout) {
+            npu_decode_dma_mvout(
+                    static_cast<uint8_t *>(output_ptr) + row_base * sizeof(ggml_fp16_t),
+                    NPU_DECODE_GEMV_OUTPUT_BASE,
+                    0,
+                    rows - 1u,
+                    1,
+                    1,
+                    1,
+                    1,
+                    false,
+                    false,
+                    0,
+                    0);
+        }
+    }
+
+    if (!block_mvout) {
+        npu_decode_dma_mvout(
+                output_ptr,
+                NPU_DECODE_GEMV_OUTPUT_BASE,
+                0,
+                static_cast<uint32_t>(m) - 1u,
+                1,
+                1,
+                1,
+                1,
+                false,
+                false,
+                0,
+                0);
     }
 }
 
@@ -1322,6 +1691,9 @@ static void * npu_reg_get_proc_address(ggml_backend_reg_t reg, const char * name
     if (std::strcmp(name, "ggml_backend_npu_decode_w4a16_gemv_ex") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_w4a16_gemv_ex);
     }
+    if (std::strcmp(name, "ggml_backend_npu_decode_w4a16_simulate_ex") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_decode_w4a16_simulate_ex);
+    }
     if (std::strcmp(name, "ggml_backend_npu_decode_w4a16_preload") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_w4a16_preload);
     }
@@ -1987,7 +2359,8 @@ bool ggml_backend_npu_decode_w4a16_preload(
             cma_cursor = cache.cma_cursor;
         }
     }
-    if (npu_decode_init() == 0) {
+    if (npu_decode_preload_cma_enabled() &&
+            npu_decode_init_with_cma_retry(weight_name, false) == 0) {
         cma_base = npu_decode_memory_base();
         cma_map_size = npu_decode_memory_size();
         if (cma_limit_bytes == 0 && cma_base_offset < cma_map_size) {
@@ -2084,6 +2457,200 @@ bool ggml_backend_npu_decode_w4a16_preload(
         cache.cma_cursor = cma_cursor;
     }
     cache.entries[weight_name] = std::move(entry);
+    return true;
+}
+
+bool ggml_backend_npu_decode_w4a16_simulate_ex(
+        const char * op_name,
+        const void * q4_data,
+        int64_t packed_k,
+        int64_t out_channels,
+        int64_t q4_nb1,
+        const void * scale_data,
+        int scale_type,
+        int64_t scale_nb0,
+        int64_t scale_nb1,
+        const void * zero_data,
+        int zero_type,
+        int64_t zero_nb0,
+        int64_t zero_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const float * smooth_scale,
+        int64_t k,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1) {
+    using namespace ggml_npu;
+
+    auto fail = [op_name](const char * reason) {
+        if (npu_decode_w4a16_debug_log_enabled()) {
+            GGML_LOG_WARN("%s: reject %s: %s\n", __func__, op_name != nullptr ? op_name : "(unnamed)", reason);
+        }
+        return false;
+    };
+
+    if (q4_data == nullptr || scale_data == nullptr || zero_data == nullptr || act_data == nullptr ||
+            smooth_scale == nullptr || dst_data == nullptr) {
+        return fail("null pointer");
+    }
+    if (k <= 0 || n_cols <= 0 || out_channels <= 0 || packed_k != (k + 1) / 2) {
+        return fail("invalid dimensions");
+    }
+    if (scale_type != GGML_TYPE_F16 && scale_type != GGML_TYPE_F32) {
+        return fail("scale tensor must be F16 or F32");
+    }
+    if (zero_type != GGML_TYPE_F16 && zero_type != GGML_TYPE_F32) {
+        return fail("zero tensor must be F16 or F32");
+    }
+    if (act_type != GGML_TYPE_F16 && act_type != GGML_TYPE_F32) {
+        return fail("activation tensor must be F16 or F32");
+    }
+    if (dst_type != GGML_TYPE_F16 && dst_type != GGML_TYPE_F32) {
+        return fail("destination tensor must be F16 or F32");
+    }
+
+    const int64_t groups = (k + NPU_DECODE_GEMV_K_TILE - 1) / NPU_DECODE_GEMV_K_TILE;
+    if (!npu_decode_validate_symmetric_zero(
+            zero_data,
+            zero_type,
+            zero_nb0,
+            zero_nb1,
+            out_channels,
+            groups,
+            op_name)) {
+        return false;
+    }
+
+    std::vector<float> inv_smooth_scale(static_cast<size_t>(k));
+    for (int64_t i = 0; i < k; ++i) {
+        const float smooth = smooth_scale[i];
+        inv_smooth_scale[static_cast<size_t>(i)] =
+            smooth != 0.0f && std::isfinite(smooth) ? 1.0f / smooth : 1.0f;
+    }
+
+    if (npu_decode_pingpong_enabled()) {
+        npu_decode_gemv_layout layout = {};
+        if (!npu_decode_make_pingpong_layout(
+                static_cast<uint32_t>(out_channels),
+                static_cast<uint32_t>(k),
+                &layout)) {
+            return fail("pingpong layout failed");
+        }
+        std::vector<uint8_t> scale_packed(layout.scale_bytes);
+        std::vector<uint8_t> weight_packed(layout.weight_bytes);
+        npu_decode_pack_pingpong_scale_weight(
+                scale_packed,
+                weight_packed,
+                layout,
+                q4_data,
+                packed_k,
+                q4_nb1,
+                scale_data,
+                scale_type,
+                scale_nb0,
+                scale_nb1,
+                out_channels,
+                k);
+        std::vector<uint8_t> act_packed(layout.act_bytes);
+        for (int64_t col = 0; col < n_cols; ++col) {
+            npu_decode_pack_activation(
+                    act_packed.data(),
+                    act_packed.size(),
+                    layout,
+                    act_data,
+                    act_type,
+                    act_nb0,
+                    act_nb1,
+                    inv_smooth_scale.data(),
+                    k,
+                    col);
+            npu_decode_simulate_pingpong(
+                    act_packed.data(),
+                    scale_packed.data(),
+                    weight_packed.data(),
+                    layout,
+                    out_channels,
+                    k,
+                    dst_data,
+                    dst_type,
+                    dst_nb1,
+                    col);
+        }
+        return true;
+    }
+
+    const uint32_t total_row_tiles = npu_decode_ceil_div_u32(static_cast<uint32_t>(out_channels), NPU_DECODE_GEMV_M_TILE);
+    uint32_t max_block_row_tiles = 0;
+    for (uint32_t row_tiles = total_row_tiles; row_tiles >= 1; --row_tiles) {
+        const uint32_t candidate_rows = std::min<uint32_t>(row_tiles * NPU_DECODE_GEMV_M_TILE, static_cast<uint32_t>(out_channels));
+        npu_decode_gemv_layout candidate = {};
+        if (npu_decode_make_gemv_layout(candidate_rows, static_cast<uint32_t>(k), &candidate)) {
+            max_block_row_tiles = row_tiles;
+            break;
+        }
+        if (row_tiles == 1) {
+            break;
+        }
+    }
+    if (max_block_row_tiles == 0) {
+        return fail("no M block fits decode GEMV SPM capacity");
+    }
+
+    const uint32_t max_block_rows = max_block_row_tiles * NPU_DECODE_GEMV_M_TILE;
+    npu_decode_gemv_layout first_layout = {};
+    if (!npu_decode_make_gemv_layout(max_block_rows, static_cast<uint32_t>(k), &first_layout)) {
+        return fail("max block layout failed");
+    }
+    std::vector<uint8_t> act_packed(first_layout.act_bytes);
+    for (int64_t col = 0; col < n_cols; ++col) {
+        npu_decode_pack_activation(
+                act_packed.data(),
+                act_packed.size(),
+                first_layout,
+                act_data,
+                act_type,
+                act_nb0,
+                act_nb1,
+                inv_smooth_scale.data(),
+                k,
+                col);
+        for (int64_t row_base = 0; row_base < out_channels; row_base += max_block_rows) {
+            const uint32_t block_rows = static_cast<uint32_t>(std::min<int64_t>(max_block_rows, out_channels - row_base));
+            npu_decode_gemv_layout layout = {};
+            if (!npu_decode_make_gemv_layout(block_rows, static_cast<uint32_t>(k), &layout)) {
+                return fail("block layout failed");
+            }
+            std::vector<uint8_t> packed(layout.packed_bytes);
+            npu_decode_pack_scale_weight_block(
+                    packed,
+                    layout,
+                    q4_data,
+                    packed_k,
+                    q4_nb1,
+                    scale_data,
+                    scale_type,
+                    scale_nb0,
+                    scale_nb1,
+                    row_base,
+                    block_rows,
+                    k);
+            npu_decode_simulate_packed_block(
+                    act_packed.data(),
+                    packed.data(),
+                    layout,
+                    row_base,
+                    block_rows,
+                    k,
+                    dst_data,
+                    dst_type,
+                    dst_nb1,
+                    col);
+        }
+    }
     return true;
 }
 
@@ -2219,7 +2786,7 @@ bool ggml_backend_npu_decode_w4a16_gemv_ex(
         profile.heap_update_us = static_cast<uint64_t>(ggml_time_us() - setup_stage_start_us);
         setup_stage_start_us = ggml_time_us();
     }
-    if (npu_decode_init() != 0) {
+    if (npu_decode_init_with_cma_retry(op_name, true) != 0) {
         return fail("decode runtime init failed");
     }
     if (collect_profile) {
@@ -2309,11 +2876,12 @@ bool ggml_backend_npu_decode_w4a16_gemv_ex(
             }
 
             try {
-                npu_decode_gemv_pingpong_run(
+                npu_decode_gemv_pingpong_manual_run(
                         act_cma,
                         pingpong_scale_ptr,
                         pingpong_weight_ptr,
                         out_cma,
+                        preloaded->pingpong_layout,
                         static_cast<uint16_t>(out_channels),
                         static_cast<uint16_t>(k));
             } catch (const std::exception & e) {
@@ -2468,10 +3036,13 @@ bool ggml_backend_npu_decode_w4a16_gemv_ex(
                 stage_start_us = ggml_time_us();
             }
 
-            npu_decode_gemv_block_run(
-                    static_cast<uint16_t>(block_rows),
+            npu_decode_matvec_run(
+                    layout.weight_base,
+                    NPU_DECODE_GEMV_ACT_BASE,
                     static_cast<uint16_t>(k),
-                    static_cast<uint32_t>(row_base) * static_cast<uint32_t>(sizeof(ggml_fp16_t)));
+                    static_cast<uint16_t>(block_rows),
+                    static_cast<uint16_t>(row_base * sizeof(ggml_fp16_t)),
+                    NPU_DECODE_GEMV_SCALE_BASE);
             if (collect_profile) {
                 profile.gemv_us += static_cast<uint64_t>(ggml_time_us() - stage_start_us);
                 profile.gemv_calls += 1;

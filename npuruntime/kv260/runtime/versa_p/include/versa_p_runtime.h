@@ -17,6 +17,8 @@ extern "C" {
 #define VERSA_P_N_TILE                 480u
 #define VERSA_P_K_MAX                  4096u
 #define VERSA_P_ALIGN_BYTES            16u
+#define VERSA_P_HW_ALIGN_ELEMS         32u
+#define VERSA_P_DMA_ALIGN_BYTES        16u
 #define VERSA_P_META_BYTES             (1024u * 16u)
 
 typedef struct versa_p_device versa_p_device;
@@ -52,6 +54,7 @@ typedef struct versa_p_mvin_a_desc {
     uint32_t dram_row_stride_bytes;
     uint16_t m;
     uint16_t k;
+    uint8_t a_bank;
     uint8_t u8_minus_128;
 } versa_p_mvin_a_desc;
 
@@ -73,10 +76,12 @@ typedef struct versa_p_gemm_i8_desc {
     uint16_t m;
     uint16_t n;
     uint16_t k;
+    uint8_t a_bank;
     uint8_t w_bank;
     uint8_t accumulate_en;
     uint8_t add_bias_en;
     uint32_t bias_offset_bytes;
+    uint8_t o_bank;
 } versa_p_gemm_i8_desc;
 
 typedef struct versa_p_mvout_desc {
@@ -86,6 +91,7 @@ typedef struct versa_p_mvout_desc {
     uint16_t n;
     uint16_t output_stride_n;
     uint8_t mode;
+    uint8_t o_bank;
 } versa_p_mvout_desc;
 
 typedef struct versa_p_gemm_plan {
@@ -114,12 +120,12 @@ typedef struct versa_p_profile_counters {
     uint64_t mvout_busy_cycles;
     uint64_t busy_any_cycles;
     uint64_t busy_multi_cycles;
-    uint64_t axi_r_beats[3];
-    uint64_t axi_w_beats[3];
-    uint64_t axi_ar_stall_cycles[3];
-    uint64_t axi_r_stall_cycles[3];
-    uint64_t axi_aw_stall_cycles[3];
-    uint64_t axi_w_stall_cycles[3];
+    uint64_t axi_r_beats[4];
+    uint64_t axi_w_beats[4];
+    uint64_t axi_ar_stall_cycles[4];
+    uint64_t axi_r_stall_cycles[4];
+    uint64_t axi_aw_stall_cycles[4];
+    uint64_t axi_w_stall_cycles[4];
 } versa_p_profile_counters;
 
 int versa_p_init(versa_p_device **out_dev, const versa_p_options *options);

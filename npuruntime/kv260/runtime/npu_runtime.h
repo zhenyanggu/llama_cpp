@@ -550,8 +550,12 @@ extern "C" {
     void npu_dma_mvout_async(uint32_t dma_id, const MvoutConfig* cfg);
     void npu_dma_wait_mvin(uint32_t dma_mask);
     void npu_dma_wait_mvout(uint32_t dma_mask);
+    void npu_dma_mvin_a_async_bank(uint8_t a_bank, const MvinConfig* cfg);
+    void npu_dma_wait_a_bank(uint8_t a_bank);
     void npu_dma_mvin_w_async_bank(uint8_t w_bank, const MvinConfig* cfg);
     void npu_dma_wait_w_bank(uint8_t w_bank);
+    void npu_dma_mvout_async_bank(uint8_t o_bank, uint32_t dma_id, const MvoutConfig* cfg);
+    void npu_dma_wait_o_bank(uint8_t o_bank);
 
     // 便捷接口：DMA0 和 DMA1 并发执行两个 SPM MVIN，内部等待两路都完成。
     void npu_dma_double_mvin(const MvinConfig* dma0_cfg, const MvinConfig* dma1_cfg);
@@ -837,6 +841,26 @@ extern "C" {
     );
     void npu_gemm_plan_start_ex_bank(
         uint8_t  w_bank,
+        uint32_t a_addr,
+        uint32_t b_addr,
+        uint32_t out_addr,
+        uint32_t scratch_addr,
+        uint32_t bias_addr,
+        uint16_t block_m,
+        uint16_t block_n,
+        uint16_t block_k,
+        uint16_t a_stride,
+        uint16_t b_stride,
+        uint16_t out_stride,
+        uint16_t bias_stride,
+        bool     have_bias,
+        bool     is_accumulate,
+        bool     asymmetric_activations
+    );
+    void npu_gemm_plan_start_ex_banks(
+        uint8_t  a_bank,
+        uint8_t  w_bank,
+        uint8_t  o_bank,
         uint32_t a_addr,
         uint32_t b_addr,
         uint32_t out_addr,

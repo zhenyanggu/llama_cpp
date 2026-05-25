@@ -12,10 +12,12 @@ namespace ggml_npu {
 constexpr int64_t NPU_SA_TILE = 16;
 constexpr int64_t NPU_STAGE2_K_TILE = 2048;
 constexpr int64_t NPU_Q8_BLOCK = 32;
-// TODO: Replace these placeholder capacities with the real platform values.
-constexpr size_t NPU_DEFAULT_SPM_BYTES = 512u * 1024u;
-// TODO: Replace this placeholder ACC capacity with the real platform value.
-constexpr size_t NPU_DEFAULT_ACC_BYTES = 512u * 1024u;
+constexpr size_t NPU_VERSA_P_A_BANK_BYTES = 384u * 1024u;
+constexpr size_t NPU_VERSA_P_W_BANK_BYTES = 384u * 1024u;
+constexpr size_t NPU_VERSA_P_O_BANK_BYTES = 512u * 1024u;
+constexpr size_t NPU_VERSA_P_META_BYTES = 16u * 1024u;
+constexpr size_t NPU_DEFAULT_SPM_BYTES = NPU_VERSA_P_A_BANK_BYTES + NPU_VERSA_P_W_BANK_BYTES;
+constexpr size_t NPU_DEFAULT_ACC_BYTES = NPU_VERSA_P_O_BANK_BYTES;
 constexpr size_t NPU_DEFAULT_GUARD_BYTES = 4u * 1024u;
 constexpr uint32_t NPU_SPM_ALIGNMENT = 32;
 constexpr uint32_t NPU_ACC_ALIGNMENT = 4;

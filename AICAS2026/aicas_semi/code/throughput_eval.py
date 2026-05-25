@@ -49,7 +49,7 @@ def parse_args():
         "--request-timeout",
         help="HTTP timeout in seconds.",
         type=float,
-        default=300.0
+        default=1200.0
     )
     parser.add_argument(
         "--max-tokens",

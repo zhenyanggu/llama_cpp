@@ -90,6 +90,8 @@ static double profile_accounted_us(const npu_profile_node_record & node) {
         node.dma_in_pair_us_total +
         node.dma_in_bias_us_total +
         node.w_prefetch_wait_us_total +
+        node.a_prefetch_wait_us_total +
+        node.o_mvout_wait_us_total +
         node.gemm_us_total +
         node.dma_out_us_total +
         node.postprocess_us_total;
@@ -225,8 +227,13 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"weight_already_in_spm", tile.weight_already_in_spm},
         {"mvin_mask", tile.mvin_mask},
         {"w_bank", tile.w_bank},
+        {"a_bank", tile.a_bank},
+        {"o_bank", tile.o_bank},
         {"w_prefetch_issued", tile.w_prefetch_issued},
         {"w_prefetch_hit", tile.w_prefetch_hit},
+        {"a_prefetch_issued", tile.a_prefetch_issued},
+        {"a_prefetch_hit", tile.a_prefetch_hit},
+        {"o_mvout_async", tile.o_mvout_async},
         {"activation_bytes", tile.activation_bytes},
         {"weight_bytes", tile.weight_bytes},
         {"bias_bytes", tile.bias_bytes},
@@ -241,6 +248,9 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"dma_in_bias_us", tile.dma_in_bias_us},
         {"dma_in_pair_us", tile.dma_in_pair_us},
         {"w_prefetch_wait_us", tile.w_prefetch_wait_us},
+        {"a_prefetch_wait_us", tile.a_prefetch_wait_us},
+        {"o_mvout_wait_us", tile.o_mvout_wait_us},
+        {"o_mvout_hidden_candidate_us", tile.o_mvout_hidden_candidate_us},
         {"gemm_us", tile.gemm_us},
         {"dma_out_us", tile.dma_out_us},
         {"postprocess_us", tile.postprocess_us},
@@ -275,6 +285,10 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"k", node.k},
         {"use_aicas_w8a8", node.use_aicas_w8a8},
         {"shape_table_hit", node.shape_table_hit},
+        {"full_pingpong_enabled", node.full_pingpong_enabled},
+        {"a_prefetch_enabled", node.a_prefetch_enabled},
+        {"o_overlap_enabled", node.o_overlap_enabled},
+        {"full_output_cma_active", node.full_output_cma_active},
         {"shape_table_source", node.shape_table_source.empty() ? nullptr : json(node.shape_table_source)},
         {"activation_scale", node.activation_scale},
         {"activation_zero_point", node.activation_zero_point},
@@ -313,6 +327,10 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"w_prefetch_calls", node.w_prefetch_calls},
         {"w_prefetch_hits", node.w_prefetch_hits},
         {"w_prefetch_conflicts", node.w_prefetch_conflicts},
+        {"a_prefetch_calls", node.a_prefetch_calls},
+        {"a_prefetch_hits", node.a_prefetch_hits},
+        {"a_prefetch_conflicts", node.a_prefetch_conflicts},
+        {"o_mvout_async_calls", node.o_mvout_async_calls},
         {"packed_activation_bytes_total", node.packed_activation_bytes_total},
         {"copied_weight_bytes_total", node.copied_weight_bytes_total},
         {"dma_in_activation_bytes_total", node.dma_in_activation_bytes_total},
@@ -337,6 +355,10 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"dma_in_pair_us_total", node.dma_in_pair_us_total},
         {"w_prefetch_wait_us_total", node.w_prefetch_wait_us_total},
         {"w_prefetch_hidden_candidate_us_total", node.w_prefetch_hidden_candidate_us_total},
+        {"a_prefetch_wait_us_total", node.a_prefetch_wait_us_total},
+        {"a_prefetch_hidden_candidate_us_total", node.a_prefetch_hidden_candidate_us_total},
+        {"o_mvout_wait_us_total", node.o_mvout_wait_us_total},
+        {"o_mvout_hidden_candidate_us_total", node.o_mvout_hidden_candidate_us_total},
         {"dma_in_total_us", total_dma_in_us},
         {"gemm_us_total", node.gemm_us_total},
         {"dma_out_us_total", node.dma_out_us_total},
@@ -363,6 +385,10 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"n", node.n},
         {"k", node.k},
         {"shape_table_hit", node.shape_table_hit},
+        {"full_pingpong_enabled", node.full_pingpong_enabled},
+        {"a_prefetch_enabled", node.a_prefetch_enabled},
+        {"o_overlap_enabled", node.o_overlap_enabled},
+        {"full_output_cma_active", node.full_output_cma_active},
         {"first_stage_tm", node.first_stage_tm},
         {"first_stage_tn", node.first_stage_tn},
         {"first_stage_tk", node.first_stage_tk},
@@ -397,6 +423,14 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"w_prefetch_conflicts", node.w_prefetch_conflicts},
         {"w_prefetch_wait_us_total", node.w_prefetch_wait_us_total},
         {"w_prefetch_hidden_candidate_us_total", node.w_prefetch_hidden_candidate_us_total},
+        {"a_prefetch_calls", node.a_prefetch_calls},
+        {"a_prefetch_hits", node.a_prefetch_hits},
+        {"a_prefetch_conflicts", node.a_prefetch_conflicts},
+        {"a_prefetch_wait_us_total", node.a_prefetch_wait_us_total},
+        {"a_prefetch_hidden_candidate_us_total", node.a_prefetch_hidden_candidate_us_total},
+        {"o_mvout_async_calls", node.o_mvout_async_calls},
+        {"o_mvout_wait_us_total", node.o_mvout_wait_us_total},
+        {"o_mvout_hidden_candidate_us_total", node.o_mvout_hidden_candidate_us_total},
         {"raw_acc_mvout_nodes", node.raw_acc_mvout_nodes},
         {"raw_acc_mvout_tiles", node.raw_acc_mvout_tiles},
         {"dma_in_bias_us_total", node.dma_in_bias_us_total},
@@ -598,6 +632,10 @@ void npu_profile_flush() {
     double total_dma_in_bias_us = 0.0;
     double total_w_prefetch_wait_us = 0.0;
     double total_w_prefetch_hidden_candidate_us = 0.0;
+    double total_a_prefetch_wait_us = 0.0;
+    double total_a_prefetch_hidden_candidate_us = 0.0;
+    double total_o_mvout_wait_us = 0.0;
+    double total_o_mvout_hidden_candidate_us = 0.0;
     double total_gemm_us = 0.0;
     double total_dma_out_us = 0.0;
     double total_postprocess_us = 0.0;
@@ -615,6 +653,14 @@ void npu_profile_flush() {
     int64_t total_w_prefetch_calls = 0;
     int64_t total_w_prefetch_hits = 0;
     int64_t total_w_prefetch_conflicts = 0;
+    int64_t total_full_pingpong_nodes = 0;
+    int64_t total_a_prefetch_enabled_nodes = 0;
+    int64_t total_o_overlap_enabled_nodes = 0;
+    int64_t total_full_output_cma_nodes = 0;
+    int64_t total_a_prefetch_calls = 0;
+    int64_t total_a_prefetch_hits = 0;
+    int64_t total_a_prefetch_conflicts = 0;
+    int64_t total_o_mvout_async_calls = 0;
     int64_t total_dma_in_activation_bytes = 0;
     int64_t total_dma_in_weight_bytes = 0;
 
@@ -649,6 +695,10 @@ void npu_profile_flush() {
         total_dma_in_bias_us += node.dma_in_bias_us_total;
         total_w_prefetch_wait_us += node.w_prefetch_wait_us_total;
         total_w_prefetch_hidden_candidate_us += node.w_prefetch_hidden_candidate_us_total;
+        total_a_prefetch_wait_us += node.a_prefetch_wait_us_total;
+        total_a_prefetch_hidden_candidate_us += node.a_prefetch_hidden_candidate_us_total;
+        total_o_mvout_wait_us += node.o_mvout_wait_us_total;
+        total_o_mvout_hidden_candidate_us += node.o_mvout_hidden_candidate_us_total;
         total_gemm_us += node.gemm_us_total;
         total_dma_out_us += node.dma_out_us_total;
         total_postprocess_us += node.postprocess_us_total;
@@ -668,6 +718,14 @@ void npu_profile_flush() {
         total_w_prefetch_calls += node.w_prefetch_calls;
         total_w_prefetch_hits += node.w_prefetch_hits;
         total_w_prefetch_conflicts += node.w_prefetch_conflicts;
+        total_full_pingpong_nodes += node.full_pingpong_enabled ? 1 : 0;
+        total_a_prefetch_enabled_nodes += node.a_prefetch_enabled ? 1 : 0;
+        total_o_overlap_enabled_nodes += node.o_overlap_enabled ? 1 : 0;
+        total_full_output_cma_nodes += node.full_output_cma_active ? 1 : 0;
+        total_a_prefetch_calls += node.a_prefetch_calls;
+        total_a_prefetch_hits += node.a_prefetch_hits;
+        total_a_prefetch_conflicts += node.a_prefetch_conflicts;
+        total_o_mvout_async_calls += node.o_mvout_async_calls;
         total_dma_in_activation_bytes += node.dma_in_activation_bytes_total;
         total_dma_in_weight_bytes += node.dma_in_weight_bytes_total;
         total_gemm_plan_calls += node.gemm_plan_calls;
@@ -757,6 +815,18 @@ void npu_profile_flush() {
             {"total_w_prefetch_conflicts", total_w_prefetch_conflicts},
             {"total_w_prefetch_wait_us", total_w_prefetch_wait_us},
             {"total_w_prefetch_hidden_candidate_us", total_w_prefetch_hidden_candidate_us},
+            {"total_full_pingpong_nodes", total_full_pingpong_nodes},
+            {"total_a_prefetch_enabled_nodes", total_a_prefetch_enabled_nodes},
+            {"total_o_overlap_enabled_nodes", total_o_overlap_enabled_nodes},
+            {"total_full_output_cma_nodes", total_full_output_cma_nodes},
+            {"total_a_prefetch_calls", total_a_prefetch_calls},
+            {"total_a_prefetch_hits", total_a_prefetch_hits},
+            {"total_a_prefetch_conflicts", total_a_prefetch_conflicts},
+            {"total_a_prefetch_wait_us", total_a_prefetch_wait_us},
+            {"total_a_prefetch_hidden_candidate_us", total_a_prefetch_hidden_candidate_us},
+            {"total_o_mvout_async_calls", total_o_mvout_async_calls},
+            {"total_o_mvout_wait_us", total_o_mvout_wait_us},
+            {"total_o_mvout_hidden_candidate_us", total_o_mvout_hidden_candidate_us},
             {"total_gemm_us", total_gemm_us},
             {"total_gemm_plan_calls", total_gemm_plan_calls},
             {"total_dma_out_us", total_dma_out_us},
@@ -879,6 +949,14 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.w_prefetch_calls += delta.w_prefetch_calls;
     summary.w_prefetch_hits += delta.w_prefetch_hits;
     summary.w_prefetch_conflicts += delta.w_prefetch_conflicts;
+    summary.full_pingpong_nodes += delta.full_pingpong_nodes;
+    summary.a_prefetch_enabled_nodes += delta.a_prefetch_enabled_nodes;
+    summary.o_overlap_enabled_nodes += delta.o_overlap_enabled_nodes;
+    summary.full_output_cma_nodes += delta.full_output_cma_nodes;
+    summary.a_prefetch_calls += delta.a_prefetch_calls;
+    summary.a_prefetch_hits += delta.a_prefetch_hits;
+    summary.a_prefetch_conflicts += delta.a_prefetch_conflicts;
+    summary.o_mvout_async_calls += delta.o_mvout_async_calls;
     summary.packed_activation_bytes_total += delta.packed_activation_bytes_total;
     summary.copied_weight_bytes_total += delta.copied_weight_bytes_total;
     summary.dma_in_activation_bytes_total += delta.dma_in_activation_bytes_total;
@@ -904,6 +982,10 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.dma_in_pair_us_total += delta.dma_in_pair_us_total;
     summary.w_prefetch_wait_us_total += delta.w_prefetch_wait_us_total;
     summary.w_prefetch_hidden_candidate_us_total += delta.w_prefetch_hidden_candidate_us_total;
+    summary.a_prefetch_wait_us_total += delta.a_prefetch_wait_us_total;
+    summary.a_prefetch_hidden_candidate_us_total += delta.a_prefetch_hidden_candidate_us_total;
+    summary.o_mvout_wait_us_total += delta.o_mvout_wait_us_total;
+    summary.o_mvout_hidden_candidate_us_total += delta.o_mvout_hidden_candidate_us_total;
     summary.gemm_us_total += delta.gemm_us_total;
     summary.dma_out_us_total += delta.dma_out_us_total;
     summary.postprocess_us_total += delta.postprocess_us_total;

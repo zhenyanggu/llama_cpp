@@ -288,6 +288,14 @@ struct server_mtmd_prefill_profile {
         dst.w_prefetch_calls += src.w_prefetch_calls;
         dst.w_prefetch_hits += src.w_prefetch_hits;
         dst.w_prefetch_conflicts += src.w_prefetch_conflicts;
+        dst.full_pingpong_nodes += src.full_pingpong_nodes;
+        dst.a_prefetch_enabled_nodes += src.a_prefetch_enabled_nodes;
+        dst.o_overlap_enabled_nodes += src.o_overlap_enabled_nodes;
+        dst.full_output_cma_nodes += src.full_output_cma_nodes;
+        dst.a_prefetch_calls += src.a_prefetch_calls;
+        dst.a_prefetch_hits += src.a_prefetch_hits;
+        dst.a_prefetch_conflicts += src.a_prefetch_conflicts;
+        dst.o_mvout_async_calls += src.o_mvout_async_calls;
         dst.packed_activation_bytes_total += src.packed_activation_bytes_total;
         dst.copied_weight_bytes_total += src.copied_weight_bytes_total;
         dst.dma_in_activation_bytes_total += src.dma_in_activation_bytes_total;
@@ -308,6 +316,10 @@ struct server_mtmd_prefill_profile {
         dst.dma_in_pair_us_total += src.dma_in_pair_us_total;
         dst.w_prefetch_wait_us_total += src.w_prefetch_wait_us_total;
         dst.w_prefetch_hidden_candidate_us_total += src.w_prefetch_hidden_candidate_us_total;
+        dst.a_prefetch_wait_us_total += src.a_prefetch_wait_us_total;
+        dst.a_prefetch_hidden_candidate_us_total += src.a_prefetch_hidden_candidate_us_total;
+        dst.o_mvout_wait_us_total += src.o_mvout_wait_us_total;
+        dst.o_mvout_hidden_candidate_us_total += src.o_mvout_hidden_candidate_us_total;
         dst.gemm_us_total += src.gemm_us_total;
         dst.dma_out_us_total += src.dma_out_us_total;
         dst.postprocess_us_total += src.postprocess_us_total;
@@ -355,6 +367,22 @@ struct server_mtmd_prefill_profile {
             {"w_prefetch_conflicts", summary.w_prefetch_conflicts},
             {"w_prefetch_wait_us", summary.w_prefetch_wait_us_total},
             {"w_prefetch_hidden_candidate_us", summary.w_prefetch_hidden_candidate_us_total},
+            {"full_pingpong_enabled", summary.full_pingpong_nodes > 0},
+            {"full_pingpong_nodes", summary.full_pingpong_nodes},
+            {"a_prefetch_enabled", summary.a_prefetch_enabled_nodes > 0},
+            {"a_prefetch_enabled_nodes", summary.a_prefetch_enabled_nodes},
+            {"o_overlap_enabled", summary.o_overlap_enabled_nodes > 0},
+            {"o_overlap_enabled_nodes", summary.o_overlap_enabled_nodes},
+            {"full_output_cma_active", summary.full_output_cma_nodes > 0},
+            {"full_output_cma_nodes", summary.full_output_cma_nodes},
+            {"a_prefetch_calls", summary.a_prefetch_calls},
+            {"a_prefetch_hits", summary.a_prefetch_hits},
+            {"a_prefetch_conflicts", summary.a_prefetch_conflicts},
+            {"a_prefetch_wait_us", summary.a_prefetch_wait_us_total},
+            {"a_prefetch_hidden_candidate_us", summary.a_prefetch_hidden_candidate_us_total},
+            {"o_mvout_async_calls", summary.o_mvout_async_calls},
+            {"o_mvout_wait_us", summary.o_mvout_wait_us_total},
+            {"o_mvout_hidden_candidate_us", summary.o_mvout_hidden_candidate_us_total},
             {"raw_acc_mvout_nodes", summary.raw_acc_mvout_nodes},
             {"raw_acc_mvout_tiles", summary.raw_acc_mvout_tiles},
             {"total_node_us", summary.total_node_us},

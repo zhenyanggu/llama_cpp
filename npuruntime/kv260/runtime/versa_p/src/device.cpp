@@ -113,12 +113,22 @@ void reset_software_state(versa_p_device *dev)
     for (bool &inflight : dev->api_inflight) {
         inflight = false;
     }
+    dev->active_a_bank = 0;
+    dev->a_bank[0] = VersaPABankState{};
+    dev->a_bank[1] = VersaPABankState{};
+    dev->pending_mvin_a_bank = 0;
+    dev->mvin_a_inflight_bank = 0;
+    dev->pending_mvin_a_m = 0;
+    dev->pending_mvin_a_k = 0;
     dev->active_w_bank = 1;
     dev->w_bank[0] = VersaPBankState{};
     dev->w_bank[1] = VersaPBankState{};
     dev->pending_mvin_w_bank = 0;
     dev->pending_mvin_w_k = 0;
     dev->pending_mvin_w_n = 0;
+    dev->gemm_inflight_a_bank = 0;
+    dev->gemm_inflight_o_bank = 0;
+    dev->mvout_inflight_o_bank = 0;
     dev->pending_mvout_dma_addr = 0;
     dev->pending_mvout_bytes = 0;
 }

@@ -69,6 +69,12 @@ void versa_p_mark_api_complete(versa_p_device *dev, versa_p_api api)
         return;
     }
     dev->api_inflight[(int)api] = false;
+    if (api == VERSA_P_API_MVIN_A) {
+        VersaPABankState &bank = dev->a_bank[dev->pending_mvin_a_bank & 1u];
+        bank.loaded = true;
+        bank.m = dev->pending_mvin_a_m;
+        bank.k = dev->pending_mvin_a_k;
+    }
     if (api == VERSA_P_API_MVIN_W) {
         VersaPBankState &bank = dev->w_bank[dev->pending_mvin_w_bank & 1u];
         bank.loaded = true;
@@ -146,43 +152,50 @@ int versa_p_profile_read(versa_p_device *dev,
     out_counters->busy_multi_cycles =
         versa_p_read64(dev, VERSA_P_REG_PROFILE_BUSY_MULTI);
 
-    out_counters->axi_r_beats[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_R_BEATS);
-    out_counters->axi_r_beats[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_R_BEATS);
-    out_counters->axi_r_beats[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_R_BEATS);
-    out_counters->axi_w_beats[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_W_BEATS);
-    out_counters->axi_w_beats[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_W_BEATS);
-    out_counters->axi_w_beats[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_W_BEATS);
-
-    out_counters->axi_ar_stall_cycles[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_AR_STALL);
-    out_counters->axi_ar_stall_cycles[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_AR_STALL);
-    out_counters->axi_ar_stall_cycles[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_AR_STALL);
-    out_counters->axi_r_stall_cycles[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_R_STALL);
-    out_counters->axi_r_stall_cycles[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_R_STALL);
-    out_counters->axi_r_stall_cycles[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_R_STALL);
-    out_counters->axi_aw_stall_cycles[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_AW_STALL);
-    out_counters->axi_aw_stall_cycles[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_AW_STALL);
-    out_counters->axi_aw_stall_cycles[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_AW_STALL);
-    out_counters->axi_w_stall_cycles[0] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI0_W_STALL);
-    out_counters->axi_w_stall_cycles[1] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI1_W_STALL);
-    out_counters->axi_w_stall_cycles[2] =
-        versa_p_read64(dev, VERSA_P_REG_PROFILE_AXI2_W_STALL);
+    const uint32_t r_beats_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_R_BEATS,
+        VERSA_P_REG_PROFILE_AXI1_R_BEATS,
+        VERSA_P_REG_PROFILE_AXI2_R_BEATS,
+        VERSA_P_REG_PROFILE_AXI3_R_BEATS,
+    };
+    const uint32_t w_beats_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_W_BEATS,
+        VERSA_P_REG_PROFILE_AXI1_W_BEATS,
+        VERSA_P_REG_PROFILE_AXI2_W_BEATS,
+        VERSA_P_REG_PROFILE_AXI3_W_BEATS,
+    };
+    const uint32_t ar_stall_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_AR_STALL,
+        VERSA_P_REG_PROFILE_AXI1_AR_STALL,
+        VERSA_P_REG_PROFILE_AXI2_AR_STALL,
+        VERSA_P_REG_PROFILE_AXI3_AR_STALL,
+    };
+    const uint32_t r_stall_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_R_STALL,
+        VERSA_P_REG_PROFILE_AXI1_R_STALL,
+        VERSA_P_REG_PROFILE_AXI2_R_STALL,
+        VERSA_P_REG_PROFILE_AXI3_R_STALL,
+    };
+    const uint32_t aw_stall_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_AW_STALL,
+        VERSA_P_REG_PROFILE_AXI1_AW_STALL,
+        VERSA_P_REG_PROFILE_AXI2_AW_STALL,
+        VERSA_P_REG_PROFILE_AXI3_AW_STALL,
+    };
+    const uint32_t w_stall_regs[4] = {
+        VERSA_P_REG_PROFILE_AXI0_W_STALL,
+        VERSA_P_REG_PROFILE_AXI1_W_STALL,
+        VERSA_P_REG_PROFILE_AXI2_W_STALL,
+        VERSA_P_REG_PROFILE_AXI3_W_STALL,
+    };
+    for (int i = 0; i < 4; ++i) {
+        out_counters->axi_r_beats[i] = versa_p_read64(dev, r_beats_regs[i]);
+        out_counters->axi_w_beats[i] = versa_p_read64(dev, w_beats_regs[i]);
+        out_counters->axi_ar_stall_cycles[i] = versa_p_read64(dev, ar_stall_regs[i]);
+        out_counters->axi_r_stall_cycles[i] = versa_p_read64(dev, r_stall_regs[i]);
+        out_counters->axi_aw_stall_cycles[i] = versa_p_read64(dev, aw_stall_regs[i]);
+        out_counters->axi_w_stall_cycles[i] = versa_p_read64(dev, w_stall_regs[i]);
+    }
     return VERSA_P_OK;
 }
 

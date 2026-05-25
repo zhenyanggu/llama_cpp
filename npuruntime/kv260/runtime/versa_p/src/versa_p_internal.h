@@ -20,6 +20,12 @@ struct VersaPBankState {
     uint16_t n = 0;
 };
 
+struct VersaPABankState {
+    bool loaded = false;
+    uint16_t m = 0;
+    uint16_t k = 0;
+};
+
 struct versa_p_device {
     int fd = -1;
     void *regs = nullptr;
@@ -29,11 +35,20 @@ struct versa_p_device {
     npu_kv260_info info = {};
     std::vector<VersaPBlock> blocks;
     bool api_inflight[5] = {};
+    uint8_t active_a_bank = 0;
+    VersaPABankState a_bank[2];
+    uint8_t pending_mvin_a_bank = 0;
+    uint8_t mvin_a_inflight_bank = 0;
+    uint16_t pending_mvin_a_m = 0;
+    uint16_t pending_mvin_a_k = 0;
     uint8_t active_w_bank = 1;
     VersaPBankState w_bank[2];
     uint8_t pending_mvin_w_bank = 0;
     uint16_t pending_mvin_w_k = 0;
     uint16_t pending_mvin_w_n = 0;
+    uint8_t gemm_inflight_a_bank = 0;
+    uint8_t gemm_inflight_o_bank = 0;
+    uint8_t mvout_inflight_o_bank = 0;
     uint32_t pending_mvout_dma_addr = 0;
     uint32_t pending_mvout_bytes = 0;
 };

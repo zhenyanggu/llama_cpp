@@ -1033,6 +1033,25 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
             ? plan->config.spm_bytes - plan->config.guard_bytes
             : plan->config.spm_bytes);
 
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    (void)spm_overlaps;
+    (void)spm_end;
+    (void)spm_limit;
+    const uint32_t a_bank_limit = static_cast<uint32_t>(NPU_VERSA_P_A_BANK_BYTES);
+    const uint32_t w_bank_limit = static_cast<uint32_t>(NPU_VERSA_P_W_BANK_BYTES);
+    if (act_bytes > a_bank_limit) {
+        if (reason) {
+            *reason = "Versa_P A bank allocation overflow";
+        }
+        return false;
+    }
+    if (weight_bytes > w_bank_limit) {
+        if (reason) {
+            *reason = "Versa_P W bank allocation overflow";
+        }
+        return false;
+    }
+#else
     if (spm_overlaps) {
         if (reason) {
             *reason = "SPM activation/weight fixed regions overlap";
@@ -1045,6 +1064,7 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         }
         return false;
     }
+#endif
 
     const uint32_t acc_bytes = static_cast<uint32_t>(tile_n * tile_m_stride * sizeof(int32_t));
     const uint32_t bias_acc_bytes = plan->bias != nullptr || plan->aicas_w8a8.valid
@@ -1104,6 +1124,22 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     const uint32_t acc_end = std::max(
         std::max(std::max(bias_acc_end, output_acc_end), scratch_acc_end),
         std::max(bias_cache_end, scale_cache_end));
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    (void)acc_overlaps;
+    (void)acc_end;
+    if (acc_bytes > NPU_VERSA_P_O_BANK_BYTES) {
+        if (reason) {
+            *reason = "Versa_P O bank allocation overflow";
+        }
+        return false;
+    }
+    if (bias_cache_bytes + scale_cache_bytes > NPU_VERSA_P_META_BYTES) {
+        if (reason) {
+            *reason = "Versa_P meta bank allocation overflow";
+        }
+        return false;
+    }
+#else
     if (acc_overlaps) {
         if (reason) {
             *reason = "ACC bias/output fixed regions overlap";
@@ -1116,6 +1152,7 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         }
         return false;
     }
+#endif
 
     plan->config.layout.activation = {
         npu_memory_space::spm,

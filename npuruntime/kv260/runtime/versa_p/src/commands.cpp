@@ -7,33 +7,50 @@ bool valid_api_idle(versa_p_device *dev, versa_p_api api)
     return dev && !dev->api_inflight[(int)api];
 }
 
-bool resource_busy_for(versa_p_device *dev, versa_p_api api)
+bool is_multiple_of(uint32_t value, uint32_t alignment)
 {
-    switch (api) {
-    case VERSA_P_API_MVIN_A:
-        return dev->api_inflight[VERSA_P_API_GEMM_I8];
-    case VERSA_P_API_MVIN_META:
-        return dev->api_inflight[VERSA_P_API_GEMM_I8] ||
-               dev->api_inflight[VERSA_P_API_MVOUT];
-    case VERSA_P_API_GEMM_I8:
-        return dev->api_inflight[VERSA_P_API_MVIN_A] ||
-               dev->api_inflight[VERSA_P_API_MVIN_META] ||
-               dev->api_inflight[VERSA_P_API_MVOUT];
-    case VERSA_P_API_MVOUT:
-        return dev->api_inflight[VERSA_P_API_MVIN_META] ||
-               dev->api_inflight[VERSA_P_API_GEMM_I8];
-    default:
-        return false;
-    }
+    return alignment != 0 && (value % alignment) == 0;
+}
+
+bool mvin_a_conflicts(versa_p_device *dev, uint8_t a_bank)
+{
+    return dev->api_inflight[VERSA_P_API_GEMM_I8] &&
+           dev->gemm_inflight_a_bank == a_bank;
+}
+
+bool gemm_conflicts(versa_p_device *dev, uint8_t a_bank, uint8_t o_bank)
+{
+    return (dev->api_inflight[VERSA_P_API_MVIN_A] &&
+            dev->mvin_a_inflight_bank == a_bank) ||
+           dev->api_inflight[VERSA_P_API_MVIN_META] ||
+           (dev->api_inflight[VERSA_P_API_MVOUT] &&
+            dev->mvout_inflight_o_bank == o_bank);
+}
+
+bool mvout_conflicts(versa_p_device *dev, uint8_t o_bank)
+{
+    return dev->api_inflight[VERSA_P_API_MVIN_META] ||
+           (dev->api_inflight[VERSA_P_API_GEMM_I8] &&
+            dev->gemm_inflight_o_bank == o_bank);
+}
+
+bool meta_conflicts(versa_p_device *dev)
+{
+    return dev->api_inflight[VERSA_P_API_GEMM_I8] ||
+           dev->api_inflight[VERSA_P_API_MVOUT];
 }
 
 int validate_mvin_a(const versa_p_mvin_a_desc *desc)
 {
     if (!desc || desc->m == 0 || desc->k == 0 || desc->k > VERSA_P_K_MAX ||
-        desc->dram_row_stride_bytes < desc->k) {
+        desc->a_bank > 1 ||
+        desc->dram_row_stride_bytes < desc->k ||
+        !is_multiple_of(desc->m, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->k, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->dram_row_stride_bytes, VERSA_P_HW_ALIGN_ELEMS)) {
         return VERSA_P_ERR_ILLEGAL_SHAPE;
     }
-    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_ALIGN_BYTES)) {
+    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ALIGNMENT;
     }
     return VERSA_P_OK;
@@ -42,10 +59,12 @@ int validate_mvin_a(const versa_p_mvin_a_desc *desc)
 int validate_mvin_w(versa_p_device *dev, const versa_p_mvin_w_desc *desc)
 {
     if (!desc || desc->k == 0 || desc->n == 0 || desc->k > VERSA_P_K_MAX ||
-        desc->w_bank > 1) {
+        desc->w_bank > 1 ||
+        !is_multiple_of(desc->k, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->n, VERSA_P_HW_ALIGN_ELEMS)) {
         return VERSA_P_ERR_ILLEGAL_SHAPE;
     }
-    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_ALIGN_BYTES)) {
+    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ALIGNMENT;
     }
     if (desc->w_bank == dev->active_w_bank) {
@@ -56,11 +75,12 @@ int validate_mvin_w(versa_p_device *dev, const versa_p_mvin_w_desc *desc)
 
 int validate_mvin_meta(const versa_p_mvin_meta_desc *desc)
 {
-    if (!desc || desc->byte_count == 0 || desc->meta_type > 3) {
+    if (!desc || desc->byte_count == 0 || desc->meta_type > 3 ||
+        !is_multiple_of(desc->byte_count, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ILLEGAL_SHAPE;
     }
-    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_ALIGN_BYTES) ||
-        !versa_p_is_aligned(desc->meta_offset_bytes, VERSA_P_ALIGN_BYTES)) {
+    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_DMA_ALIGN_BYTES) ||
+        !versa_p_is_aligned(desc->meta_offset_bytes, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ALIGNMENT;
     }
     if (desc->meta_offset_bytes > VERSA_P_META_BYTES ||
@@ -73,7 +93,11 @@ int validate_mvin_meta(const versa_p_mvin_meta_desc *desc)
 int validate_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc)
 {
     if (!desc || desc->m == 0 || desc->n == 0 || desc->k == 0 ||
-        desc->k > VERSA_P_K_MAX || desc->w_bank > 1) {
+        desc->k > VERSA_P_K_MAX || desc->a_bank > 1 ||
+        desc->w_bank > 1 || desc->o_bank > 1 ||
+        !is_multiple_of(desc->m, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->n, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->k, VERSA_P_HW_ALIGN_ELEMS)) {
         return VERSA_P_ERR_ILLEGAL_SHAPE;
     }
     if (desc->accumulate_en && desc->add_bias_en) {
@@ -83,7 +107,14 @@ int validate_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc)
     if (!bank.loaded) {
         return VERSA_P_ERR_BANK_NOT_VALID;
     }
-    if (bank.k != desc->k || desc->n > bank.n) {
+    const VersaPABankState &a_bank = dev->a_bank[desc->a_bank];
+    if (!a_bank.loaded) {
+        return VERSA_P_ERR_BANK_NOT_VALID;
+    }
+    if (a_bank.m != desc->m || a_bank.k != desc->k) {
+        return VERSA_P_ERR_SHAPE_MISMATCH;
+    }
+    if (bank.k != desc->k || bank.n != desc->n) {
         return VERSA_P_ERR_SHAPE_MISMATCH;
     }
     if (desc->add_bias_en &&
@@ -95,18 +126,22 @@ int validate_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc)
 
 int validate_mvout(const versa_p_mvout_desc *desc)
 {
-    if (!desc || desc->m == 0 || desc->n == 0 ||
-        (desc->output_stride_n != 0 && desc->output_stride_n < desc->n)) {
+    if (!desc || desc->m == 0 || desc->n == 0 || desc->o_bank > 1 ||
+        (desc->output_stride_n != 0 && desc->output_stride_n < desc->n) ||
+        !is_multiple_of(desc->m, VERSA_P_HW_ALIGN_ELEMS) ||
+        !is_multiple_of(desc->n, VERSA_P_HW_ALIGN_ELEMS) ||
+        (desc->output_stride_n != 0 &&
+         !is_multiple_of(desc->output_stride_n, VERSA_P_HW_ALIGN_ELEMS))) {
         return VERSA_P_ERR_ILLEGAL_SHAPE;
     }
-    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_ALIGN_BYTES)) {
+    if (!versa_p_is_aligned(desc->dram_base, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ALIGNMENT;
     }
     if (desc->mode > VERSA_P_MVOUT_FP32_PER_CHANNEL_Q8_24) {
         return VERSA_P_ERR_UNSUPPORTED_MODE;
     }
     if (desc->mode == VERSA_P_MVOUT_FP32_PER_CHANNEL_Q8_24 &&
-        !versa_p_is_aligned(desc->scale_param, VERSA_P_ALIGN_BYTES)) {
+        !versa_p_is_aligned(desc->scale_param, VERSA_P_DMA_ALIGN_BYTES)) {
         return VERSA_P_ERR_ALIGNMENT;
     }
     return VERSA_P_OK;
@@ -141,12 +176,12 @@ int versa_p_start_mvin_a(versa_p_device *dev, const versa_p_mvin_a_desc *desc)
     if (!valid_api_idle(dev, VERSA_P_API_MVIN_A)) {
         return VERSA_P_ERR_BUSY;
     }
-    if (resource_busy_for(dev, VERSA_P_API_MVIN_A)) {
-        return VERSA_P_ERR_RESOURCE_CONFLICT;
-    }
     int rc = validate_mvin_a(desc);
     if (rc != VERSA_P_OK) {
         return rc;
+    }
+    if (mvin_a_conflicts(dev, desc->a_bank)) {
+        return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
     rc = versa_p_sync_dma_range(
         dev, desc->dram_base,
@@ -162,9 +197,15 @@ int versa_p_start_mvin_a(versa_p_device *dev, const versa_p_mvin_a_desc *desc)
     uint64_t desc1 = (uint64_t)desc->m |
                      ((uint64_t)desc->k << 16) |
                      ((uint64_t)(desc->u8_minus_128 != 0) << 32) |
+                     ((uint64_t)(desc->a_bank & 1u) << VERSA_P_MVIN_A_BANK_BIT) |
                      (1ull << VERSA_P_START_MVIN_A_BIT);
     versa_p_write64(dev, VERSA_P_REG_MVIN_A_DESC0, desc0);
     versa_p_write64(dev, VERSA_P_REG_MVIN_A_DESC1, desc1);
+    dev->a_bank[desc->a_bank].loaded = false;
+    dev->pending_mvin_a_bank = desc->a_bank;
+    dev->mvin_a_inflight_bank = desc->a_bank;
+    dev->pending_mvin_a_m = desc->m;
+    dev->pending_mvin_a_k = desc->k;
     mark_started(dev, VERSA_P_API_MVIN_A);
     return VERSA_P_OK;
 }
@@ -213,7 +254,7 @@ int versa_p_start_mvin_meta(versa_p_device *dev,
     if (!valid_api_idle(dev, VERSA_P_API_MVIN_META)) {
         return VERSA_P_ERR_BUSY;
     }
-    if (resource_busy_for(dev, VERSA_P_API_MVIN_META)) {
+    if (meta_conflicts(dev)) {
         return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
     int rc = validate_mvin_meta(desc);
@@ -247,12 +288,12 @@ int versa_p_start_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc)
     if (!valid_api_idle(dev, VERSA_P_API_GEMM_I8)) {
         return VERSA_P_ERR_BUSY;
     }
-    if (resource_busy_for(dev, VERSA_P_API_GEMM_I8)) {
-        return VERSA_P_ERR_RESOURCE_CONFLICT;
-    }
     int rc = validate_gemm_i8(dev, desc);
     if (rc != VERSA_P_OK) {
         return rc;
+    }
+    if (gemm_conflicts(dev, desc->a_bank, desc->o_bank)) {
+        return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
 
     uint64_t desc0 = (uint64_t)desc->m |
@@ -261,10 +302,15 @@ int versa_p_start_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc)
                      ((uint64_t)(desc->w_bank & 1u) << 48) |
                      ((uint64_t)(desc->accumulate_en != 0) << 49) |
                      ((uint64_t)(desc->add_bias_en != 0) << 50) |
+                     ((uint64_t)(desc->a_bank & 1u) << VERSA_P_GEMM_A_BANK_BIT) |
+                     ((uint64_t)(desc->o_bank & 1u) << 53) |
                      (1ull << VERSA_P_START_GEMM_BIT);
     versa_p_write64(dev, VERSA_P_REG_GEMM_DESC1, desc->bias_offset_bytes);
     versa_p_write64(dev, VERSA_P_REG_GEMM_DESC0, desc0);
+    dev->active_a_bank = desc->a_bank;
     dev->active_w_bank = desc->w_bank;
+    dev->gemm_inflight_a_bank = desc->a_bank;
+    dev->gemm_inflight_o_bank = desc->o_bank;
     mark_started(dev, VERSA_P_API_GEMM_I8);
     return VERSA_P_OK;
 }
@@ -277,12 +323,12 @@ int versa_p_start_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc)
     if (!valid_api_idle(dev, VERSA_P_API_MVOUT)) {
         return VERSA_P_ERR_BUSY;
     }
-    if (resource_busy_for(dev, VERSA_P_API_MVOUT)) {
-        return VERSA_P_ERR_RESOURCE_CONFLICT;
-    }
     int rc = validate_mvout(desc);
     if (rc != VERSA_P_OK) {
         return rc;
+    }
+    if (mvout_conflicts(dev, desc->o_bank)) {
+        return VERSA_P_ERR_RESOURCE_CONFLICT;
     }
 
     uint64_t desc0 = (uint64_t)desc->dram_base |
@@ -293,6 +339,7 @@ int versa_p_start_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc)
                      ((uint64_t)desc->n << 16) |
                      ((uint64_t)output_stride_n << 32) |
                      ((uint64_t)(desc->mode & 3u) << 48) |
+                     ((uint64_t)(desc->o_bank & 1u) << 51) |
                      (1ull << VERSA_P_START_MVOUT_BIT);
     versa_p_write64(dev, VERSA_P_REG_MVOUT_DESC0, desc0);
     versa_p_write64(dev, VERSA_P_REG_MVOUT_DESC1, desc1);
@@ -300,6 +347,7 @@ int versa_p_start_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc)
     dev->pending_mvout_bytes =
         (uint32_t)strided_span_bytes(desc->m, desc->n * sizeof(uint32_t),
                                      output_stride_n * sizeof(uint32_t));
+    dev->mvout_inflight_o_bank = desc->o_bank;
     mark_started(dev, VERSA_P_API_MVOUT);
     return VERSA_P_OK;
 }

@@ -41,6 +41,14 @@ typedef struct ggml_npu_profile_summary {
     int64_t w_prefetch_calls;
     int64_t w_prefetch_hits;
     int64_t w_prefetch_conflicts;
+    int64_t full_pingpong_nodes;
+    int64_t a_prefetch_enabled_nodes;
+    int64_t o_overlap_enabled_nodes;
+    int64_t full_output_cma_nodes;
+    int64_t a_prefetch_calls;
+    int64_t a_prefetch_hits;
+    int64_t a_prefetch_conflicts;
+    int64_t o_mvout_async_calls;
     int64_t packed_activation_bytes_total;
     int64_t copied_weight_bytes_total;
     int64_t dma_in_activation_bytes_total;
@@ -66,6 +74,10 @@ typedef struct ggml_npu_profile_summary {
     int64_t dma_in_pair_us_total;
     int64_t w_prefetch_wait_us_total;
     int64_t w_prefetch_hidden_candidate_us_total;
+    int64_t a_prefetch_wait_us_total;
+    int64_t a_prefetch_hidden_candidate_us_total;
+    int64_t o_mvout_wait_us_total;
+    int64_t o_mvout_hidden_candidate_us_total;
     int64_t gemm_us_total;
     int64_t dma_out_us_total;
     int64_t postprocess_us_total;
@@ -160,6 +172,31 @@ GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_gemv(
         int64_t dst_nb1);
 
 GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_gemv_ex(
+        const char * op_name,
+        const void * q4_data,
+        int64_t packed_k,
+        int64_t out_channels,
+        int64_t q4_nb1,
+        const void * scale_data,
+        int scale_type,
+        int64_t scale_nb0,
+        int64_t scale_nb1,
+        const void * zero_data,
+        int zero_type,
+        int64_t zero_nb0,
+        int64_t zero_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const float * smooth_scale,
+        int64_t k,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
+
+GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_simulate_ex(
         const char * op_name,
         const void * q4_data,
         int64_t packed_k,

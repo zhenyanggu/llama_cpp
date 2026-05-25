@@ -5,23 +5,34 @@
   "env": {
     "GGML_NPU_FORCE_FP32_MVOUT": "1",
     "GGML_NPU_W_PINGPONG": "1",
+    "GGML_NPU_FULL_PINGPONG": "1",
+    "GGML_NPU_O_OVERLAP": "1",
+    "GGML_NPU_A_PREFETCH": "1",
     "GGML_NPU_FULL_OUTPUT_CMA": "1",
+    "GGML_NPU_STRIDED_MVOUT": "1",
     "GGML_NPU_CMA_READ_DMA": "1",
     "GGML_NPU_CMA_READ_DMA_MIN_BYTES": "0",
     "GGML_NPU_BIAS_CACHE": "1",
     "GGML_NPU_ACT_PACK_ASYNC": "1",
-    "GGML_NPU_ACT_PACK_ASYNC_WINDOW": "8"
+    "GGML_NPU_ACT_PACK_ASYNC_WINDOW": "8",
+    "AICAS_TEXT_DECODE_AWQ": "1",
+    "AICAS_TEXT_DECODE_AWQ_PINGPONG": "1",
+    "AICAS_TEXT_DECODE_AWQ_OUTPUT_F16": "1",
+    "AICAS_TEXT_DECODE_AWQ_CMA_RETRY": "1",
+    "AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD_CMA": "1",
+    "AICAS_TEXT_DECODE_AWQ_BLOCK_MVOUT": "0"
   },
   "validated": {
-    "date": "2026-05-22",
+    "date": "2026-05-25",
     "board": "KV260",
-    "overlay_app": "versa_prefill_app",
-    "run_id": "20260522Tdefault-best-prefill-summary",
+    "overlay_app": "versa_prefill_profile",
+    "run_id": "20260525Tdecode-offset-32tok-cmapreload",
     "prompt_tokens": 501,
     "completion_tokens": 32,
-    "prefill_ms": 34961.788,
-    "decode_ms": 5621.343,
-    "prefill_tps": 14.329930723222736,
-    "decode_tps": 5.6925898312912055
+    "prefill_ms": 31561.66,
+    "decode_ms": 4403.82,
+    "prefill_tps": 15.87,
+    "decode_tps": 7.27,
+    "note": "profile-only throughput smoke using decode NPU manual pingpong with offset-output MATVEC, final MVOUT, and decode CMA-resident packed weights; 128-token follow-up run 20260525Tdecode-offset-128tok-cmapreload completed correctly at 6.94 decode t/s"
   }
 }

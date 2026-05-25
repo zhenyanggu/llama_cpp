@@ -63,6 +63,30 @@ extern "C" bool ggml_backend_npu_decode_w4a16_gemv_ex(
         void * dst_data,
         int dst_type,
         int64_t dst_nb1);
+extern "C" bool ggml_backend_npu_decode_w4a16_simulate_ex(
+        const char * op_name,
+        const void * q4_data,
+        int64_t packed_k,
+        int64_t out_channels,
+        int64_t q4_nb1,
+        const void * scale_data,
+        int scale_type,
+        int64_t scale_nb0,
+        int64_t scale_nb1,
+        const void * zero_data,
+        int zero_type,
+        int64_t zero_nb0,
+        int64_t zero_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const float * smooth_scale,
+        int64_t k,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
 #endif
 
 struct llama_text_activation_stats {
@@ -319,6 +343,54 @@ static bool llama_npu_text_prefill_dynamic_enabled() {
 static bool llama_npu_text_decode_awq_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_decode_awq_compare_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static int64_t llama_npu_text_decode_awq_compare_limit() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_LIMIT");
+    if (value == nullptr || value[0] == '\0') {
+        return 1;
+    }
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    return end != value && parsed > 0 ? parsed : 1;
+}
+
+static bool llama_npu_text_decode_awq_compare_match(const char * op_name) {
+    const char * filter = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_OP");
+    if (filter == nullptr || filter[0] == '\0') {
+        return true;
+    }
+    return op_name != nullptr && std::strstr(op_name, filter) != nullptr;
+}
+
+static bool llama_npu_text_decode_awq_compare_take(const char * op_name) {
+    if (!llama_npu_text_decode_awq_compare_enabled() ||
+            !llama_npu_text_decode_awq_compare_match(op_name)) {
+        return false;
+    }
+    static std::mutex mutex;
+    static int64_t taken = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (taken >= llama_npu_text_decode_awq_compare_limit()) {
+        return false;
+    }
+    ++taken;
+    return true;
+}
+
+static double llama_npu_text_decode_awq_compare_threshold(const char * name, double fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+    char * end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    return end != value && parsed >= 0.0 ? parsed : fallback;
 }
 
 static bool llama_text_decode_awq_output_f16_enabled() {
@@ -1507,6 +1579,168 @@ static void llama_compute_text_decode_awq_mul_mat(
     }
 }
 
+static std::vector<float> llama_compute_text_decode_awq_reference_f32(
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        const llama_aicas_text_decode_awq_tensor * cfg) {
+    const int64_t k = cfg->in_features;
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+    std::vector<float> result(static_cast<size_t>(n_cols * out_channels), 0.0f);
+    std::vector<float> act_smooth(static_cast<size_t>(k));
+
+    for (int64_t col = 0; col < n_cols; ++col) {
+        const char * act_col = (const char *) b->data + col * b->nb[1];
+        for (int64_t i = 0; i < k; ++i) {
+            const float act_value = llama_decode_awq_read_act(b, act_col, i);
+            act_smooth[static_cast<size_t>(i)] = act_value / cfg->smooth_scale[static_cast<size_t>(i)];
+        }
+
+        for (int64_t j = 0; j < out_channels; ++j) {
+            const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
+            const float * zero_row  = (const float *) cfg->zero_tensor->data + j * cfg->zero_tensor->ne[0];
+            float acc = 0.0f;
+            const int64_t groups = cfg->zero_tensor->ne[0];
+            for (int64_t g = 0; g < groups; ++g) {
+                const int64_t start = g * cfg->group_size;
+                const int64_t end = std::min(k, start + cfg->group_size);
+                const float group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
+                const float group_zero = zero_row[g];
+                for (int64_t i = start; i < end; ++i) {
+                    const uint8_t packed = w_row[i / 2];
+                    const float q = (float) llama_decode_awq_q4(packed, i);
+                    const float w = (q - group_zero) * group_scale;
+                    acc += act_smooth[static_cast<size_t>(i)] * w;
+                }
+            }
+            result[static_cast<size_t>(col * out_channels + j)] = acc;
+        }
+    }
+    return result;
+}
+
+static float llama_decode_awq_read_output_f32(
+        const void * data,
+        int type,
+        int64_t dst_nb1,
+        int64_t col,
+        int64_t row) {
+    const char * col_ptr = static_cast<const char *>(data) + col * dst_nb1;
+    if (type == GGML_TYPE_F16) {
+        return ggml_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t *>(col_ptr)[row]);
+    }
+    return reinterpret_cast<const float *>(col_ptr)[row];
+}
+
+struct llama_decode_awq_compare_stats {
+    int64_t count = 0;
+    int64_t bad = 0;
+    int64_t first_bad = -1;
+    float first_ref = 0.0f;
+    float first_got = 0.0f;
+    double max_abs = 0.0;
+    double max_rel = 0.0;
+};
+
+static llama_decode_awq_compare_stats llama_decode_awq_compare_vectors(
+        const std::vector<float> & ref,
+        const std::vector<float> & got,
+        double atol,
+        double rtol) {
+    llama_decode_awq_compare_stats stats;
+    stats.count = static_cast<int64_t>(std::min(ref.size(), got.size()));
+    for (int64_t i = 0; i < stats.count; ++i) {
+        const double r = ref[static_cast<size_t>(i)];
+        const double g = got[static_cast<size_t>(i)];
+        const double abs_err = std::fabs(g - r);
+        const double rel_err = abs_err / std::max(1.0, std::fabs(r));
+        stats.max_abs = std::max(stats.max_abs, abs_err);
+        stats.max_rel = std::max(stats.max_rel, rel_err);
+        if (abs_err > atol + rtol * std::fabs(r)) {
+            ++stats.bad;
+            if (stats.first_bad < 0) {
+                stats.first_bad = i;
+                stats.first_ref = static_cast<float>(r);
+                stats.first_got = static_cast<float>(g);
+            }
+        }
+    }
+    return stats;
+}
+
+static std::string llama_decode_awq_json_escape(const char * text) {
+    std::ostringstream out;
+    if (text == nullptr) {
+        return "";
+    }
+    for (const char * p = text; *p; ++p) {
+        switch (*p) {
+            case '\\': out << "\\\\"; break;
+            case '"':  out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:   out << *p; break;
+        }
+    }
+    return out.str();
+}
+
+static void llama_decode_awq_write_compare_record(
+        const char * op_name,
+        int64_t out_channels,
+        int64_t k,
+        int64_t n_cols,
+        bool npu_ok,
+        bool sim_ok,
+        const llama_decode_awq_compare_stats & cpu_vs_npu,
+        const llama_decode_awq_compare_stats & cpu_vs_sim,
+        const llama_decode_awq_compare_stats & sim_vs_npu) {
+    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
+    const char * path_env = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_JSONL");
+    std::string path;
+    if (path_env != nullptr && path_env[0] != '\0') {
+        path = path_env;
+    } else if (dir != nullptr && dir[0] != '\0') {
+        path = dir;
+        if (path.back() != '/') {
+            path += '/';
+        }
+        path += "decode_awq_compare.jsonl";
+    } else {
+        path = "decode_awq_compare.jsonl";
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(path, std::ios::app);
+    if (!out.good()) {
+        return;
+    }
+
+    auto write_stats = [&out](const char * name, const llama_decode_awq_compare_stats & s) {
+        out << ",\"" << name << "\":{"
+            << "\"count\":" << s.count
+            << ",\"bad\":" << s.bad
+            << ",\"first_bad\":" << s.first_bad
+            << ",\"first_ref\":" << s.first_ref
+            << ",\"first_got\":" << s.first_got
+            << ",\"max_abs\":" << s.max_abs
+            << ",\"max_rel\":" << s.max_rel
+            << "}";
+    };
+
+    out << "{\"profile_kind\":\"aicas_decode_awq_compare\""
+        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
+        << ",\"dims\":{\"m\":" << out_channels << ",\"k\":" << k << ",\"n_cols\":" << n_cols << "}"
+        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
+        << ",\"sim_ok\":" << (sim_ok ? "true" : "false");
+    write_stats("cpu_vs_npu", cpu_vs_npu);
+    write_stats("cpu_vs_sim", cpu_vs_sim);
+    write_stats("sim_vs_npu", sim_vs_npu);
+    out << "}\n";
+}
+
 #ifdef GGML_USE_NPU
 static void llama_compute_text_decode_awq_mul_mat_npu(
         struct ggml_tensor * dst,
@@ -1528,6 +1762,39 @@ static void llama_compute_text_decode_awq_mul_mat_npu(
     GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
     GGML_ASSERT(cfg->scale_tensor != nullptr);
     GGML_ASSERT(cfg->zero_tensor != nullptr);
+
+    const bool compare = llama_npu_text_decode_awq_compare_take(c->name);
+    std::vector<float> cpu_ref;
+    std::vector<float> sim_ref;
+    bool sim_ok = false;
+    if (compare) {
+        cpu_ref = llama_compute_text_decode_awq_reference_f32(b, c, cfg);
+        sim_ref.assign(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
+        sim_ok = ggml_backend_npu_decode_w4a16_simulate_ex(
+                c->name,
+                c->data,
+                cfg->packed_in_features(),
+                c->ne[1],
+                c->nb[1],
+                cfg->scale_tensor->data,
+                (int) cfg->scale_tensor->type,
+                cfg->scale_tensor->nb[0],
+                cfg->scale_tensor->nb[1],
+                cfg->zero_tensor->data,
+                (int) cfg->zero_tensor->type,
+                cfg->zero_tensor->nb[0],
+                cfg->zero_tensor->nb[1],
+                b->data,
+                (int) b->type,
+                b->nb[0],
+                b->nb[1],
+                cfg->smooth_scale.data(),
+                cfg->in_features,
+                b->ne[1],
+                sim_ref.data(),
+                GGML_TYPE_F32,
+                c->ne[1] * (int64_t) sizeof(float));
+    }
 
     const bool ok = ggml_backend_npu_decode_w4a16_gemv_ex(
             c->name,
@@ -1553,6 +1820,36 @@ static void llama_compute_text_decode_awq_mul_mat_npu(
             dst->data,
             (int) dst->type,
             dst->nb[1]);
+
+    if (compare) {
+        std::vector<float> npu_out(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
+        if (ok) {
+            for (int64_t col = 0; col < b->ne[1]; ++col) {
+                for (int64_t row = 0; row < c->ne[1]; ++row) {
+                    npu_out[static_cast<size_t>(col * c->ne[1] + row)] =
+                        llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], col, row);
+                }
+            }
+        }
+        const double atol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_DECODE_AWQ_COMPARE_ATOL", 3.0e-2);
+        const double rtol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_DECODE_AWQ_COMPARE_RTOL", 3.0e-2);
+        const llama_decode_awq_compare_stats cpu_vs_npu =
+            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
+        const llama_decode_awq_compare_stats cpu_vs_sim =
+            sim_ok ? llama_decode_awq_compare_vectors(cpu_ref, sim_ref, atol, rtol) : llama_decode_awq_compare_stats{};
+        const llama_decode_awq_compare_stats sim_vs_npu =
+            (ok && sim_ok) ? llama_decode_awq_compare_vectors(sim_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
+        llama_decode_awq_write_compare_record(
+                c->name,
+                c->ne[1],
+                cfg->in_features,
+                b->ne[1],
+                ok,
+                sim_ok,
+                cpu_vs_npu,
+                cpu_vs_sim,
+                sim_vs_npu);
+    }
 
     if (!ok) {
         llama_compute_text_decode_awq_mul_mat(dst, a, b, c, 0, 1, userdata);
@@ -2441,7 +2738,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
                 const bool use_decode_npu =
 #ifdef GGML_USE_NPU
-                    llama_npu_text_decode_awq_enabled() && cfg.group_size == 128;
+                    llama_npu_text_decode_awq_enabled() && cfg.group_size == 128 && cur_awq->ne[1] == 1;
 #else
                     false;
 #endif
