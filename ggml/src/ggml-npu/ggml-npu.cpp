@@ -374,6 +374,20 @@ static bool npu_decode_profile_enabled() {
     return npu_decode_profile_path() != nullptr;
 }
 
+static size_t npu_decode_profile_flush_records() {
+    const char * value = std::getenv("GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS");
+    if (value == nullptr || value[0] == '\0') {
+        return 4096;
+    }
+
+    char * end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 0);
+    if (end == value || parsed == 0) {
+        return 4096;
+    }
+    return static_cast<size_t>(parsed);
+}
+
 static bool npu_decode_pingpong_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_PINGPONG");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -443,15 +457,9 @@ static nlohmann::ordered_json npu_decode_profile_to_json(const npu_decode_gemv_p
     return payload;
 }
 
-static void npu_decode_profile_flush() {
-    const char * path = npu_decode_profile_path();
-    npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
-    std::vector<npu_decode_gemv_profile_record> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(cache.mutex);
-        snapshot.swap(cache.records);
-    }
-
+static void npu_decode_profile_append(
+        const char * path,
+        const std::vector<npu_decode_gemv_profile_record> & snapshot) {
     if (path == nullptr || snapshot.empty()) {
         return;
     }
@@ -465,14 +473,38 @@ static void npu_decode_profile_flush() {
     }
 }
 
+static void npu_decode_profile_flush() {
+    const char * path = npu_decode_profile_path();
+    npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
+    std::vector<npu_decode_gemv_profile_record> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        snapshot.swap(cache.records);
+    }
+
+    if (path == nullptr || snapshot.empty()) {
+        return;
+    }
+
+    npu_decode_profile_append(path, snapshot);
+}
+
 static void npu_decode_profile_write(const npu_decode_gemv_profile_record & record) {
     npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
-    std::lock_guard<std::mutex> lock(cache.mutex);
-    if (!cache.atexit_registered) {
-        std::atexit(npu_decode_profile_flush);
-        cache.atexit_registered = true;
+    const char * path = npu_decode_profile_path();
+    std::vector<npu_decode_gemv_profile_record> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (!cache.atexit_registered) {
+            std::atexit(npu_decode_profile_flush);
+            cache.atexit_registered = true;
+        }
+        cache.records.push_back(record);
+        if (path != nullptr && cache.records.size() >= npu_decode_profile_flush_records()) {
+            snapshot.swap(cache.records);
+        }
     }
-    cache.records.push_back(record);
+    npu_decode_profile_append(path, snapshot);
 }
 
 static uint32_t npu_decode_parse_size_env(const char * name, uint32_t fallback) {
