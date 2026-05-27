@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 
 namespace ggml_npu {
 
@@ -73,16 +74,21 @@ static void npu_update_best(
     }
 }
 
-static int64_t npu_fit_tk_to_spm(
+static int64_t npu_fit_tk_to_banks(
         int64_t tk,
         int64_t tk_align,
         int64_t u,
         int64_t v_dma,
-        int64_t spm_bytes) {
+        int64_t spm_bytes,
+        int64_t a_bank_bytes,
+        int64_t w_bank_bytes) {
     while (tk >= tk_align) {
         const int64_t a_stride_k = npu_align_up(tk, 32);
-        const int64_t spm_need = u * a_stride_k + v_dma * tk;
-        if (spm_need <= spm_bytes) {
+        const int64_t a_need = u * a_stride_k;
+        const int64_t w_need = v_dma * tk;
+        const bool split_banks = a_bank_bytes > 0 && w_bank_bytes > 0;
+        if ((split_banks && a_need <= a_bank_bytes && w_need <= w_bank_bytes) ||
+                (!split_banks && a_need + w_need <= spm_bytes)) {
             return tk;
         }
         tk = npu_align_down(tk - 1, tk_align);
@@ -108,12 +114,31 @@ npu_gemm_tiling_result npu_search_gemm_tiling(const npu_gemm_tiling_params & par
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
     max_tk = std::min<int64_t>(max_tk, 768);
 #endif
-    const int64_t acc_words = params.acc_bytes / 4;
+    const int64_t o_bytes = params.o_bank_bytes > 0 ? params.o_bank_bytes : params.acc_bytes;
+    const int64_t acc_words = o_bytes / 4;
+    const int64_t meta_words = params.meta_bytes > 0 ? params.meta_bytes / 4 : 0;
 
     const int64_t first_u = max_u < params.sa_rows ? max_u : params.sa_rows;
     const int64_t first_v = max_v < params.sa_cols ? max_v : params.sa_cols;
+    std::vector<int64_t> u_values;
+    std::vector<int64_t> v_values;
     for (int64_t u = first_u; u <= max_u; u += params.sa_rows) {
-        for (int64_t v = first_v; v <= max_v; v += params.sa_cols) {
+        u_values.push_back(u);
+    }
+    if (u_values.empty() || u_values.back() != max_u) {
+        u_values.push_back(max_u);
+    }
+    for (int64_t v = first_v; v <= max_v; v += params.sa_cols) {
+        v_values.push_back(v);
+    }
+    if (v_values.empty() || v_values.back() != max_v) {
+        v_values.push_back(max_v);
+    }
+
+    for (const int64_t u : u_values) {
+        for (const int64_t v : v_values) {
+            const int64_t u_dma = npu_align_up(u, 32);
+            const int64_t v_dma = npu_align_up(v, 32);
             // Phase-1 Versa_P W/GEMM path is organized in 32-column groups.
             // Board replay shows raw accumulator corruption for tail-N groups
             // such as 208 or 240 columns, so keep output-channel tiles on full
@@ -121,12 +146,13 @@ npu_gemm_tiling_result npu_search_gemm_tiling(const npu_gemm_tiling_params & par
             if ((v % 32) != 0) {
                 continue;
             }
-            // GEMM_v5_app's regression test reserves ACC for output,
-            // scratch, postprocess scale/output workspace, plus per-channel
-            // metadata. Using only output+metadata can select 240x240 tiles
-            // that hang GEMM_PLAN on hardware.
-            if (v * (params.acc_tile_buffers * u + params.metadata_words_per_channel) +
-                    params.fixed_acc_words > acc_words) {
+            // Current Versa_P hardware has a dedicated metadata buffer for
+            // bias/scale; the O bank only holds int32 accumulator/output words.
+            if (v_dma * (params.acc_tile_buffers * u_dma) + params.fixed_acc_words > acc_words) {
+                continue;
+            }
+            if (meta_words > 0 &&
+                    params.fixed_meta_words + params.metadata_words_per_channel * v_dma > meta_words) {
                 continue;
             }
 
@@ -142,13 +168,14 @@ npu_gemm_tiling_result npu_search_gemm_tiling(const npu_gemm_tiling_params & par
             const uint64_t q_data = q_a + q_b + q_meta;
 
             if (!npu_force_mode(forced_mode, npu_gemm_stationary_mode::activation)) {
-                const int64_t v_dma = npu_align_up(v, 32);
                 const int64_t denom = std::max(
-                    params.spm_factor_a * u + params.spm_factor_b * v_dma,
-                    u + v_dma);
+                    params.spm_factor_a * u_dma + params.spm_factor_b * v_dma,
+                    u_dma + v_dma);
                 int64_t tk = denom > 0 ? params.spm_bytes / denom : 0;
                 tk = npu_align_down(std::min(tk, max_tk), params.tk_align);
-                tk = npu_fit_tk_to_spm(tk, params.tk_align, u, v_dma, params.spm_bytes);
+                tk = npu_fit_tk_to_banks(
+                    tk, params.tk_align, u_dma, v_dma, params.spm_bytes,
+                    params.a_bank_bytes, params.w_bank_bytes);
                 if (tk >= params.tk_align) {
                     const int64_t k_tiles = npu_ceil_div(params.k, tk);
                     const uint64_t dma_per_k = 1ull + static_cast<uint64_t>(npu_ceil_div(v, params.sa_cols));
@@ -175,13 +202,14 @@ npu_gemm_tiling_result npu_search_gemm_tiling(const npu_gemm_tiling_params & par
             }
 
             if (!npu_force_mode(forced_mode, npu_gemm_stationary_mode::weight)) {
-                const int64_t v_dma = npu_align_up(v, 32);
                 const int64_t denom = std::max(
-                    params.spm_factor_a * u + params.spm_factor_b * v_dma,
-                    u + v_dma);
+                    params.spm_factor_a * u_dma + params.spm_factor_b * v_dma,
+                    u_dma + v_dma);
                 int64_t tk = denom > 0 ? params.spm_bytes / denom : 0;
                 tk = npu_align_down(std::min(tk, max_tk), params.tk_align);
-                tk = npu_fit_tk_to_spm(tk, params.tk_align, u, v_dma, params.spm_bytes);
+                tk = npu_fit_tk_to_banks(
+                    tk, params.tk_align, u_dma, v_dma, params.spm_bytes,
+                    params.a_bank_bytes, params.w_bank_bytes);
                 if (tk >= params.tk_align) {
                     const int64_t k_tiles = npu_ceil_div(params.k, tk);
                     const uint64_t dma_per_k = 1ull + static_cast<uint64_t>(npu_ceil_div(u, params.sa_rows));

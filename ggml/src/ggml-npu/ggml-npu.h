@@ -239,6 +239,38 @@ GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_preload(
         const float * smooth_scale,
         size_t smooth_scale_len);
 
+struct ggml_npu_decode_awq_view {
+        const char * weight_name;
+        const void * q4_data;
+        int64_t packed_k;
+        int64_t out_channels;
+        int64_t q4_nb1;
+        const void * scale_data;
+        int scale_type;
+        int64_t scale_nb0;
+        int64_t scale_nb1;
+        const void * zero_data;
+        int zero_type;
+        int64_t zero_nb0;
+        int64_t zero_nb1;
+        const float * smooth_scale;
+        size_t smooth_scale_len;
+        int64_t k;
+};
+
+GGML_BACKEND_API bool ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
+        const char * op_name,
+        const struct ggml_npu_decode_awq_view * gate,
+        const struct ggml_npu_decode_awq_view * up,
+        const struct ggml_npu_decode_awq_view * down,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
+
 #ifdef __cplusplus
 }
 #endif

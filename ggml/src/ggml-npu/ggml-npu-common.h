@@ -35,6 +35,7 @@ constexpr bool npu_is_aligned_i64(int64_t value, int64_t alignment) {
 enum class npu_memory_space {
     spm,
     acc,
+    meta,
 };
 
 struct npu_memory_slice {

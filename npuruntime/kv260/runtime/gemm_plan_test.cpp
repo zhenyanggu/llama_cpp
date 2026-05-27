@@ -119,6 +119,31 @@ void fill_matrix_b(int8_t* ptr, const GemmPlanCase& tc) {
     }
 }
 
+uint32_t packed_w_bytes(uint32_t k, uint32_t n) {
+    return k * ((n + 31u) / 32u) * 32u;
+}
+
+void pack_matrix_b_versa(
+        const std::vector<int8_t>& src,
+        uint32_t src_k0,
+        uint32_t total_n,
+        uint32_t src_n0,
+        uint32_t k_count,
+        uint32_t n_count,
+        int8_t* dst) {
+    std::memset(dst, 0, packed_w_bytes(k_count, n_count));
+    const uint32_t groups = (n_count + 31u) / 32u;
+    for (uint32_t group = 0; group < groups; ++group) {
+        const uint32_t group_cols = std::min(32u, n_count - group * 32u);
+        for (uint32_t kk = 0; kk < k_count; ++kk) {
+            for (uint32_t lane = 0; lane < group_cols; ++lane) {
+                dst[((size_t)group * k_count + kk) * 32u + lane] =
+                    src[(size_t)(src_k0 + kk) * total_n + src_n0 + group * 32u + lane];
+            }
+        }
+    }
+}
+
 std::vector<int32_t> build_golden(const GemmPlanCase& tc) {
     std::vector<int32_t> golden(static_cast<size_t>(tc.m) * tc.n, 0);
     for (uint16_t r = 0; r < tc.m; ++r) {
@@ -132,6 +157,424 @@ std::vector<int32_t> build_golden(const GemmPlanCase& tc) {
         }
     }
     return golden;
+}
+
+std::vector<int32_t> build_golden_chunk(
+        const std::vector<int8_t>& a,
+        uint32_t a_stride,
+        const std::vector<int8_t>& b,
+        uint32_t rows,
+        uint32_t n,
+        uint32_t total_k,
+        uint32_t total_m,
+        uint32_t m0,
+        uint32_t k0,
+        uint32_t k_count,
+        bool accumulate,
+        const std::vector<int32_t>& base,
+        const std::vector<int32_t>& bias,
+        bool u8_minus_128) {
+    std::vector<int32_t> out = accumulate ? base : std::vector<int32_t>((size_t)rows * n, 0);
+    if (!accumulate && !bias.empty()) {
+        for (uint32_t r = 0; r < rows; ++r) {
+            for (uint32_t c = 0; c < n; ++c) {
+                out[(size_t)r * n + c] = bias[m0 + c];
+            }
+        }
+    }
+    for (uint32_t r = 0; r < rows; ++r) {
+        for (uint32_t c = 0; c < n; ++c) {
+            int32_t sum = 0;
+            for (uint32_t kk = 0; kk < k_count; ++kk) {
+                const int32_t aval = u8_minus_128
+                    ? static_cast<int32_t>(static_cast<uint8_t>(a[(size_t)r * a_stride + k0 + kk])) - 128
+                    : static_cast<int32_t>(a[(size_t)r * a_stride + k0 + kk]);
+                sum += aval *
+                       static_cast<int32_t>(b[(size_t)(k0 + kk) * total_m + m0 + c]);
+            }
+            out[(size_t)r * n + c] += sum;
+        }
+    }
+    (void)total_k;
+    return out;
+}
+
+bool check_i32_matrix(
+        const char* name,
+        const int32_t* got,
+        uint32_t got_stride,
+        const std::vector<int32_t>& ref,
+        uint32_t rows,
+        uint32_t n) {
+    uint32_t mismatches = 0;
+    uint32_t first_row = 0;
+    uint32_t first_col = 0;
+    int32_t first_expected = 0;
+    int32_t first_got = 0;
+    for (uint32_t r = 0; r < rows; ++r) {
+        for (uint32_t c = 0; c < n; ++c) {
+            const int32_t expected = ref[(size_t)r * n + c];
+            const int32_t value = got[(size_t)r * got_stride + c];
+            if (value != expected) {
+                if (mismatches == 0) {
+                    first_row = r;
+                    first_col = c;
+                    first_expected = expected;
+                    first_got = value;
+                }
+                ++mismatches;
+            }
+        }
+    }
+    if (mismatches != 0) {
+        std::fprintf(stderr,
+                     "[%s] fail mismatches=%u first_pos=(%u,%u) expected=%d got=%d\n",
+                     name, mismatches, first_row, first_col, first_expected, first_got);
+        return false;
+    }
+    std::printf("[%s] ok\n", name);
+    return true;
+}
+
+bool run_w_pingpong_large_case() {
+    constexpr uint32_t rows = 256;
+    constexpr uint32_t n = 480;
+    constexpr uint32_t total_m = 960;
+    constexpr uint32_t total_k = 960;
+    constexpr uint32_t k_chunks[] = {768, 192};
+    constexpr uint32_t a_stride = 960;
+    constexpr uint32_t out_stride = 480;
+    constexpr bool u8_minus_128 = true;
+
+    std::vector<int8_t> a((size_t)rows * a_stride, 0);
+    std::vector<int8_t> b((size_t)total_k * total_m, 0);
+    std::vector<int32_t> bias(total_m, 0);
+    for (uint32_t r = 0; r < rows; ++r) {
+        for (uint32_t k = 0; k < total_k; ++k) {
+            if (u8_minus_128) {
+                const uint32_t payload = (r * 19u + k * 7u + 53u) & 0xffu;
+                a[(size_t)r * a_stride + k] = static_cast<int8_t>(static_cast<uint8_t>(payload));
+            } else {
+                a[(size_t)r * a_stride + k] = pattern_a((uint16_t)r, (uint16_t)k);
+            }
+        }
+    }
+    for (uint32_t k = 0; k < total_k; ++k) {
+        for (uint32_t c = 0; c < total_m; ++c) {
+            const int32_t value = (int32_t)((k * 13u + c * 5u + 11u) % 255u) - 127;
+            b[(size_t)k * total_m + c] = static_cast<int8_t>(value);
+        }
+    }
+    for (uint32_t c = 0; c < total_m; ++c) {
+        bias[c] = static_cast<int32_t>((c * 17u) % 1009u) - 503;
+    }
+
+    auto* a_cma = static_cast<int8_t*>(npu_mem_alloc((size_t)rows * 768));
+    auto* w0_cma = static_cast<int8_t*>(npu_mem_alloc(packed_w_bytes(768, n)));
+    auto* w1_cma = static_cast<int8_t*>(npu_mem_alloc(packed_w_bytes(768, n)));
+    auto* bias_cma = static_cast<int32_t*>(npu_mem_alloc(total_m * sizeof(int32_t)));
+    auto* out_cma = static_cast<int32_t*>(npu_mem_alloc((size_t)rows * out_stride * sizeof(int32_t)));
+    if (!a_cma || !w0_cma || !w1_cma || !bias_cma || !out_cma) {
+        std::fprintf(stderr, "[w_pingpong_large] npu_mem_alloc failed\n");
+        if (a_cma) npu_mem_free(a_cma);
+        if (w0_cma) npu_mem_free(w0_cma);
+        if (w1_cma) npu_mem_free(w1_cma);
+        if (bias_cma) npu_mem_free(bias_cma);
+        if (out_cma) npu_mem_free(out_cma);
+        return false;
+    }
+    std::memcpy(bias_cma, bias.data(), total_m * sizeof(int32_t));
+    std::memset(out_cma, 0, (size_t)rows * out_stride * sizeof(int32_t));
+    npu_dma_mvin(
+        bias_cma, 0, total_m, 0, (uint16_t)total_m, total_m,
+        1, 2, true, true, false, 0, 0, 0);
+
+    bool ok = true;
+    uint32_t k0 = 0;
+    uint8_t current_w_bank = 0;
+    int8_t* current_w = w0_cma;
+    int8_t* next_w = w1_cma;
+    std::vector<int32_t> ref((size_t)rows * n, 0);
+
+    uint32_t m0 = 0;
+    pack_matrix_b_versa(b, 0, total_m, m0, k_chunks[0], n, current_w);
+    MvinConfig weight_mvin = {
+        current_w, kSpmB, n, k_chunks[0],
+        (uint16_t)n, n, 1, 1, false, false, false, 0, 0, 0,
+    };
+    npu_dma_mvin_w_async_bank(current_w_bank, &weight_mvin);
+    npu_dma_wait_w_bank(current_w_bank);
+
+    constexpr size_t n_k_chunks = sizeof(k_chunks) / sizeof(k_chunks[0]);
+    for (uint32_t macro_m = 0; macro_m < 2; ++macro_m) {
+    m0 = macro_m * n;
+    k0 = 0;
+    if (macro_m != 0) {
+        current_w_bank ^= 1u;
+        std::swap(current_w, next_w);
+        pack_matrix_b_versa(b, 0, total_m, m0, k_chunks[0], n, current_w);
+        weight_mvin.host_ptr = current_w;
+        weight_mvin.row_num = k_chunks[0];
+        npu_dma_mvin_w_async_bank(current_w_bank, &weight_mvin);
+        npu_dma_wait_w_bank(current_w_bank);
+        std::fill(ref.begin(), ref.end(), 0);
+    }
+    for (size_t chunk_idx = 0; chunk_idx < n_k_chunks; ++chunk_idx) {
+        const uint32_t k_count = k_chunks[chunk_idx];
+        for (uint32_t r = 0; r < rows; ++r) {
+            std::memcpy(a_cma + (size_t)r * k_count,
+                        a.data() + (size_t)r * a_stride + k0,
+                        k_count);
+        }
+        const MvinConfig act_mvin = {
+            a_cma, kSpmA, k_count, rows,
+            (uint16_t)k_count, k_count, 1, 0, false, false, u8_minus_128, 0, 0, 0,
+        };
+        npu_dma_mvin_a_async_bank(0, &act_mvin);
+        npu_dma_wait_a_bank(0);
+
+        npu_gemm_plan_start_ex_bank(
+            current_w_bank,
+            kSpmA,
+            kSpmB,
+            kAccOut,
+            kAccScratch,
+            m0 * sizeof(int32_t),
+            (uint16_t)rows,
+            (uint16_t)n,
+            (uint16_t)k_count,
+            (uint16_t)k_count,
+            (uint16_t)n,
+            (uint16_t)out_stride,
+            0,
+            chunk_idx == 0,
+            chunk_idx != 0,
+            u8_minus_128);
+
+        const bool have_next = chunk_idx + 1 < n_k_chunks;
+        uint8_t next_bank = current_w_bank ^ 1u;
+        if (have_next) {
+            const uint32_t next_k0 = k0 + k_count;
+            const uint32_t next_k_count = k_chunks[chunk_idx + 1];
+            pack_matrix_b_versa(b, next_k0, total_m, m0, next_k_count, n, next_w);
+            MvinConfig next_weight_mvin = {
+                next_w, kSpmB, n, next_k_count,
+                (uint16_t)n, n, 1, 1, false, false, false, 0, 0, 0,
+            };
+            npu_dma_mvin_w_async_bank(next_bank, &next_weight_mvin);
+        }
+
+        npu_gemm_plan_wait();
+        if (have_next) {
+            npu_dma_wait_w_bank(next_bank);
+        }
+        ref = build_golden_chunk(a, a_stride, b, rows, n, total_k,
+                                 total_m, m0, k0, k_count, chunk_idx != 0, ref,
+                                 bias, u8_minus_128);
+        if (!have_next) {
+            npu_dma_mvout(out_cma, kAccOut, n, rows,
+                          out_stride, out_stride, 1, 1, true, false, 0, 0);
+            char name[96];
+            std::snprintf(name, sizeof(name), "w_pingpong_large_m%u_final", m0);
+            ok = check_i32_matrix(name, out_cma, out_stride, ref, rows, n) && ok;
+        }
+
+        if (have_next) {
+            k0 += k_count;
+            current_w_bank = next_bank;
+            std::swap(current_w, next_w);
+        }
+    }
+    }
+
+    npu_mem_free(a_cma);
+    npu_mem_free(w0_cma);
+    npu_mem_free(w1_cma);
+    npu_mem_free(bias_cma);
+    npu_mem_free(out_cma);
+    std::printf("w_pingpong_large=%s\n", ok ? "ok" : "fail");
+    return ok;
+}
+
+bool run_ffnup_u256_v512_repro_case() {
+    constexpr uint32_t rows = 256;
+    constexpr uint32_t total_m = 768;
+    constexpr uint32_t total_k = 3072;
+    constexpr uint32_t k_chunk = 768;
+    constexpr uint32_t a_stride = total_k;
+    constexpr uint32_t out_stride = total_m;
+    constexpr bool u8_minus_128 = true;
+    const uint32_t macro_cols[] = {512, 256};
+    const uint32_t macro_m0[] = {0, 512};
+
+    std::vector<int8_t> a((size_t)rows * a_stride, 0);
+    std::vector<int8_t> b((size_t)total_k * total_m, 0);
+    std::vector<int32_t> bias(total_m, 0);
+    for (uint32_t r = 0; r < rows; ++r) {
+        for (uint32_t k = 0; k < total_k; ++k) {
+            const uint32_t payload = (r * 19u + k * 7u + 53u) & 0xffu;
+            a[(size_t)r * a_stride + k] =
+                static_cast<int8_t>(static_cast<uint8_t>(payload));
+        }
+    }
+    for (uint32_t k = 0; k < total_k; ++k) {
+        for (uint32_t c = 0; c < total_m; ++c) {
+            const int32_t value = (int32_t)((k * 13u + c * 5u + 11u) % 255u) - 127;
+            b[(size_t)k * total_m + c] = static_cast<int8_t>(value);
+        }
+    }
+    for (uint32_t c = 0; c < total_m; ++c) {
+        bias[c] = static_cast<int32_t>((c * 17u) % 1009u) - 503;
+    }
+
+    auto* a_cma = static_cast<int8_t*>(npu_mem_alloc((size_t)rows * k_chunk));
+    auto* w0_cma = static_cast<int8_t*>(npu_mem_alloc(packed_w_bytes(k_chunk, 512)));
+    auto* w1_cma = static_cast<int8_t*>(npu_mem_alloc(packed_w_bytes(k_chunk, 512)));
+    auto* bias_cma = static_cast<int32_t*>(npu_mem_alloc(total_m * sizeof(int32_t)));
+    auto* out_cma = static_cast<int32_t*>(npu_mem_alloc((size_t)rows * out_stride * sizeof(int32_t)));
+    if (!a_cma || !w0_cma || !w1_cma || !bias_cma || !out_cma) {
+        std::fprintf(stderr, "[ffnup_u256_v512] npu_mem_alloc failed\n");
+        return false;
+    }
+    std::memcpy(bias_cma, bias.data(), total_m * sizeof(int32_t));
+    std::memset(out_cma, 0, (size_t)rows * out_stride * sizeof(int32_t));
+    npu_dma_mvin(
+        bias_cma, 0, total_m, 0, (uint16_t)total_m, total_m,
+        1, 2, true, true, false, 0, 0, 0);
+
+    uint8_t current_w_bank = 0;
+    uint8_t current_a_bank = 1;
+    bool prefetched_a_valid = false;
+    int8_t* current_w = w0_cma;
+    int8_t* next_w = w1_cma;
+
+    for (uint32_t macro = 0; macro < 2; ++macro) {
+        const uint32_t cols = macro_cols[macro];
+        const uint32_t m0 = macro_m0[macro];
+        current_w_bank = 0;
+        current_a_bank ^= 1u;
+        prefetched_a_valid = false;
+        current_w = w0_cma;
+        next_w = w1_cma;
+
+        pack_matrix_b_versa(b, 0, total_m, m0, k_chunk, cols, current_w);
+        MvinConfig weight_mvin = {
+            current_w, kSpmB, cols, k_chunk,
+            (uint16_t)cols, cols, 1, 1, false, false, false, 0, 0, 0,
+        };
+        npu_dma_mvin_w_async_bank(current_w_bank, &weight_mvin);
+        npu_dma_wait_w_bank(current_w_bank);
+
+        for (uint32_t chunk = 0; chunk < 4; ++chunk) {
+            const uint32_t k0 = chunk * k_chunk;
+            if (!prefetched_a_valid) {
+                for (uint32_t r = 0; r < rows; ++r) {
+                    std::memcpy(a_cma + (size_t)r * k_chunk,
+                                a.data() + (size_t)r * a_stride + k0,
+                                k_chunk);
+                }
+                const MvinConfig act_mvin = {
+                    a_cma, kSpmA, k_chunk, rows,
+                    (uint16_t)k_chunk, k_chunk, 1, 0, false, false, u8_minus_128, 0, 0, 0,
+                };
+                npu_dma_mvin_a_async_bank(current_a_bank, &act_mvin);
+                npu_dma_wait_a_bank(current_a_bank);
+            }
+
+            npu_gemm_plan_start_ex_banks(
+                current_a_bank,
+                current_w_bank,
+                macro == 0 ? 0 : 1,
+                kSpmA,
+                kSpmB,
+                kAccOut,
+                kAccScratch,
+                chunk == 0 ? m0 * sizeof(int32_t) : 0,
+                (uint16_t)rows,
+                (uint16_t)cols,
+                (uint16_t)k_chunk,
+                (uint16_t)k_chunk,
+                (uint16_t)cols,
+                (uint16_t)out_stride,
+                0,
+                chunk == 0,
+                chunk != 0,
+                u8_minus_128);
+
+            const bool have_next = chunk + 1 < 4;
+            const uint8_t next_w_bank = current_w_bank ^ 1u;
+            const uint8_t next_a_bank = current_a_bank ^ 1u;
+            if (have_next) {
+                const uint32_t next_k0 = k0 + k_chunk;
+                for (uint32_t r = 0; r < rows; ++r) {
+                    std::memcpy(a_cma + (size_t)r * k_chunk,
+                                a.data() + (size_t)r * a_stride + next_k0,
+                                k_chunk);
+                }
+                const MvinConfig next_act_mvin = {
+                    a_cma, kSpmA, k_chunk, rows,
+                    (uint16_t)k_chunk, k_chunk, 1, 0, false, false, u8_minus_128, 0, 0, 0,
+                };
+                npu_dma_mvin_a_async_bank(next_a_bank, &next_act_mvin);
+                pack_matrix_b_versa(b, next_k0, total_m, m0, k_chunk, cols, next_w);
+                MvinConfig next_weight_mvin = {
+                    next_w, kSpmB, cols, k_chunk,
+                    (uint16_t)cols, cols, 1, 1, false, false, false, 0, 0, 0,
+                };
+                npu_dma_mvin_w_async_bank(next_w_bank, &next_weight_mvin);
+                npu_dma_wait_a_bank(next_a_bank);
+                npu_dma_wait_w_bank(next_w_bank);
+            }
+            npu_gemm_plan_wait();
+            if (have_next) {
+                current_w_bank = next_w_bank;
+                current_a_bank = next_a_bank;
+                prefetched_a_valid = true;
+                std::swap(current_w, next_w);
+            } else if (macro + 1 < 2) {
+                current_a_bank ^= 1u;
+                for (uint32_t r = 0; r < rows; ++r) {
+                    std::memcpy(a_cma + (size_t)r * k_chunk,
+                                a.data() + (size_t)r * a_stride,
+                                k_chunk);
+                }
+                const MvinConfig next_macro_act_mvin = {
+                    a_cma, kSpmA, k_chunk, rows,
+                    (uint16_t)k_chunk, k_chunk, 1, 0, false, false, u8_minus_128, 0, 0, 0,
+                };
+                npu_dma_mvin_a_async_bank(current_a_bank, &next_macro_act_mvin);
+                npu_dma_wait_a_bank(current_a_bank);
+            }
+        }
+
+        const MvoutConfig mvout_cfg {
+            out_cma + m0,
+            kAccOut,
+            cols,
+            rows,
+            (uint16_t)out_stride,
+            out_stride,
+            1,
+            1,
+            true,
+            false,
+            0,
+            0,
+            false,
+        };
+        npu_dma_mvout_async_bank(macro == 0 ? 0 : 1, 2, &mvout_cfg);
+        if (macro != 0) {
+            npu_dma_wait_mvout(1u << 2);
+        }
+    }
+
+    npu_mem_free(a_cma);
+    npu_mem_free(w0_cma);
+    npu_mem_free(w1_cma);
+    npu_mem_free(bias_cma);
+    npu_mem_free(out_cma);
+    std::puts("ffnup_u256_v512_repro=ok");
+    return true;
 }
 
 bool run_gemm_plan_case(const GemmPlanCase& tc) {
@@ -247,6 +690,13 @@ bool run_gemm_plan_case(const GemmPlanCase& tc) {
 }
 
 bool run_gemm_plan_suite() {
+    if (std::getenv("NPU_GEMM_PLAN_FFNUP_U256_V512_REPRO")) {
+        return run_ffnup_u256_v512_repro_case();
+    }
+    if (std::getenv("NPU_GEMM_PLAN_W_PINGPONG_LARGE")) {
+        return run_w_pingpong_large_case();
+    }
+
     std::vector<GemmPlanCase> cases = {
         {"edge_tiles_17x19x33",         17,   19,   33,   33,   19,   19},
         {"mainpath_16x1024x16",         16,   16, 1024, 1024,   16,   16},

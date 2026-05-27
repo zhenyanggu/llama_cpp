@@ -3971,14 +3971,42 @@ struct server_context {
                     // remove the non-common part from the cache
                     slot.prompt.tokens.keep_first(slot.n_past);
 
-                    if (slot.task->type == SERVER_TASK_TYPE_COMPLETION &&
-                            slot.n_past == 0 &&
+                    const bool merged_prefill_is_completion = slot.task->type == SERVER_TASK_TYPE_COMPLETION;
+                    const bool merged_prefill_needs_embd = slot.need_embd();
+                    const size_t merged_prefill_lora_count = lora_get_enabled_ids(slot.lora).size();
+                    const bool merged_prefill_entry_ok =
+                            merged_prefill_is_completion &&
+                            slot.n_past < slot.n_prompt_tokens() &&
                             batch.n_tokens == 0 &&
-                            !slot.need_embd() &&
-                            lora_get_enabled_ids(slot.lora).empty()) {
+                            !merged_prefill_needs_embd &&
+                            merged_prefill_lora_count == 0;
+                    if (server_mtmd_merge_prefill_trace_enabled()) {
+                        SLT_INF(slot,
+                                "merged prefill gate: ok=%d completion=%d n_past=%d batch_tokens=%d need_embd=%d lora_count=%zu prompt_tokens=%d\n",
+                                merged_prefill_entry_ok ? 1 : 0,
+                                merged_prefill_is_completion ? 1 : 0,
+                                slot.n_past,
+                                batch.n_tokens,
+                                merged_prefill_needs_embd ? 1 : 0,
+                                merged_prefill_lora_count,
+                                slot.n_prompt_tokens());
+                    }
+
+                    if (merged_prefill_entry_ok) {
                         int32_t merged_res = 0;
                         llama_pos merged_n_past = 0;
-                        if (input_tokens.process_merged_prefill(ctx, mctx, slot.id, merged_n_past, merged_res, &slot.mmproj_profile)) {
+                        const llama_pos merged_start_pos = slot.n_past;
+                        const int32_t merged_effective_n_predict =
+                                slot.task->params.n_predict != -1 ? slot.task->params.n_predict : params_base.n_predict;
+                        const bool merged_switch_decode_after =
+                                merged_effective_n_predict < 0 || merged_effective_n_predict > 1;
+                        if (server_mtmd_merge_prefill_trace_enabled()) {
+                            SLT_INF(slot,
+                                    "merged prefill overlay policy: n_predict=%d switch_decode_after=%d\n",
+                                    merged_effective_n_predict,
+                                    merged_switch_decode_after ? 1 : 0);
+                        }
+                        if (input_tokens.process_merged_prefill(ctx, mctx, slot.id, merged_start_pos, merged_n_past, merged_res, merged_switch_decode_after, &slot.mmproj_profile)) {
                             if (merged_res != 0) {
                                 SLT_ERR(slot, "failed to process merged multimodal prefill, res = %d\n", merged_res);
                                 send_error(slot, "failed to process merged multimodal prefill", ERROR_TYPE_SERVER);
@@ -3988,7 +4016,7 @@ struct server_context {
 
                             metrics.on_decoded(slots);
 
-                            input_tokens.push_back_all_to(slot.prompt.tokens);
+                            input_tokens.push_suffix_to(slot.prompt.tokens, (size_t) merged_start_pos);
                             slot.n_past                    = merged_n_past;
                             slot.n_prompt_tokens_processed = merged_n_past - slot.n_prompt_tokens_cache;
 

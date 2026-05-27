@@ -4,6 +4,8 @@
   "mmproj": "AICAS/output/smoothquant/full-alpha-0_5-minmax/mmproj.gguf",
   "env": {
     "GGML_NPU_FORCE_FP32_MVOUT": "1",
+    "GGML_NPU_MAX_U": "512",
+    "GGML_NPU_MAX_V": "256",
     "GGML_NPU_W_PINGPONG": "1",
     "GGML_NPU_FULL_PINGPONG": "1",
     "GGML_NPU_O_OVERLAP": "1",

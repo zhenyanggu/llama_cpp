@@ -48,7 +48,7 @@ def prepare_images(image_configs, workdir):
     return image_configs
 
 
-def measure_ttft(base_url, model, messages_payload, request_timeout):
+def measure_ttft(base_url, model, messages_payload, request_timeout, cache_prompt):
     t0 = time.perf_counter()
     ttft_ms = None
     try:
@@ -59,6 +59,7 @@ def measure_ttft(base_url, model, messages_payload, request_timeout):
             max_tokens=1,
             temperature=0.0,
             stream=True,
+            cache_prompt=cache_prompt,
             timeout=request_timeout,
         )
         for chunk in stream:
@@ -77,7 +78,7 @@ def measure_ttft(base_url, model, messages_payload, request_timeout):
     return ttft_ms
 
 
-def run_single_case(base_url, image_cfg, prompt_cfg, model, request_timeout):
+def run_single_case(base_url, image_cfg, prompt_cfg, model, request_timeout, cache_prompt):
     def build_payload():
         return [
             {
@@ -90,7 +91,7 @@ def run_single_case(base_url, image_cfg, prompt_cfg, model, request_timeout):
             }
         ]
 
-    ttft_ms = measure_ttft(base_url, model, build_payload(), request_timeout)
+    ttft_ms = measure_ttft(base_url, model, build_payload(), request_timeout, cache_prompt)
     if ttft_ms is None:
         print(f"          no content received from server")
         return None
@@ -188,6 +189,20 @@ def main():
         default=3600.0,
         help='HTTP timeout in seconds for each streaming TTFT request'
     )
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        '--cache-prompt',
+        dest='cache_prompt',
+        action='store_true',
+        help='Explicitly allow llama-server prompt/KV cache reuse across TTFT cases'
+    )
+    cache_group.add_argument(
+        '--no-cache-prompt',
+        dest='cache_prompt',
+        action='store_false',
+        help='Disable llama-server prompt/KV cache reuse across TTFT cases'
+    )
+    parser.set_defaults(cache_prompt=None)
     args = parser.parse_args()
 
     if not os.path.exists(args.config):
@@ -237,7 +252,7 @@ def main():
             print(f"        Prompt chars: {len(prompt_cfg['text'])}")
             print("-" * 40)
 
-            result = run_single_case(server_url, img_cfg, prompt_cfg, model, args.request_timeout)
+            result = run_single_case(server_url, img_cfg, prompt_cfg, model, args.request_timeout, args.cache_prompt)
 
             if result is None:
                 print(f"    SKIPPED (no valid sample)")

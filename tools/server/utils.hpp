@@ -160,6 +160,26 @@ static bool server_mtmd_merge_prefill_enabled() {
     return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
+static bool server_mtmd_merge_prefill_trace_enabled() {
+    const char * value = std::getenv("LLAMA_MTMD_MERGE_PREFILL_TRACE");
+    return value && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static size_t server_mtmd_merge_prefill_min_partial_suffix() {
+    const char * value = std::getenv("LLAMA_MTMD_MERGE_PREFILL_MIN_PARTIAL_SUFFIX");
+    if (value == nullptr || value[0] == '\0') {
+        return 128;
+    }
+
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || parsed < 0) {
+        return 128;
+    }
+
+    return (size_t) parsed;
+}
+
 static bool server_mtmd_cpu_op_profile_enabled() {
     const char * env = std::getenv("LLAMA_MTMD_CPU_OP_PROFILE");
     return env != nullptr && env[0] != '\0' && std::string(env) != "0";
@@ -1882,6 +1902,22 @@ public:
         }
     }
 
+    void push_suffix_to(server_tokens & dst, size_t start_pos) const {
+        GGML_ASSERT(start_pos <= tokens.size());
+        GGML_ASSERT(!has_mtmd || dst.has_mtmd);
+        for (size_t i = start_pos; i < tokens.size(); ++i) {
+            const llama_token tok = tokens[i];
+            if (tok != LLAMA_TOKEN_NULL) {
+                dst.push_back(tok);
+                continue;
+            }
+
+            const auto & chunk = find_chunk(i);
+            dst.push_back(chunk.get());
+            i += mtmd_input_chunk_get_n_pos(chunk.get()) - 1;
+        }
+    }
+
     // for compatibility with context shift and prompt truncation
     void insert(const llama_tokens & inp_tokens) {
         GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
@@ -2140,16 +2176,72 @@ public:
                 llama_context * ctx,
                 mtmd_context * mctx,
                 int32_t seq_id,
+                llama_pos start_pos,
                 llama_pos & n_pos_out,
                 int32_t & result,
+                bool switch_decode_after,
                 server_mtmd_prefill_profile * profile = nullptr) const {
+        if (start_pos < 0 || (size_t) start_pos > tokens.size()) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=start_bounds start_pos=%d tokens=%zu\n",
+                        start_pos,
+                        tokens.size());
+            }
+            return false;
+        }
+        const size_t start = (size_t) start_pos;
+        const size_t n_suffix = tokens.size() - start;
         if (!server_mtmd_merge_prefill_enabled() || !has_media() || mctx == nullptr) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=entry enabled=%d has_media=%d has_mctx=%d start_pos=%zu tokens=%zu suffix=%zu\n",
+                        server_mtmd_merge_prefill_enabled() ? 1 : 0,
+                        has_media() ? 1 : 0,
+                        mctx != nullptr ? 1 : 0,
+                        start,
+                        tokens.size(),
+                        n_suffix);
+            }
             return false;
         }
         if (mtmd_decode_use_mrope(mctx) || mtmd_decode_use_non_causal(mctx)) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=mtmd_mode mrope=%d non_causal=%d start_pos=%zu tokens=%zu suffix=%zu\n",
+                        mtmd_decode_use_mrope(mctx) ? 1 : 0,
+                        mtmd_decode_use_non_causal(mctx) ? 1 : 0,
+                        start,
+                        tokens.size(),
+                        n_suffix);
+            }
             return false;
         }
-        if (tokens.empty() || tokens.size() > (size_t) llama_n_batch(ctx)) {
+        if (n_suffix == 0 || n_suffix > (size_t) llama_n_batch(ctx)) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=batch_limit start_pos=%zu tokens=%zu suffix=%zu n_batch=%d\n",
+                        start,
+                        tokens.size(),
+                        n_suffix,
+                        llama_n_batch(ctx));
+            }
+            return false;
+        }
+        const size_t min_partial_suffix = server_mtmd_merge_prefill_min_partial_suffix();
+        if (start > 0 && n_suffix < min_partial_suffix) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=partial_suffix_small start_pos=%zu tokens=%zu suffix=%zu min_partial_suffix=%zu\n",
+                        start,
+                        tokens.size(),
+                        n_suffix,
+                        min_partial_suffix);
+            }
+            return false;
+        }
+        if (tokens[start] == LLAMA_TOKEN_NULL && map_pos_to_media.find((llama_pos) start) == map_pos_to_media.end()) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=start_inside_media start_pos=%zu tokens=%zu suffix=%zu\n",
+                        start,
+                        tokens.size(),
+                        n_suffix);
+            }
             return false;
         }
         if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_PREFILL_SWITCH_CMD", "prefill")) {
@@ -2157,18 +2249,34 @@ public:
             return true;
         }
 
+        if (server_mtmd_merge_prefill_trace_enabled()) {
+            SRV_INF("merged prefill begin: seq_id=%d start_pos=%zu tokens=%zu suffix=%zu n_batch=%d n_ubatch=%d\n",
+                    seq_id,
+                    start,
+                    tokens.size(),
+                    n_suffix,
+                    llama_n_batch(ctx),
+                    llama_n_ubatch(ctx));
+        }
+
         const llama_model * model = llama_get_model(ctx);
         const int32_t n_embd = llama_model_n_embd(model);
-        std::vector<float> embd_all(tokens.size() * (size_t) n_embd);
+        std::vector<float> embd_all(n_suffix * (size_t) n_embd);
 
         size_t cursor = 0;
         int64_t text_token_count = 0;
-        for (size_t i = 0; i < tokens.size(); ++i) {
+        for (size_t i = start; i < tokens.size(); ++i) {
             const llama_token tok = tokens[i];
             if (tok != LLAMA_TOKEN_NULL) {
                 float * out = embd_all.data() + cursor * (size_t) n_embd;
                 if (!llama_model_get_token_embedding(model, tok, out, n_embd)) {
                     SRV_INF("%s", "merged prefill disabled: token embedding lookup is unsupported for this model\n");
+                    if (server_mtmd_merge_prefill_trace_enabled()) {
+                        SRV_INF("merged prefill fallback: reason=token_embedding index=%zu token=%d cursor=%zu\n",
+                                i,
+                                tok,
+                                cursor);
+                    }
                     return false;
                 }
                 ++cursor;
@@ -2179,12 +2287,26 @@ public:
             const auto & chunk = find_chunk(i);
             const mtmd_input_chunk_type type = mtmd_input_chunk_get_type(chunk.get());
             if (type != MTMD_INPUT_CHUNK_TYPE_IMAGE && type != MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+                if (server_mtmd_merge_prefill_trace_enabled()) {
+                    SRV_INF("merged prefill fallback: reason=unsupported_chunk index=%zu type=%d cursor=%zu\n",
+                            i,
+                            (int) type,
+                            cursor);
+                }
                 return false;
             }
 
             const int32_t n_pos = mtmd_input_chunk_get_n_pos(chunk.get());
             const int32_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk.get());
             if (n_pos != n_tokens || i + (size_t) n_pos > tokens.size()) {
+                if (server_mtmd_merge_prefill_trace_enabled()) {
+                    SRV_INF("merged prefill fallback: reason=chunk_bounds index=%zu n_pos=%d n_tokens=%d total=%zu cursor=%zu\n",
+                            i,
+                            n_pos,
+                            n_tokens,
+                            tokens.size(),
+                            cursor);
+                }
                 return false;
             }
 
@@ -2246,25 +2368,33 @@ public:
             i += (size_t) n_pos - 1;
         }
 
-        if (cursor != tokens.size()) {
+        if (cursor != n_suffix) {
+            if (server_mtmd_merge_prefill_trace_enabled()) {
+                SRV_INF("merged prefill fallback: reason=cursor_mismatch cursor=%zu suffix=%zu start_pos=%zu tokens=%zu text_tokens=%" PRId64 "\n",
+                        cursor,
+                        n_suffix,
+                        start,
+                        tokens.size(),
+                        text_token_count);
+            }
             return false;
         }
 
-        std::vector<llama_pos> pos(tokens.size());
-        std::vector<int32_t> n_seq_id(tokens.size(), 1);
+        std::vector<llama_pos> pos(n_suffix);
+        std::vector<int32_t> n_seq_id(n_suffix, 1);
         std::vector<llama_seq_id> seq_id_0(1, seq_id);
-        std::vector<llama_seq_id *> seq_ids(tokens.size() + 1);
-        std::vector<int8_t> logits(tokens.size(), false);
+        std::vector<llama_seq_id *> seq_ids(n_suffix + 1);
+        std::vector<int8_t> logits(n_suffix, false);
 
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            pos[i] = (llama_pos) i;
+        for (size_t i = 0; i < n_suffix; ++i) {
+            pos[i] = (llama_pos) (start + i);
             seq_ids[i] = seq_id_0.data();
         }
-        seq_ids[tokens.size()] = nullptr;
+        seq_ids[n_suffix] = nullptr;
         logits.back() = true;
 
         llama_batch batch = {
-            /*n_tokens       =*/ (int32_t) tokens.size(),
+            /*n_tokens       =*/ (int32_t) n_suffix,
             /*tokens         =*/ nullptr,
             /*embd           =*/ embd_all.data(),
             /*pos            =*/ pos.data(),
@@ -2273,7 +2403,7 @@ public:
             /*logits         =*/ logits.data(),
         };
 
-        SRV_INF("decoding merged multimodal prefill, n_tokens = %zu\n", tokens.size());
+        SRV_INF("decoding merged multimodal prefill, start_pos = %zu, n_tokens = %zu\n", start, n_suffix);
         const int64_t t1 = ggml_time_ms();
         const int64_t decode_start_us = profile != nullptr && profile->enabled ? ggml_time_us() : 0;
 #ifdef GGML_USE_NPU
@@ -2299,7 +2429,7 @@ public:
         if (collect_text_cpu_profile) {
             server_text_cpu_profile_write(
                     "merged_prefill",
-                    (int32_t) tokens.size(),
+                    (int32_t) n_suffix,
                     seq_id,
                     ggml_time_us() - text_profile_start_us,
                     text_cpu_profile_json);
@@ -2311,14 +2441,27 @@ public:
         }
 
         SRV_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
-        if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_DECODE_SWITCH_CMD", "decode")) {
-            SRV_ERR("%s", "failed to switch NPU overlay for decode\n");
-            result = -1;
-            return true;
+        if (server_mtmd_merge_prefill_trace_enabled()) {
+            SRV_INF("merged prefill success: seq_id=%d start_pos=%zu tokens=%zu suffix=%zu text_tokens=%" PRId64 " media_tokens=%zu\n",
+                    seq_id,
+                    start,
+                    tokens.size(),
+                    n_suffix,
+                    text_token_count,
+                    n_suffix - (size_t) text_token_count);
+        }
+        if (switch_decode_after) {
+            if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_DECODE_SWITCH_CMD", "decode")) {
+                SRV_ERR("%s", "failed to switch NPU overlay for decode\n");
+                result = -1;
+                return true;
+            }
+        } else if (server_mtmd_merge_prefill_trace_enabled()) {
+            SRV_INF("%s", "merged prefill keeping prefill overlay: reason=no_decode_batch_expected\n");
         }
         if (profile != nullptr && profile->enabled) {
             profile->set_merged_prefill(
-                    (int64_t) tokens.size(),
+                    (int64_t) n_suffix,
                     text_token_count,
                     decode_us
 #ifdef GGML_USE_NPU

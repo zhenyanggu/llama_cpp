@@ -352,6 +352,15 @@ static bool npu_w_pingpong_enabled() {
 #endif
 }
 
+static bool npu_w_prefetch_enabled() {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_W_PREFETCH");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
 static bool npu_full_pingpong_enabled() {
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
     const char * value = std::getenv("GGML_NPU_FULL_PINGPONG");
@@ -376,14 +385,6 @@ static bool npu_a_prefetch_enabled() {
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 #else
     return false;
-#endif
-}
-
-static uint32_t npu_runtime_scale_meta_offset() {
-#if defined(GGML_NPU_VERSA_P_RUNTIME)
-    return 2048;
-#else
-    return 0x00070000;
 #endif
 }
 
@@ -1201,6 +1202,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     }
     const bool mvout_per_channel = fold_output_reconstruction && plan.aicas_w8a8.weight_scale.size() > 1;
     const float per_tensor_weight_scale = fold_output_reconstruction ? plan.aicas_w8a8.weight_scale[0] : 1.0f;
+    const uint32_t scale_meta_offset = plan.config.layout.scale_cache.offset;
     const bool use_bias_cache =
         npu_env_enabled_default("GGML_NPU_BIAS_CACHE", true) &&
         plan.config.layout.bias_cache.bytes >= static_cast<uint32_t>(plan.m * sizeof(int32_t)) &&
@@ -1317,6 +1319,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
     int32_t loaded_weight_pack_index = -1;
     const bool w_pingpong_enabled =
         npu_w_pingpong_enabled() && plan.use_gemm_plan && !force_reload_weights;
+    const bool w_prefetch_enabled = w_pingpong_enabled && npu_w_prefetch_enabled();
     const bool full_pingpong_enabled =
         npu_full_pingpong_enabled() && w_pingpong_enabled && !force_reload_activations;
     const bool o_overlap_enabled = full_pingpong_enabled && npu_o_overlap_enabled();
@@ -1898,6 +1901,16 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 if (collect_tile_profile) {
                     tile_record.bias_bytes = static_cast<int64_t>(exec_tile.m * sizeof(int32_t));
                 }
+                if (npu_should_dump_tile(layer_id, static_cast<int64_t>(exec_tile_idx))) {
+                    const int32_t * bias_cache_words = reinterpret_cast<const int32_t *>(bias_cache_buf);
+                    npu_dump_tile_blob(
+                        npu_tile_dump_dir(),
+                        layer_id,
+                        static_cast<int64_t>(exec_tile_idx),
+                        "bias_i32",
+                        bias_cache_words + exec_tile.m0,
+                        static_cast<size_t>(exec_tile.m * sizeof(int32_t)));
+                }
             } else {
                 const npu_prepacked_bias * bias_pack = tile_has_model_bias
                     ? &plan.bias_packs[static_cast<size_t>(exec_tile.bias_pack_index)]
@@ -2156,76 +2169,84 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                     }
                 }
             }
-            for (size_t next_idx = exec_tile_idx + 1;
-                    next_idx < plan.exec_tiles.size();
-                    ++next_idx) {
-                const npu_exec_tile & next_tile = plan.exec_tiles[next_idx];
-                if (next_tile.weight_pack_index < 0 ||
-                    static_cast<size_t>(next_tile.weight_pack_index) >= plan.weight_packs.size()) {
-                    continue;
-                }
-                if (find_resident_weight_bank(next_tile.weight_pack_index) >= 0) {
-                    continue;
-                }
-                prefetch_weight_pack_index = next_tile.weight_pack_index;
-                const npu_prepacked_weight & next_weight =
-                    plan.weight_packs[static_cast<size_t>(next_tile.weight_pack_index)];
-                bool prefetch_weight_copied = false;
-                const int64_t prefetch_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
-                if (!npu_ensure_weight_pack_cma(next_weight, error, &prefetch_weight_copied)) {
-                    npu_gemm_plan_wait();
-                    if (collect_tile_profile) {
-                        profile_record.tiles.push_back(std::move(tile_record));
+            if (w_prefetch_enabled) {
+                for (size_t next_idx = exec_tile_idx + 1;
+                        next_idx < plan.exec_tiles.size();
+                        ++next_idx) {
+                    const npu_exec_tile & next_tile = plan.exec_tiles[next_idx];
+                    if (next_tile.m0 != exec_tile.m0 ||
+                            next_tile.n0 != exec_tile.n0 ||
+                            next_tile.m != exec_tile.m ||
+                            next_tile.n != exec_tile.n) {
+                        break;
                     }
-                    cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
-                    return finalize_status(GGML_STATUS_FAILED);
+                    if (next_tile.weight_pack_index < 0 ||
+                        static_cast<size_t>(next_tile.weight_pack_index) >= plan.weight_packs.size()) {
+                        continue;
+                    }
+                    if (find_resident_weight_bank(next_tile.weight_pack_index) >= 0) {
+                        continue;
+                    }
+                    prefetch_weight_pack_index = next_tile.weight_pack_index;
+                    const npu_prepacked_weight & next_weight =
+                        plan.weight_packs[static_cast<size_t>(next_tile.weight_pack_index)];
+                    bool prefetch_weight_copied = false;
+                    const int64_t prefetch_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
+                    if (!npu_ensure_weight_pack_cma(next_weight, error, &prefetch_weight_copied)) {
+                        npu_gemm_plan_wait();
+                        if (collect_tile_profile) {
+                            profile_record.tiles.push_back(std::move(tile_record));
+                        }
+                        cleanup_buffers(activation_buf, nullptr, acc_buf, bias_buf, bias_cache_buf, scale_cache_buf);
+                        return finalize_status(GGML_STATUS_FAILED);
+                    }
+                    if (collect_stage_profile && prefetch_weight_copied) {
+                        const int64_t prefetch_copy_us = ggml_time_us() - prefetch_copy_start_us;
+                        exec_summary.delta.host_copy_weight_calls += 1;
+                        exec_summary.delta.host_copy_weight_us_total += prefetch_copy_us;
+                        exec_summary.delta.copied_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
+                    }
+                    const MvinConfig prefetch_weight_mvin_cfg {
+                        next_weight.cma_packed,
+                        plan.config.layout.weight.offset,
+                        static_cast<uint32_t>(next_tile.m),
+                        static_cast<uint32_t>(next_tile.k),
+                        static_cast<uint16_t>(next_weight.stride_m),
+                        static_cast<uint32_t>(next_weight.stride_m),
+                        1,
+                        1,
+                        false,
+                        false,
+                        false,
+                        0,
+                        0,
+                        0,
+                    };
+                    try {
+                        npu_dma_mvin_w_async_bank(prefetch_w_bank, &prefetch_weight_mvin_cfg);
+                        resident_weight_valid[prefetch_w_bank] = false;
+                        resident_weight_pack_index[prefetch_w_bank] = -1;
+                        resident_weight_prefetched[prefetch_w_bank] = false;
+                        prefetch_issued = true;
+                        if (collect_stage_profile) {
+                            exec_summary.delta.w_prefetch_calls += 1;
+                            exec_summary.delta.dma_in_weight_calls += 1;
+                            exec_summary.delta.dma_in_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
+                        }
+                        if (collect_tile_profile) {
+                            tile_record.w_prefetch_issued = true;
+                        }
+                    } catch (const std::exception & ex) {
+                        if (collect_stage_profile) {
+                            exec_summary.delta.w_prefetch_conflicts += 1;
+                        }
+                        if (npu_debug_log_enabled()) {
+                            GGML_LOG_INFO("%s: W prefetch skipped bank=%u weight_pack=%" PRId32 ": %s\n",
+                                    __func__, static_cast<unsigned>(prefetch_w_bank), prefetch_weight_pack_index, ex.what());
+                        }
+                    }
+                    break;
                 }
-                if (collect_stage_profile && prefetch_weight_copied) {
-                    const int64_t prefetch_copy_us = ggml_time_us() - prefetch_copy_start_us;
-                    exec_summary.delta.host_copy_weight_calls += 1;
-                    exec_summary.delta.host_copy_weight_us_total += prefetch_copy_us;
-                    exec_summary.delta.copied_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
-                }
-                const MvinConfig prefetch_weight_mvin_cfg {
-                    next_weight.cma_packed,
-                    plan.config.layout.weight.offset,
-                    static_cast<uint32_t>(next_tile.m),
-                    static_cast<uint32_t>(next_tile.k),
-                    static_cast<uint16_t>(next_weight.stride_m),
-                    static_cast<uint32_t>(next_weight.stride_m),
-                    1,
-                    1,
-                    false,
-                    false,
-                    false,
-                    0,
-                    0,
-                    0,
-                };
-                try {
-                    npu_dma_mvin_w_async_bank(prefetch_w_bank, &prefetch_weight_mvin_cfg);
-                    resident_weight_valid[prefetch_w_bank] = false;
-                    resident_weight_pack_index[prefetch_w_bank] = -1;
-                    resident_weight_prefetched[prefetch_w_bank] = false;
-                    prefetch_issued = true;
-                    if (collect_stage_profile) {
-                        exec_summary.delta.w_prefetch_calls += 1;
-                        exec_summary.delta.dma_in_weight_calls += 1;
-                        exec_summary.delta.dma_in_weight_bytes_total += static_cast<int64_t>(next_weight.packed.size());
-                    }
-                    if (collect_tile_profile) {
-                        tile_record.w_prefetch_issued = true;
-                    }
-                } catch (const std::exception & ex) {
-                    if (collect_stage_profile) {
-                        exec_summary.delta.w_prefetch_conflicts += 1;
-                    }
-                    if (npu_debug_log_enabled()) {
-                        GGML_LOG_INFO("%s: W prefetch skipped bank=%u weight_pack=%" PRId32 ": %s\n",
-                                __func__, static_cast<unsigned>(prefetch_w_bank), prefetch_weight_pack_index, ex.what());
-                    }
-                }
-                break;
             }
 
             npu_gemm_plan_wait();
@@ -2407,7 +2428,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         raw_acc_mvout ? 0
                                       : (use_scale_cache
                                             ? plan.config.layout.scale_cache.offset
-                                            : npu_runtime_scale_meta_offset()));
+                                            : scale_meta_offset));
             }
             if (use_scale_cache &&
                 (loaded_scale_cache_m0 != exec_tile.m0 || loaded_scale_cache_m != exec_tile.m)) {
@@ -2454,7 +2475,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 wait_pending_mvout();
                 npu_dma_mvin(
                     scale_words,
-                    npu_runtime_scale_meta_offset(),
+                    scale_meta_offset,
                     static_cast<uint32_t>(scale_count),
                     0,
                     static_cast<uint16_t>(scale_count),
@@ -2480,8 +2501,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 }
             }
             const uint32_t mvout_scale_param = raw_acc_mvout ? 0
-                : (use_scale_cache ? plan.config.layout.scale_cache.offset : npu_runtime_scale_meta_offset());
-            if (full_pingpong_enabled && full_output_cma_active) {
+                : (use_scale_cache ? plan.config.layout.scale_cache.offset : scale_meta_offset);
+            if (full_pingpong_enabled) {
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
                 MvoutConfig mvout_cfg {
                     mvout_buf,
@@ -2510,7 +2531,7 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                         tile_record.o_mvout_async = true;
                     }
                 }
-                if (!o_overlap_enabled) {
+                if (!o_overlap_enabled || !full_output_cma_active) {
                     wait_pending_mvout();
                     if (collect_stage_profile && collect_tile_profile) {
                         tile_record.dma_out_us = 0.0;

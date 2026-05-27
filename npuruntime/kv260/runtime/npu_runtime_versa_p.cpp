@@ -371,7 +371,7 @@ void start_mvin(const MvinConfig & cfg, uint32_t dma_id) {
         const uint32_t byte_count = words * static_cast<uint32_t>(sizeof(int32_t));
         uint32_t meta_offset = kBiasMetaOffset;
         if (is_scale) {
-            meta_offset = align_u32(s.bias_meta_bytes, VERSA_P_ALIGN_BYTES);
+            meta_offset = cfg.sram_addr;
         }
         if (meta_offset + byte_count > VERSA_P_META_BYTES) {
             throw std::runtime_error("npu_dma_mvin_async: META bank overflow");

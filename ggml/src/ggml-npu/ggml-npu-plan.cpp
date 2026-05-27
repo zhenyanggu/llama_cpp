@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -70,6 +71,81 @@ struct npu_shape_table_hint {
     std::string source;
 };
 
+static bool npu_fixed_shape_tiling_enabled() {
+    const char * value = std::getenv("GGML_NPU_FIXED_SHAPE_TILING");
+    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+}
+
+static bool npu_lookup_builtin_fixed_tiling(
+        int64_t m,
+        int64_t n,
+        int64_t k,
+        npu_shape_table_hint * out) {
+    if (!npu_fixed_shape_tiling_enabled() || out == nullptr) {
+        return false;
+    }
+
+    npu_shape_table_hint hint;
+    hint.valid = true;
+    hint.source = "builtin_fixed_semi_shapes";
+
+    if (k == 960 && m == 320) {
+        hint.tm = 320;
+        hint.tn = 320;
+        hint.tk = 960;
+    } else if (k == 960 && (m == 960 || m == 2560)) {
+        hint.tm = 384;
+        hint.tn = 320;
+        hint.tk = 960;
+    } else if (k == 2560 && m == 960) {
+        hint.tm = 256;
+        hint.tn = 512;
+        hint.tk = 768;
+    } else if (n == 1024 && k == 768 && (m == 768 || m == 3072)) {
+        hint.tm = 256;
+        hint.tn = 512;
+        hint.tk = 768;
+    } else if (n == 1024 && k == 3072 && m == 768) {
+        hint.tm = 256;
+        hint.tn = 512;
+        hint.tk = 768;
+    } else if (n == 64 && k == 12288 && m == 960) {
+        hint.tm = 256;
+        hint.tn = 64;
+        hint.tk = 768;
+    } else {
+        return false;
+    }
+
+    *out = hint;
+    return true;
+}
+
+static std::vector<std::pair<int64_t, int64_t>> npu_builtin_fixed_preload_tiles(const struct ggml_tensor * src0) {
+    std::vector<std::pair<int64_t, int64_t>> result;
+    if (!npu_fixed_shape_tiling_enabled() || src0 == nullptr) {
+        return result;
+    }
+
+    const int64_t m = src0->ne[1];
+    const int64_t k = src0->ne[0];
+    if (k == 960 && m == 320) {
+        result.push_back({320, 960});
+    } else if (k == 960 && (m == 960 || m == 2560)) {
+        result.push_back({384, 960});
+    } else if (k == 2560 && m == 960) {
+        result.push_back({256, 768});
+    } else if (k == 768 && (m == 768 || m == 3072)) {
+        result.push_back({256, 768});
+    } else if (k == 3072 && m == 768) {
+        result.push_back({256, 768});
+    } else if (k == 12288 && m == 960) {
+        result.push_back({256, 768});
+    }
+
+    return result;
+}
+
 struct npu_shape_table_entry {
     std::string weight_name;
     int64_t m = -1;
@@ -87,6 +163,22 @@ struct npu_shape_table {
     bool loaded = false;
     std::string path;
     std::vector<npu_shape_table_entry> entries;
+};
+
+struct npu_tn_override_rule {
+    int64_t m = -1;
+    int64_t k = -1;
+    int64_t n = -1;
+    int64_t n_min = -1;
+    int64_t n_max = -1;
+    int64_t tn = 0;
+    std::string source;
+};
+
+struct npu_tn_override_table {
+    bool loaded = false;
+    std::string raw;
+    std::vector<npu_tn_override_rule> rules;
 };
 
 static npu_static_quant_table & npu_get_static_quant_table() {
@@ -107,6 +199,33 @@ static npu_preloaded_weight_cache & npu_get_preloaded_weight_cache() {
 static std::string npu_env_string(const char * key) {
     const char * value = std::getenv(key);
     return value ? value : "";
+}
+
+static std::string npu_trim(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+static bool npu_parse_i64_strict(const std::string & text, int64_t * out) {
+    if (out == nullptr) {
+        return false;
+    }
+    const std::string trimmed = npu_trim(text);
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    char * end = nullptr;
+    const long long parsed = std::strtoll(trimmed.c_str(), &end, 10);
+    if (end == trimmed.c_str() || *end != '\0') {
+        return false;
+    }
+    *out = static_cast<int64_t>(parsed);
+    return true;
 }
 
 static npu_shape_table & npu_get_shape_table() {
@@ -176,6 +295,89 @@ static npu_shape_table & npu_get_shape_table() {
     return table;
 }
 
+static npu_tn_override_table & npu_get_tn_override_table() {
+    static npu_tn_override_table table;
+    if (table.loaded) {
+        return table;
+    }
+
+    table.loaded = true;
+    table.raw = npu_env_string("GGML_NPU_TN_OVERRIDES");
+    if (table.raw.empty()) {
+        return table;
+    }
+
+    std::string normalized = table.raw;
+    std::replace(normalized.begin(), normalized.end(), ':', ';');
+    std::stringstream entries(normalized);
+    std::string entry_text;
+    while (std::getline(entries, entry_text, ';')) {
+        entry_text = npu_trim(entry_text);
+        if (entry_text.empty()) {
+            continue;
+        }
+
+        npu_tn_override_rule rule;
+        rule.source = entry_text;
+        bool valid = true;
+        std::stringstream fields(entry_text);
+        std::string field_text;
+        while (std::getline(fields, field_text, ',')) {
+            field_text = npu_trim(field_text);
+            if (field_text.empty()) {
+                continue;
+            }
+
+            const size_t sep = field_text.find('=');
+            if (sep == std::string::npos) {
+                valid = false;
+                break;
+            }
+            const std::string key = npu_trim(field_text.substr(0, sep));
+            const std::string value = npu_trim(field_text.substr(sep + 1));
+            int64_t parsed = 0;
+            if (!npu_parse_i64_strict(value, &parsed)) {
+                valid = false;
+                break;
+            }
+
+            if (key == "m") {
+                rule.m = parsed;
+            } else if (key == "k") {
+                rule.k = parsed;
+            } else if (key == "n") {
+                rule.n = parsed;
+            } else if (key == "n_min") {
+                rule.n_min = parsed;
+            } else if (key == "n_max") {
+                rule.n_max = parsed;
+            } else if (key == "tn") {
+                rule.tn = parsed;
+            } else {
+                valid = false;
+                break;
+            }
+        }
+
+        if (!valid || rule.tn <= 0 ||
+                rule.m == 0 || rule.k == 0 || rule.n == 0 ||
+                rule.n_min == 0 || rule.n_max == 0 ||
+                (rule.n_min > 0 && rule.n_max > 0 && rule.n_min > rule.n_max)) {
+            std::fprintf(stderr, "%s: ignoring invalid GGML_NPU_TN_OVERRIDES rule: %s\n",
+                    __func__, entry_text.c_str());
+            continue;
+        }
+
+        table.rules.push_back(std::move(rule));
+    }
+
+    if (!table.rules.empty()) {
+        std::fprintf(stderr, "%s: loaded %zu NPU tn override rules from GGML_NPU_TN_OVERRIDES\n",
+                __func__, table.rules.size());
+    }
+    return table;
+}
+
 static bool npu_lookup_shape_table_hint(
         const struct ggml_tensor * src0,
         int64_t m,
@@ -208,6 +410,41 @@ static bool npu_lookup_shape_table_hint(
     return false;
 }
 
+static bool npu_lookup_tn_override(
+        int64_t m,
+        int64_t n,
+        int64_t k,
+        int64_t * tn,
+        std::string * source) {
+    npu_tn_override_table & table = npu_get_tn_override_table();
+    for (const npu_tn_override_rule & rule : table.rules) {
+        if (rule.m > 0 && rule.m != m) {
+            continue;
+        }
+        if (rule.k > 0 && rule.k != k) {
+            continue;
+        }
+        if (rule.n > 0 && rule.n != n) {
+            continue;
+        }
+        if (rule.n_min > 0 && n < rule.n_min) {
+            continue;
+        }
+        if (rule.n_max > 0 && n > rule.n_max) {
+            continue;
+        }
+        if (tn != nullptr) {
+            *tn = rule.tn;
+        }
+        if (source != nullptr) {
+            *source = rule.source;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 static std::vector<std::pair<int64_t, int64_t>> npu_shape_table_preload_tiles(const struct ggml_tensor * src0) {
     std::vector<std::pair<int64_t, int64_t>> result;
     if (src0 == nullptr || src0->name[0] == '\0') {
@@ -223,6 +460,9 @@ static std::vector<std::pair<int64_t, int64_t>> npu_shape_table_preload_tiles(co
         }
         result.push_back({ entry.tm, entry.tk });
         break;
+    }
+    if (result.empty()) {
+        result = npu_builtin_fixed_preload_tiles(src0);
     }
     return result;
 }
@@ -1008,9 +1248,10 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         ? plan->config.k_block
         : std::min<int64_t>(plan->config.k_block, plan->config.stage2_k_block);
     const int64_t tile_k_stride = npu_align_up_i64(tile_k, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
+    const int64_t tile_n_stride = npu_align_up_i64(tile_n, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
     const int64_t tile_m_stride = npu_align_up_i64(tile_m, NPU_GEMM_PLAN_STRIDE_ALIGNMENT);
 
-    const uint32_t act_bytes = static_cast<uint32_t>(tile_n * tile_k_stride);
+    const uint32_t act_bytes = static_cast<uint32_t>(tile_n_stride * tile_k_stride);
     uint32_t act_offset = npu_align_u32(0, NPU_SPM_ALIGNMENT);
     uint32_t weight_offset = 0;
     size_t env_act_offset = 0;
@@ -1066,7 +1307,7 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     }
 #endif
 
-    const uint32_t acc_bytes = static_cast<uint32_t>(tile_n * tile_m_stride * sizeof(int32_t));
+    const uint32_t acc_bytes = static_cast<uint32_t>(tile_n_stride * tile_m_stride * sizeof(int32_t));
     const uint32_t bias_acc_bytes = plan->bias != nullptr || plan->aicas_w8a8.valid
         ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(int32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
         : 0;
@@ -1080,11 +1321,20 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         (plan->aicas_w8a8.valid && plan->aicas_w8a8.weight_scale.size() > 1)
         ? npu_align_u32(static_cast<uint32_t>(tile_m_stride * sizeof(uint32_t)), NPU_GEMM_PLAN_ADDR_ALIGNMENT)
         : 0;
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    uint32_t output_acc_offset = npu_align_u32(0, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+    uint32_t scratch_acc_offset = output_acc_offset;
+    uint32_t bias_acc_offset = 0;
+    uint32_t bias_cache_offset = 0;
+    const uint32_t meta_bias_bytes = bias_cache_enabled ? bias_cache_bytes : bias_acc_bytes;
+    uint32_t scale_cache_offset = npu_align_u32(meta_bias_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+#else
     uint32_t output_acc_offset = npu_align_u32(0, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     uint32_t scratch_acc_offset = npu_align_u32(output_acc_offset + acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     uint32_t bias_acc_offset = npu_align_u32(scratch_acc_offset + acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     uint32_t bias_cache_offset = npu_align_u32(bias_acc_offset + bias_acc_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
     uint32_t scale_cache_offset = npu_align_u32(bias_cache_offset + bias_cache_bytes, NPU_GEMM_PLAN_ADDR_ALIGNMENT);
+#endif
     size_t env_bias_acc_offset = 0;
     size_t env_output_acc_offset = 0;
     size_t env_scratch_acc_offset = 0;
@@ -1127,13 +1377,15 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
     (void)acc_overlaps;
     (void)acc_end;
-    if (acc_bytes > NPU_VERSA_P_O_BANK_BYTES) {
+    const uint32_t meta_bias_end = bias_cache_enabled ? bias_cache_end : bias_acc_end;
+    const uint32_t meta_end = std::max(meta_bias_end, scale_cache_end);
+    if (output_acc_end > NPU_VERSA_P_O_BANK_BYTES) {
         if (reason) {
             *reason = "Versa_P O bank allocation overflow";
         }
         return false;
     }
-    if (bias_cache_bytes + scale_cache_bytes > NPU_VERSA_P_META_BYTES) {
+    if (meta_end > NPU_VERSA_P_META_BYTES) {
         if (reason) {
             *reason = "Versa_P meta bank allocation overflow";
         }
@@ -1154,6 +1406,12 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
     }
 #endif
 
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const npu_memory_space meta_memory_space = npu_memory_space::meta;
+#else
+    const npu_memory_space meta_memory_space = npu_memory_space::acc;
+#endif
+
     plan->config.layout.activation = {
         npu_memory_space::spm,
         act_offset,
@@ -1165,7 +1423,7 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         weight_bytes,
     };
     plan->config.layout.bias_accumulator = {
-        npu_memory_space::acc,
+        meta_memory_space,
         bias_acc_offset,
         bias_acc_bytes,
     };
@@ -1180,12 +1438,12 @@ static bool npu_assign_runtime_offsets(npu_node_plan * plan, std::string * reaso
         acc_bytes,
     };
     plan->config.layout.bias_cache = {
-        npu_memory_space::acc,
+        meta_memory_space,
         bias_cache_offset,
         bias_cache_bytes,
     };
     plan->config.layout.scale_cache = {
-        npu_memory_space::acc,
+        meta_memory_space,
         scale_cache_offset,
         scale_cache_bytes,
     };
@@ -1434,6 +1692,9 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     int64_t first_stage_tk = 0;
     npu_gemm_tiling_result tiling;
     npu_shape_table_hint shape_hint;
+    npu_shape_table_hint builtin_hint;
+    int64_t tiling_fixed_acc_words = 0;
+    int64_t tiling_acc_tile_buffers = 1;
     const bool reserve_bias_cache =
         npu_env_enabled_default("GGML_NPU_BIAS_CACHE", true) &&
         (plan.bias != nullptr || plan.aicas_w8a8.valid);
@@ -1445,29 +1706,56 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         first_stage_tk = shape_hint.tk;
         plan.shape_table_hit = true;
         plan.shape_table_source = shape_hint.source;
+    } else if (plan.use_gemm_plan &&
+            plan.aicas_w8a8.valid &&
+            npu_lookup_builtin_fixed_tiling(plan.m, plan.n, plan.k, &builtin_hint)) {
+        first_stage_tm = builtin_hint.tm;
+        first_stage_tn = builtin_hint.tn;
+        first_stage_tk = builtin_hint.tk;
+        plan.shape_table_hit = true;
+        plan.shape_table_source = builtin_hint.source;
+        tiling.valid = true;
+        tiling.mode = npu_gemm_stationary_mode::activation;
+        tiling.u = first_stage_tn;
+        tiling.v = first_stage_tm;
+        tiling.tk = first_stage_tk;
     } else if (plan.use_gemm_plan) {
         const int64_t usable_spm = static_cast<int64_t>(plan.config.spm_bytes > plan.config.guard_bytes
             ? plan.config.spm_bytes - plan.config.guard_bytes
             : plan.config.spm_bytes);
+        const bool has_scale_metadata =
+            plan.aicas_w8a8.valid && plan.aicas_w8a8.weight_scale.size() > 1;
         const int64_t metadata_words =
             (plan.bias != nullptr ? 1 : 0) +
-            (plan.aicas_w8a8.valid && plan.aicas_w8a8.weight_scale.size() > 1 ? 1 : 0);
+            (has_scale_metadata ? 1 : 0);
         npu_gemm_tiling_params params;
         params.n = plan.n;
         params.m = plan.m;
         params.k = plan.k;
         params.spm_bytes = usable_spm;
         params.acc_bytes = static_cast<int64_t>(plan.config.acc_bytes);
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+        params.a_bank_bytes = static_cast<int64_t>(NPU_VERSA_P_A_BANK_BYTES);
+        params.w_bank_bytes = static_cast<int64_t>(NPU_VERSA_P_W_BANK_BYTES);
+        params.o_bank_bytes = static_cast<int64_t>(NPU_VERSA_P_O_BANK_BYTES);
+        params.meta_bytes = static_cast<int64_t>(NPU_VERSA_P_META_BYTES);
+#endif
         params.sa_rows = plan.config.sa_rows;
         params.sa_cols = plan.config.sa_cols;
         params.tk_align = 16;
-        params.metadata_words_per_channel = metadata_words;
-        if (reserve_bias_cache) {
-            params.fixed_acc_words = plan.m;
-        }
-        params.acc_tile_buffers = 3;
-        params.max_u = 255;
-        params.max_v = 255;
+        params.metadata_words_per_channel = reserve_bias_cache
+            ? (has_scale_metadata ? 1 : 0)
+            : metadata_words;
+        params.fixed_meta_words = reserve_bias_cache ? plan.m : 0;
+        tiling_fixed_acc_words = params.fixed_acc_words;
+        params.acc_tile_buffers = 1;
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+        params.max_u = 512;
+        params.max_v = 256;
+#else
+        params.max_u = 512;
+        params.max_v = 512;
+#endif
         params.max_tk = 4096;
         size_t env_tk_align = 0;
         size_t env_acc_tile_buffers = 0;
@@ -1483,6 +1771,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         if (npu_env_to_size("GGML_NPU_ACC_TILE_BUFFERS", &env_acc_tile_buffers)) {
             params.acc_tile_buffers = static_cast<int64_t>(env_acc_tile_buffers);
         }
+        tiling_acc_tile_buffers = params.acc_tile_buffers;
         if (npu_env_to_size("GGML_NPU_SPM_FACTOR_A", &env_spm_factor_a)) {
             params.spm_factor_a = static_cast<int64_t>(env_spm_factor_a);
         }
@@ -1501,7 +1790,35 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         if (npu_env_to_f64("GGML_NPU_LAMBDA_DMA", &env_lambda_dma)) {
             params.lambda_dma = env_lambda_dma;
         }
+        const bool profile_tiling_search = npu_env_enabled_default("GGML_NPU_PROFILE_TILING_SEARCH", false);
+        const auto tiling_search_t0 = std::chrono::steady_clock::now();
         tiling = npu_search_gemm_tiling(params);
+        const auto tiling_search_t1 = std::chrono::steady_clock::now();
+        if (profile_tiling_search) {
+            const int64_t tiling_search_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(tiling_search_t1 - tiling_search_t0).count();
+            std::fprintf(stderr,
+                    "%s: tiling_search_us=%" PRId64
+                    " M=%" PRId64 " N=%" PRId64 " K=%" PRId64
+                    " max_u=%" PRId64 " max_v=%" PRId64 " max_tk=%" PRId64
+                    " valid=%d tm=%" PRId64 " tn=%" PRId64 " tk=%" PRId64
+                    " stationary=%s cost=%.6f q_data=%" PRIu64 "\n",
+                    __func__,
+                    tiling_search_us,
+                    plan.m,
+                    plan.n,
+                    plan.k,
+                    params.max_u,
+                    params.max_v,
+                    params.max_tk,
+                    tiling.valid ? 1 : 0,
+                    tiling.valid ? tiling.v : 0,
+                    tiling.valid ? tiling.u : 0,
+                    tiling.valid ? tiling.tk : 0,
+                    tiling.valid ? npu_stationary_mode_name(tiling.mode) : "-",
+                    tiling.valid ? tiling.cost : 0.0,
+                    tiling.valid ? tiling.q_data : 0);
+        }
         if (tiling.valid) {
             first_stage_tn = tiling.u;
             first_stage_tm = tiling.v;
@@ -1535,6 +1852,59 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
     }
     if (plan.config.stage2_k_block <= 0) {
         plan.config.stage2_k_block = NPU_STAGE2_K_TILE;
+    }
+
+    bool tn_override_applied = false;
+    std::string tn_override_source;
+    if (plan.use_gemm_plan && plan.aicas_w8a8.valid) {
+        int64_t override_tn = 0;
+        std::string override_source;
+        if (npu_lookup_tn_override(plan.m, plan.n, plan.k, &override_tn, &override_source)) {
+            const int64_t requested_tn = override_tn;
+            override_tn = std::min<int64_t>(override_tn, plan.n);
+            if (override_tn > 0 && override_tn != first_stage_tn) {
+                std::string override_reason;
+                const bool tn_aligned =
+                    override_tn == plan.n ||
+                    (override_tn >= plan.config.sa_rows && npu_is_aligned_i64(override_tn, plan.config.sa_rows));
+                const int64_t acc_words = static_cast<int64_t>(plan.config.acc_bytes / sizeof(int32_t));
+                const int64_t acc_required_words =
+                    npu_align_up_i64(first_stage_tm, NPU_Q8_BLOCK) *
+                    (tiling_acc_tile_buffers * npu_align_up_i64(override_tn, NPU_Q8_BLOCK)) +
+                    tiling_fixed_acc_words;
+                if (!tn_aligned) {
+                    override_reason = "tn is not aligned to systolic-array rows";
+                } else if (acc_required_words > acc_words) {
+                    override_reason = "ACC tile-buffer requirement overflow";
+                } else {
+                    npu_node_plan trial = plan;
+                    trial.first_stage_tm = first_stage_tm;
+                    trial.first_stage_tn = override_tn;
+                    trial.first_stage_tk = first_stage_tk;
+                    if (!npu_assign_runtime_offsets(&trial, &override_reason) && override_reason.empty()) {
+                        override_reason = "runtime offset allocation failed";
+                    }
+                }
+                if (override_reason.empty()) {
+                    first_stage_tn = override_tn;
+                    plan.first_stage_tn = first_stage_tn;
+                    tn_override_applied = true;
+                    tn_override_source = override_source;
+                } else {
+                    std::fprintf(stderr,
+                            "%s: ignoring GGML_NPU_TN_OVERRIDES rule %s for M=%" PRId64 " N=%" PRId64 " K=%" PRId64
+                            " requested_tn=%" PRId64 " clamped_tn=%" PRId64 ": %s\n",
+                            __func__,
+                            override_source.c_str(),
+                            plan.m,
+                            plan.n,
+                            plan.k,
+                            requested_tn,
+                            override_tn,
+                            override_reason.c_str());
+                }
+            }
+        }
     }
 
     for (int64_t n0 = 0; n0 < plan.n; n0 += first_stage_tn) {
@@ -1667,6 +2037,7 @@ npu_node_plan npu_create_mul_mat_plan(struct ggml_tensor * op, const npu_tiling_
         << ", macro_tk=" << plan.config.k_block
         << ", gemm_api=" << (plan.use_gemm_plan ? "gemm_plan" : "legacy_gemm")
         << ", shape_table_hit=" << (plan.shape_table_hit ? "true" : "false")
+        << ", tn_override=" << (tn_override_applied ? tn_override_source : "-")
         << ", stationary=" << (plan.use_gemm_plan ? npu_stationary_mode_name(tiling.mode) : "legacy_micro")
         << ", tiling_cost=" << (tiling.valid ? tiling.cost : 0.0)
         << ", q_data=" << (tiling.valid ? tiling.q_data : 0)

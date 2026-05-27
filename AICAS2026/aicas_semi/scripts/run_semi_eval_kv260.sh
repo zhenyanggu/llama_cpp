@@ -39,6 +39,7 @@ Options:
   --run-acc                     Run accuracy
   --skip-acc                    Skip accuracy and run throughput/energy/ttft only (default)
   --throughput-only             Run only throughput_eval.py, skipping acc/energy/ttft/merge
+  --ttft-only                   Run only ttft_eval_multiprompt.py, skipping acc/throughput/energy/merge
   --run-throughput-profile      Run an extra profiled throughput pass after normal eval
   --throughput-profile-only     Only run the profiled throughput pass
   --throughput-profile-max-tokens <n>
@@ -55,6 +56,9 @@ Options:
   --trace-ubatch                Record pre/post microbatch sizes to results/ubatch_trace.jsonl
   --merge-prefill               Merge multimodal prompt into one embedding prefill (default)
   --no-merge-prefill            Disable merged multimodal embedding prefill
+  --merge-prefill-trace         Log merged-prefill entry/fallback/success reasons
+  --ttft-cache-prompt           Send cache_prompt=true in TTFT requests
+  --no-ttft-cache-prompt        Send cache_prompt=false in TTFT requests
   --npu-mmproj-only             Use NPU for mmproj only; keep text W8A8 prefill on CPU
   --npu-text-prefill-dynamic    Enable dynamic NPU text prefill GEMM shapes (default)
   --no-npu-text-prefill-dynamic Disable dynamic NPU text prefill GEMM shapes
@@ -109,6 +113,7 @@ OUTPUT_ROOT="$REPO_DIR/AICAS2026/aicas_semi/results/kv260"
 RUN_ID=""
 RUN_ACC=0
 RUN_THROUGHPUT_ONLY=0
+RUN_TTFT_ONLY=0
 RUN_THROUGHPUT_PROFILE=0
 THROUGHPUT_PROFILE_ONLY=0
 THROUGHPUT_PROFILE_MAX_TOKENS="4096"
@@ -123,6 +128,8 @@ NPU_SHAPE_RECORD=0
 NPU_PRELOAD_WEIGHTS=1
 TRACE_UBATCH=0
 MERGE_PREFILL=1
+MERGE_PREFILL_TRACE=0
+TTFT_CACHE_PROMPT=""
 NPU_TEXT_PREFILL_DYNAMIC=1
 ACC_SAMPLE_MODE="available"
 FORCE_SYNC_SHARED=0
@@ -167,6 +174,7 @@ while [ $# -gt 0 ]; do
     --run-acc) RUN_ACC=1; shift ;;
     --skip-acc) RUN_ACC=0; shift ;;
     --throughput-only) RUN_THROUGHPUT_ONLY=1; shift ;;
+    --ttft-only) RUN_TTFT_ONLY=1; shift ;;
     --run-throughput-profile) RUN_THROUGHPUT_PROFILE=1; shift ;;
     --throughput-profile-only) RUN_THROUGHPUT_PROFILE=1; THROUGHPUT_PROFILE_ONLY=1; shift ;;
     --throughput-profile-max-tokens) THROUGHPUT_PROFILE_MAX_TOKENS="$2"; shift 2 ;;
@@ -181,6 +189,9 @@ while [ $# -gt 0 ]; do
     --trace-ubatch) TRACE_UBATCH=1; shift ;;
     --merge-prefill) MERGE_PREFILL=1; shift ;;
     --no-merge-prefill) MERGE_PREFILL=0; shift ;;
+    --merge-prefill-trace) MERGE_PREFILL_TRACE=1; shift ;;
+    --ttft-cache-prompt) TTFT_CACHE_PROMPT=1; shift ;;
+    --no-ttft-cache-prompt) TTFT_CACHE_PROMPT=0; shift ;;
     --npu-mmproj-only) MTMD_BACKEND_DEVICE="NPU"; NPU_SHAPE_TABLE=""; NPU_SHAPE_RECORD=0; NPU_TEXT_PREFILL_DYNAMIC=0; shift ;;
     --npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=1; shift ;;
     --no-npu-text-prefill-dynamic) NPU_TEXT_PREFILL_DYNAMIC=0; shift ;;
@@ -655,7 +666,7 @@ run_remote_eval() {
   local npu_runtime_env_extra_b64
   npu_runtime_env_extra_b64="$(printf '%s' "$npu_runtime_env_extra" | base64 -w0)"
 
-  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
+  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' RUN_TTFT_ONLY='$RUN_TTFT_ONLY' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' MERGE_PREFILL_TRACE='$MERGE_PREFILL_TRACE' TTFT_CACHE_PROMPT='$TTFT_CACHE_PROMPT' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
 set -euo pipefail
 
 cd "\$RUN_DIR"
@@ -785,7 +796,7 @@ start_server() {
   if [ -n "\$NPU_RUNTIME_ENV_EXTRA_B64" ]; then
     npu_runtime_env="\$npu_runtime_env \$(printf '%s' "\$NPU_RUNTIME_ENV_EXTRA_B64" | base64 -d)"
   fi
-  local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
+  local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' LLAMA_MTMD_MERGE_PREFILL_TRACE='\$MERGE_PREFILL_TRACE' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
   if [ "\$DECODE_NPU" = "1" ]; then
     decode_overlay_env="AICAS_TEXT_DECODE_AWQ_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=1 AICAS_NPU_PREFILL_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$OVERLAY_APP\"' AICAS_NPU_DECODE_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$DECODE_OVERLAY_APP\"'"
   fi
@@ -798,7 +809,7 @@ start_server() {
   fi
   if [ "\$NPU_SHAPE_RECORD" = "1" ]; then
     rm -f "\$REMOTE_NPU_SHAPE_RECORD"
-    npu_shape_env="\$npu_shape_env GGML_NPU_SHAPE_RECORD_JSON='\$REMOTE_NPU_SHAPE_RECORD'"
+    npu_shape_env="\$npu_shape_env GGML_NPU_SHAPE_RECORD_JSON='\$REMOTE_NPU_SHAPE_RECORD' GGML_NPU_PROFILE_TILING_SEARCH=1"
   fi
   if [ "\$enable_profile" = "1" ]; then
     rm -f "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL"
@@ -812,8 +823,8 @@ start_server() {
     ubatch_trace_env="LLAMA_UBATCH_TRACE_JSONL='\$REMOTE_UBATCH_TRACE'"
   fi
   local log_disable_arg="--log-disable"
-  local server_env_for_log_check="\$npu_runtime_env \$best_config_env \$profile_env \$ubatch_trace_env"
-  if printf '%s' "\$server_env_for_log_check" | grep -q 'GGML_NPU_TILE_ALIGN_DEBUG\\|GGML_NPU_DEBUG_LOG\\|AICAS_MMPROJ_W8A8_DEBUG\\|AICAS_TEXT_DECODE_AWQ_NPU_DEBUG'; then
+  local server_env_for_log_check="\$npu_runtime_env \$best_config_env \$npu_shape_env \$profile_env \$ubatch_trace_env"
+  if [ "\$MERGE_PREFILL_TRACE" = "1" ] || printf '%s' "\$server_env_for_log_check" | grep -q 'GGML_NPU_TILE_ALIGN_DEBUG\\|GGML_NPU_DEBUG_LOG\\|GGML_NPU_PROFILE_TILING_SEARCH\\|AICAS_MMPROJ_W8A8_DEBUG\\|AICAS_TEXT_DECODE_AWQ_NPU_DEBUG'; then
     log_disable_arg=""
   fi
 
@@ -834,6 +845,38 @@ if [ "\$RUN_THROUGHPUT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; t
     -o "\$RUN_DIR/results/throughput_metrics.json" \
     --base-url "http://127.0.0.1:\$PORT/v1" \
     --model "\$MODEL_ALIAS"
+
+  stop_server
+elif [ "\$RUN_TTFT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+  ttft_profile=0
+  if [ "\$TRACE_UBATCH" = "1" ] || [ "\$NPU_SHAPE_RECORD" = "1" ] || [ "\$MERGE_PREFILL_TRACE" = "1" ]; then
+    ttft_profile=1
+  fi
+  start_server server.log "\$ttft_profile"
+  sleep 60
+  ttft_cache_arg=()
+  if [ "\$TTFT_CACHE_PROMPT" = "1" ]; then
+    ttft_cache_arg=(--cache-prompt)
+  elif [ "\$TTFT_CACHE_PROMPT" = "0" ]; then
+    ttft_cache_arg=(--no-cache-prompt)
+  fi
+
+  if ! python3 "\$RUN_DIR/code/ttft_eval_multiprompt.py" \
+      -c "\$RUN_DIR/code/ttft_config.remote.json" \
+      -o "\$RUN_DIR/results/ttft_eval_results.json" \
+      "\${ttft_cache_arg[@]}" \
+      --request-timeout 3600; then
+    echo "[ttft-only] first TTFT attempt failed; retrying after multimodal lazy init" >&2
+    sleep 30
+    if ! python3 "\$RUN_DIR/code/ttft_eval_multiprompt.py" \
+        -c "\$RUN_DIR/code/ttft_config.remote.json" \
+        -o "\$RUN_DIR/results/ttft_eval_results.json" \
+        "\${ttft_cache_arg[@]}" \
+        --request-timeout 3600; then
+      stop_server
+      exit 1
+    fi
+  fi
 
   stop_server
 elif [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
@@ -905,6 +948,66 @@ payload = {
 
 with open(out_path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, ensure_ascii=False, indent=2)
+PY
+fi
+
+if [ "\$NPU_SHAPE_RECORD" = "1" ]; then
+  python3 - "\$REMOTE_NPU_SHAPE_RECORD" "\$RUN_DIR/server.log" "\$REMOTE_PROFILE_SERVER_LOG" <<'PY'
+import json
+import os
+import re
+import sys
+from collections import Counter
+
+out_path, *log_paths = sys.argv[1:]
+pat = re.compile(
+    r"M=(?P<M>\d+) N=(?P<N>\d+) K=(?P<K>\d+).*?"
+    r"valid=(?P<valid>\d+) tm=(?P<tm>\d+) tn=(?P<tn>\d+) tk=(?P<tk>\d+)"
+)
+counter = Counter()
+for path in log_paths:
+    if not path or not os.path.exists(path):
+        continue
+    source = os.path.basename(path)
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for lineno, line in enumerate(handle, 1):
+            if "npu_create_mul_mat_plan:" not in line:
+                continue
+            m = pat.search(line)
+            if not m:
+                continue
+            key = (
+                source,
+                int(m.group("M")),
+                int(m.group("N")),
+                int(m.group("K")),
+                int(m.group("valid")),
+                int(m.group("tm")),
+                int(m.group("tn")),
+                int(m.group("tk")),
+            )
+            counter[key] += 1
+
+records = [
+    {
+        "source": source,
+        "M": M,
+        "N": N,
+        "K": K,
+        "valid": bool(valid),
+        "tm": tm,
+        "tn": tn,
+        "tk": tk,
+        "count": count,
+    }
+    for (source, M, N, K, valid, tm, tn, tk), count in sorted(counter.items())
+]
+
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "profile_kind": "aicas_semi_kv260_npu_shape_record",
+        "records": records,
+    }, handle, ensure_ascii=False, indent=2)
 PY
 fi
 EOF
