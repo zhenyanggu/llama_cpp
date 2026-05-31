@@ -29,6 +29,7 @@ Ensure your total response is expansive, rigorously detailed, logically sequence
 # reported in microwatts (uW). The exact hwmonN index can vary across images;
 # override with --power_path if needed (use --list_hwmon to enumerate).
 DEFAULT_POWER_PATH = "/sys/class/hwmon/hwmon2/power1_input"
+DEFAULT_MAX_TOKENS = 128
 
 
 def parse_args():
@@ -79,9 +80,22 @@ def parse_args():
     parser.add_argument(
         "--request-timeout",
         type=float,
-        default=300.0,
+        default=1800.0,
         help="HTTP timeout in seconds."
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help=f"Requested completion token budget (default: {DEFAULT_MAX_TOKENS})."
+    )
+    parser.add_argument(
+        "--no-ignore-eos",
+        dest="ignore_eos",
+        action="store_false",
+        help="Allow EOS to stop generation before --max-tokens."
+    )
+    parser.set_defaults(ignore_eos=True)
     return parser.parse_args()
 
 
@@ -217,8 +231,9 @@ def main():
             base_url=args.base_url,
             model=args.model,
             messages=messages_payload,
-            max_tokens=4096,
+            max_tokens=args.max_tokens,
             temperature=0.0,
+            ignore_eos=args.ignore_eos,
             stream=False,
             timeout=args.request_timeout,
         )
@@ -266,6 +281,8 @@ def main():
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
+            "requested_max_tokens": args.max_tokens,
+            "ignore_eos": args.ignore_eos,
             "tokens_per_joule": tokens_per_joule,
             "sample_hz": args.sample_hz,
             "num_samples": len(inference_samples),

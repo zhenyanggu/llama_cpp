@@ -21,9 +21,13 @@ Options:
                                 (default: AICAS2026/aicas_semi/config/aicas-current-best-prefill-io-config.json)
   --model <path>                Text model GGUF path
   --mmproj <path>               mmproj GGUF path
-  --overlay-app <name>          Overlay app to load (required, e.g. versa_prefill_app)
-  --decode-overlay-app <name>   Decode overlay app for W4A16 GEMV (default: KV260_decode_overlay)
+  --overlay-app <name>          Prefill overlay app to load (default: versa_prefill_profile_app)
+  --decode-overlay-app <name>   Decode overlay app for W4A16 GEMV (default: decode_disable_rsk_irqfix_0528_app)
   --decode-overlay-dir <path>   Local decode overlay directory
+  --generic-fastpath            Use generic prefill/decode apps and bitstream-only overlay switching
+  --remote-npu-driver-ko <path> Use an existing board-side npu_kv260.ko instead of staging local driver
+  --prefill-bitstream-fw <path> FPGA manager firmware path for generic prefill
+  --decode-bitstream-fw <path>  FPGA manager firmware path for generic decode
   --no-decode-npu               Disable decode AWQ W4A16 NPU offload and overlay switching
   --sudo-password <password>    Board sudo password (default: 123456)
   --port <port>                 llama-server port (default: 8080)
@@ -32,6 +36,7 @@ Options:
   --cache-type-k <type>         llama-server K cache type (default: q8_0)
   --cache-type-v <type>         llama-server V cache type (default: q8_0)
   --flash-attn <on|off|auto>    llama-server flash attention mode (default: auto)
+  --ctx-size <n>                llama-server context size
   --mtmd-backend-device <name>  MTMD_BACKEND_DEVICE for mmproj (default: NPU)
   --alias <name>                Model alias (default: smolvlm2-gguf)
   --output-dir <path>           Local results root
@@ -39,6 +44,11 @@ Options:
   --run-acc                     Run accuracy
   --skip-acc                    Skip accuracy and run throughput/energy/ttft only (default)
   --throughput-only             Run only throughput_eval.py, skipping acc/energy/ttft/merge
+  --energy-only                 Run only energy_eval.py, skipping acc/throughput/ttft/merge
+  --energy-max-tokens <n>       Max generated tokens for energy_eval.py (default: 128)
+  --correctness-only            Run a short token-limited image generation sanity check only
+  --correctness-max-tokens <n>  Max generated tokens for correctness-only (default: 64)
+  --correctness-prompt <text>   Prompt for correctness-only
   --ttft-only                   Run only ttft_eval_multiprompt.py, skipping acc/throughput/energy/merge
   --run-throughput-profile      Run an extra profiled throughput pass after normal eval
   --throughput-profile-only     Only run the profiled throughput pass
@@ -48,11 +58,15 @@ Options:
                                 Prompt for profiled pass (default: throughput_eval.py LONG_PROMPT)
   --prefill-profile-mode <mode> Profile overhead mode: summary|diagnostic (default: summary)
   --npu-profile-level <level>   GGML_NPU_PROFILE_LEVEL for profile pass (default: diagnostic)
+  --no-profile-compare          Disable extra decode CPU/NPU compare during profile pass
   --npu-shape-table <path>      Optional GGML_NPU_SHAPE_TABLE_JSON file for text W8A8 GEMM fast path
   --no-npu-shape-table          Disable text W8A8 shape-table offload
   --npu-preload-weights         Preload NPU weights into CMA and keep them resident (default)
   --no-npu-preload-weights      Disable NPU packed-weight preload
   --npu-shape-record            Record observed text W8A8 GEMM shapes to results/npu_shape_record.json
+  --npu-wait-policy <mode>      Runtime wait mode: hybrid|spin|irq|adaptive
+  --npu-wait-policy-json <path> Policy JSON for --npu-wait-policy adaptive
+  --npu-wait-trace              Record per-instruction NPU wait trace to results/npu_wait_trace.jsonl
   --trace-ubatch                Record pre/post microbatch sizes to results/ubatch_trace.jsonl
   --merge-prefill               Merge multimodal prompt into one embedding prefill (default)
   --no-merge-prefill            Disable merged multimodal embedding prefill
@@ -78,9 +92,14 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CODE_DIR="$REPO_DIR/AICAS2026/aicas_semi/code"
 DEFAULT_NPU_SHAPE_TABLE="$REPO_DIR/AICAS2026/aicas_semi/config/semi_npu_shapes.json"
 DEFAULT_BEST_CONFIG_JSON="$REPO_DIR/AICAS2026/aicas_semi/config/aicas-current-best-prefill-io-config.json"
-VERSA_PREFILL_OVERLAY_DIR="/mnt/c/vivado/versa_prefill/out/versa_prefill_app"
-DEFAULT_DECODE_OVERLAY_DIR="$REPO_DIR/AICAS2026/overlay/KV260_decode_overlay"
+VERSA_PREFILL_OVERLAY_DIR="/mnt/c/vivado/versa_prefill/out/versa_prefill_profile_app"
+DEFAULT_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/decode_disable_rsk_irqfix_0528_app"
+GENERIC_PREFILL_OVERLAY_DIR="/mnt/c/vivado/KV260/out/prefill_generic_light_0529_app"
+GENERIC_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/decode_generic_light_0529_app"
+GENERIC_PREFILL_FW_DEFAULT="xilinx/prefill_generic_light_0529_app/prefill_generic_light_0529.bit.bin"
+GENERIC_DECODE_FW_DEFAULT="xilinx/decode_generic_light_0529_app/decode_generic_light_0529.bit.bin"
 NPU_DRIVER_KO="$REPO_DIR/npuruntime/kv260/driver/npu_kv260.ko"
+NPU_DRIVER_MAX_BUFFER_MB="${NPU_DRIVER_MAX_BUFFER_MB:-1500}"
 
 HOST="192.168.0.10"
 USER_NAME="ubuntu"
@@ -96,9 +115,18 @@ BEST_CONFIG_ENV=""
 EXTRA_SERVER_ENV=""
 MODEL_EXPLICIT=0
 MMPROJ_EXPLICIT=0
-OVERLAY_APP=""
-DECODE_OVERLAY_APP="KV260_decode_overlay"
+OVERLAY_APP="versa_prefill_profile_app"
+DECODE_OVERLAY_APP="decode_disable_rsk_irqfix_0528_app"
 DECODE_OVERLAY_DIR="$DEFAULT_DECODE_OVERLAY_DIR"
+OVERLAY_APP_EXPLICIT=0
+DECODE_OVERLAY_APP_EXPLICIT=0
+DECODE_OVERLAY_DIR_EXPLICIT=0
+GENERIC_FASTPATH=0
+REMOTE_NPU_DRIVER_KO_OVERRIDE=""
+GENERIC_PREFILL_FW="$GENERIC_PREFILL_FW_DEFAULT"
+GENERIC_DECODE_FW="$GENERIC_DECODE_FW_DEFAULT"
+GENERIC_PREFILL_FW_EXPLICIT=0
+GENERIC_DECODE_FW_EXPLICIT=0
 DECODE_NPU=1
 SUDO_PASSWORD="${BOARD_SUDO_PASSWORD:-123456}"
 PORT="8080"
@@ -107,12 +135,18 @@ UBATCH_SIZE="1024"
 CACHE_TYPE_K="q8_0"
 CACHE_TYPE_V="q8_0"
 FLASH_ATTN="auto"
+CTX_SIZE=""
 MTMD_BACKEND_DEVICE="NPU"
 MODEL_ALIAS="smolvlm2-gguf"
 OUTPUT_ROOT="$REPO_DIR/AICAS2026/aicas_semi/results/kv260"
 RUN_ID=""
 RUN_ACC=0
 RUN_THROUGHPUT_ONLY=0
+RUN_ENERGY_ONLY=0
+ENERGY_MAX_TOKENS="128"
+RUN_CORRECTNESS_ONLY=0
+CORRECTNESS_MAX_TOKENS="64"
+CORRECTNESS_PROMPT="Please describe the image concisely and accurately."
 RUN_TTFT_ONLY=0
 RUN_THROUGHPUT_PROFILE=0
 THROUGHPUT_PROFILE_ONLY=0
@@ -120,12 +154,16 @@ THROUGHPUT_PROFILE_MAX_TOKENS="4096"
 THROUGHPUT_PROFILE_PROMPT=""
 PREFILL_PROFILE_MODE="summary"
 NPU_PROFILE_LEVEL="diagnostic"
+PROFILE_COMPARE=1
 NPU_SHAPE_TABLE=""
 if [ -f "$DEFAULT_NPU_SHAPE_TABLE" ]; then
   NPU_SHAPE_TABLE="$DEFAULT_NPU_SHAPE_TABLE"
 fi
 NPU_SHAPE_RECORD=0
 NPU_PRELOAD_WEIGHTS=1
+NPU_WAIT_POLICY=""
+NPU_WAIT_POLICY_JSON=""
+NPU_WAIT_TRACE=0
 TRACE_UBATCH=0
 MERGE_PREFILL=1
 MERGE_PREFILL_TRACE=0
@@ -156,9 +194,13 @@ while [ $# -gt 0 ]; do
     --best-config-json) BEST_CONFIG_JSON="$2"; shift 2 ;;
     --model) MODEL_PATH="$2"; MODEL_EXPLICIT=1; shift 2 ;;
     --mmproj) MMPROJ_PATH="$2"; MMPROJ_EXPLICIT=1; shift 2 ;;
-    --overlay-app) OVERLAY_APP="$2"; shift 2 ;;
-    --decode-overlay-app) DECODE_OVERLAY_APP="$2"; shift 2 ;;
-    --decode-overlay-dir) DECODE_OVERLAY_DIR="$2"; shift 2 ;;
+    --overlay-app) OVERLAY_APP="$2"; OVERLAY_APP_EXPLICIT=1; shift 2 ;;
+    --decode-overlay-app) DECODE_OVERLAY_APP="$2"; DECODE_OVERLAY_APP_EXPLICIT=1; shift 2 ;;
+    --decode-overlay-dir) DECODE_OVERLAY_DIR="$2"; DECODE_OVERLAY_DIR_EXPLICIT=1; shift 2 ;;
+    --generic-fastpath) GENERIC_FASTPATH=1; shift ;;
+    --remote-npu-driver-ko) REMOTE_NPU_DRIVER_KO_OVERRIDE="$2"; shift 2 ;;
+    --prefill-bitstream-fw) GENERIC_PREFILL_FW="$2"; GENERIC_PREFILL_FW_EXPLICIT=1; shift 2 ;;
+    --decode-bitstream-fw) GENERIC_DECODE_FW="$2"; GENERIC_DECODE_FW_EXPLICIT=1; shift 2 ;;
     --no-decode-npu) DECODE_NPU=0; shift ;;
     --sudo-password) SUDO_PASSWORD="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
@@ -167,6 +209,7 @@ while [ $# -gt 0 ]; do
     --cache-type-k) CACHE_TYPE_K="$2"; shift 2 ;;
     --cache-type-v) CACHE_TYPE_V="$2"; shift 2 ;;
     --flash-attn) FLASH_ATTN="$2"; shift 2 ;;
+    --ctx-size) CTX_SIZE="$2"; shift 2 ;;
     --mtmd-backend-device) MTMD_BACKEND_DEVICE="$2"; shift 2 ;;
     --alias) MODEL_ALIAS="$2"; shift 2 ;;
     --output-dir) OUTPUT_ROOT="$2"; shift 2 ;;
@@ -174,6 +217,11 @@ while [ $# -gt 0 ]; do
     --run-acc) RUN_ACC=1; shift ;;
     --skip-acc) RUN_ACC=0; shift ;;
     --throughput-only) RUN_THROUGHPUT_ONLY=1; shift ;;
+    --energy-only) RUN_ENERGY_ONLY=1; shift ;;
+    --energy-max-tokens) ENERGY_MAX_TOKENS="$2"; shift 2 ;;
+    --correctness-only) RUN_CORRECTNESS_ONLY=1; shift ;;
+    --correctness-max-tokens) CORRECTNESS_MAX_TOKENS="$2"; shift 2 ;;
+    --correctness-prompt) CORRECTNESS_PROMPT="$2"; shift 2 ;;
     --ttft-only) RUN_TTFT_ONLY=1; shift ;;
     --run-throughput-profile) RUN_THROUGHPUT_PROFILE=1; shift ;;
     --throughput-profile-only) RUN_THROUGHPUT_PROFILE=1; THROUGHPUT_PROFILE_ONLY=1; shift ;;
@@ -181,11 +229,15 @@ while [ $# -gt 0 ]; do
     --throughput-profile-prompt) THROUGHPUT_PROFILE_PROMPT="$2"; shift 2 ;;
     --prefill-profile-mode) PREFILL_PROFILE_MODE="$2"; shift 2 ;;
     --npu-profile-level) NPU_PROFILE_LEVEL="$2"; shift 2 ;;
+    --no-profile-compare) PROFILE_COMPARE=0; shift ;;
     --npu-shape-table) NPU_SHAPE_TABLE="$2"; shift 2 ;;
     --no-npu-shape-table) NPU_SHAPE_TABLE=""; shift ;;
     --npu-preload-weights) NPU_PRELOAD_WEIGHTS=1; shift ;;
     --no-npu-preload-weights) NPU_PRELOAD_WEIGHTS=0; shift ;;
     --npu-shape-record) NPU_SHAPE_RECORD=1; shift ;;
+    --npu-wait-policy) NPU_WAIT_POLICY="$2"; shift 2 ;;
+    --npu-wait-policy-json) NPU_WAIT_POLICY_JSON="$2"; shift 2 ;;
+    --npu-wait-trace) NPU_WAIT_TRACE=1; shift ;;
     --trace-ubatch) TRACE_UBATCH=1; shift ;;
     --merge-prefill) MERGE_PREFILL=1; shift ;;
     --no-merge-prefill) MERGE_PREFILL=0; shift ;;
@@ -272,21 +324,36 @@ PY
 }
 
 load_best_config_json
+if [ "$GENERIC_FASTPATH" -eq 1 ]; then
+  if [ "$OVERLAY_APP_EXPLICIT" -ne 1 ]; then
+    OVERLAY_APP="prefill_generic_light_0529_app"
+  fi
+  if [ "$DECODE_OVERLAY_APP_EXPLICIT" -ne 1 ]; then
+    DECODE_OVERLAY_APP="decode_generic_light_0529_app"
+  fi
+  if [ "$DECODE_OVERLAY_DIR_EXPLICIT" -ne 1 ]; then
+    if [ "$DECODE_OVERLAY_APP_EXPLICIT" -eq 1 ]; then
+      DECODE_OVERLAY_DIR=""
+    else
+      DECODE_OVERLAY_DIR="$GENERIC_DECODE_OVERLAY_DIR"
+    fi
+  fi
+  if [ "$GENERIC_DECODE_FW_EXPLICIT" -ne 1 ] && [ "$DECODE_OVERLAY_APP_EXPLICIT" -eq 1 ]; then
+    decode_fw_stem="${DECODE_OVERLAY_APP%_app}"
+    GENERIC_DECODE_FW="xilinx/$DECODE_OVERLAY_APP/$decode_fw_stem.bit.bin"
+  fi
+fi
 if [ -n "$EXTRA_SERVER_ENV" ]; then
   BEST_CONFIG_ENV="${BEST_CONFIG_ENV:+$BEST_CONFIG_ENV }$EXTRA_SERVER_ENV"
 fi
-BEST_CONFIG_ENV="VERSA_P_CMA_SIZE=1024M VERSA_P_CMA_HEAP_OFFSET=0 VERSA_P_CMA_HEAP_SIZE=832M NPU_CMA_SIZE=1024M NPU_CMA_HEAP_OFFSET=832M NPU_CMA_HEAP_SIZE=192M${BEST_CONFIG_ENV:+ $BEST_CONFIG_ENV}"
+BEST_CONFIG_ENV="VERSA_P_CMA_SIZE=1408M VERSA_P_CMA_HEAP_OFFSET=0 VERSA_P_CMA_HEAP_SIZE=832M NPU_CMA_SIZE=1408M NPU_CMA_HEAP_OFFSET=832M NPU_CMA_HEAP_SIZE=576M AICAS_TEXT_DECODE_AWQ_HW_F32_MVOUT=1 AICAS_TEXT_DECODE_AWQ_NPU_FUSED_FFN=1 AICAS_TEXT_LM_HEAD_W16A16_NPU=1 AICAS_TEXT_LM_HEAD_W16A16_CMA=1 AICAS_TEXT_LM_HEAD_W16A16_PINGPONG=1${BEST_CONFIG_ENV:+ $BEST_CONFIG_ENV}"
 
-[ -n "$OVERLAY_APP" ] || {
-  echo "--overlay-app is required (for example: --overlay-app versa_prefill_app)" >&2
-  exit 1
-}
 if [ "$DECODE_NPU" -eq 1 ]; then
   [ -n "$DECODE_OVERLAY_APP" ] || {
     echo "--decode-overlay-app must not be empty when decode NPU is enabled" >&2
     exit 1
   }
-  [ -d "$DECODE_OVERLAY_DIR" ] || {
+  [ "$GENERIC_FASTPATH" -eq 1 ] || [ -d "$DECODE_OVERLAY_DIR" ] || {
     echo "Decode overlay directory not found: $DECODE_OVERLAY_DIR" >&2
     exit 1
   }
@@ -321,12 +388,50 @@ case "$UBATCH_SIZE" in
     ;;
 esac
 
+case "$CORRECTNESS_MAX_TOKENS" in
+  ''|*[!0-9]*)
+    echo "--correctness-max-tokens must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$CORRECTNESS_MAX_TOKENS" -le 0 ]; then
+      echo "--correctness-max-tokens must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$ENERGY_MAX_TOKENS" in
+  ''|*[!0-9]*)
+    echo "--energy-max-tokens must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$ENERGY_MAX_TOKENS" -le 0 ]; then
+      echo "--energy-max-tokens must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$NPU_WAIT_POLICY" in
+  ""|hybrid|spin|irq|adaptive) ;;
+  *)
+    echo "--npu-wait-policy must be one of: hybrid, spin, irq, adaptive" >&2
+    exit 1
+    ;;
+esac
+
 TARGET="$USER_NAME@$HOST"
 MODEL_PATH="$(realpath "$MODEL_PATH")"
 MMPROJ_PATH="$(realpath "$MMPROJ_PATH")"
 THROUGHPUT_PROFILE_PROMPT_B64="$(printf '%s' "$THROUGHPUT_PROFILE_PROMPT" | base64 -w0)"
+CORRECTNESS_PROMPT_B64="$(printf '%s' "$CORRECTNESS_PROMPT" | base64 -w0)"
 if [ -n "$NPU_SHAPE_TABLE" ]; then
   NPU_SHAPE_TABLE="$(realpath "$NPU_SHAPE_TABLE")"
+fi
+if [ -n "$NPU_WAIT_POLICY_JSON" ]; then
+  NPU_WAIT_POLICY_JSON="$(realpath "$NPU_WAIT_POLICY_JSON")"
 fi
 mkdir -p "$OUTPUT_ROOT"
 OUTPUT_ROOT="$(realpath -m "$OUTPUT_ROOT")"
@@ -353,7 +458,7 @@ if [ -n "$BEST_CONFIG_JSON" ]; then
   REMOTE_MMPROJ_BASENAME="$(printf '%s' "$MMPROJ_PATH" | sha1sum | cut -c1-10)-$REMOTE_MMPROJ_BASENAME"
 fi
 REMOTE_MMPROJ="$REMOTE_SHARED_DIR/$REMOTE_MMPROJ_BASENAME"
-REMOTE_NPU_DRIVER_KO="$REMOTE_RUN_DIR/npu_kv260.ko"
+REMOTE_NPU_DRIVER_KO="${REMOTE_NPU_DRIVER_KO_OVERRIDE:-$REMOTE_RUN_DIR/npu_kv260.ko}"
 REMOTE_FULL_TEST_JSON="$REMOTE_DATA_DIR/FullTest.json"
 REMOTE_IMAGE_ROOT="$REMOTE_DATA_DIR/images"
 REMOTE_TTFT_CONFIG="$REMOTE_CODE_DIR/ttft_config.remote.json"
@@ -365,6 +470,7 @@ REMOTE_TEXT_CPU_PROFILE="$REMOTE_RESULTS_DIR/text_cpu_profile.jsonl"
 REMOTE_NPU_PROFILE_JSON="$REMOTE_RESULTS_DIR/ggml_npu_profile.json"
 REMOTE_NPU_PROFILE_MANIFEST="$REMOTE_RESULTS_DIR/ggml_npu_profile_manifest.json"
 REMOTE_NPU_DECODE_PROFILE_JSONL="$REMOTE_RESULTS_DIR/ggml_npu_decode_profile.jsonl"
+REMOTE_FUSED_FFN_COMPARE_JSONL="$REMOTE_RESULTS_DIR/decode_swiglu_ffn_compare.jsonl"
 REMOTE_NPU_OVERLAY_PROFILE_JSONL="$REMOTE_RESULTS_DIR/npu_overlay_switch_profile.jsonl"
 REMOTE_PROFILE_SERVER_LOG="$REMOTE_RUN_DIR/server_profile.log"
 REMOTE_NPU_SHAPE_TABLE=""
@@ -373,6 +479,11 @@ if [ -n "$NPU_SHAPE_TABLE" ]; then
 fi
 REMOTE_NPU_SHAPE_RECORD="$REMOTE_RESULTS_DIR/npu_shape_record.json"
 REMOTE_UBATCH_TRACE="$REMOTE_RESULTS_DIR/ubatch_trace.jsonl"
+REMOTE_NPU_WAIT_TRACE="$REMOTE_RESULTS_DIR/npu_wait_trace.jsonl"
+REMOTE_NPU_WAIT_POLICY_JSON=""
+if [ -n "$NPU_WAIT_POLICY_JSON" ]; then
+  REMOTE_NPU_WAIT_POLICY_JSON="$REMOTE_CODE_DIR/$(basename "$NPU_WAIT_POLICY_JSON")"
+fi
 REMOTE_NPU_OVERLAY_SWITCH="$REMOTE_RUN_DIR/switch_npu_overlay.sh"
 
 copy_once_by_size() {
@@ -420,8 +531,33 @@ echo "$SUDO_PASSWORD" | sudo -S cp "$REMOTE_TMP/"* "/lib/firmware/xilinx/$OVERLA
 EOF
 }
 
+ensure_remote_overlay_app() {
+  local app="$1"
+  if ssh "${SSH_OPTS[@]}" "$TARGET" "test -d '/lib/firmware/xilinx/$app'"; then
+    echo "[reuse] overlay app already installed on board: $app"
+    return 0
+  fi
+  echo "Overlay app not installed on board and local directory was not found: $app" >&2
+  exit 1
+}
+
 stage_overlay_apps() {
-  if [ "$OVERLAY_APP" = "versa_prefill_app" ]; then
+  if [ "$GENERIC_FASTPATH" -eq 1 ]; then
+    if [ -d "$GENERIC_PREFILL_OVERLAY_DIR" ]; then
+      stage_overlay_app "$OVERLAY_APP" "$GENERIC_PREFILL_OVERLAY_DIR"
+    else
+      ensure_remote_overlay_app "$OVERLAY_APP"
+    fi
+    if [ "$DECODE_NPU" -eq 1 ]; then
+      if [ -n "$DECODE_OVERLAY_DIR" ] && [ -d "$DECODE_OVERLAY_DIR" ]; then
+        stage_overlay_app "$DECODE_OVERLAY_APP" "$DECODE_OVERLAY_DIR"
+      else
+        ensure_remote_overlay_app "$DECODE_OVERLAY_APP"
+      fi
+    fi
+    return 0
+  fi
+  if [ "$OVERLAY_APP" = "versa_prefill_profile_app" ]; then
     stage_overlay_app "$OVERLAY_APP" "$VERSA_PREFILL_OVERLAY_DIR"
   fi
   if [ "$DECODE_NPU" -eq 1 ]; then
@@ -590,7 +726,15 @@ stage_remote_tree() {
   stage_overlay_apps
 
   copy_once_by_size "$SERVER_BIN" "$REMOTE_SERVER_BIN" "llama-server"
-  copy_once_by_size "$NPU_DRIVER_KO" "$REMOTE_NPU_DRIVER_KO" "npu_kv260.ko"
+  if [ -n "$REMOTE_NPU_DRIVER_KO_OVERRIDE" ]; then
+    ssh "${SSH_OPTS[@]}" "$TARGET" "test -f '$REMOTE_NPU_DRIVER_KO'" || {
+      echo "Remote NPU driver not found: $REMOTE_NPU_DRIVER_KO" >&2
+      exit 1
+    }
+    echo "[reuse] board-side npu_kv260.ko: $REMOTE_NPU_DRIVER_KO"
+  else
+    copy_once_by_size "$NPU_DRIVER_KO" "$REMOTE_NPU_DRIVER_KO" "npu_kv260.ko"
+  fi
   copy_once_by_size "$MODEL_PATH" "$REMOTE_MODEL" "model"
   copy_once_by_size "$MMPROJ_PATH" "$REMOTE_MMPROJ" "mmproj"
 
@@ -606,6 +750,9 @@ stage_remote_tree() {
   scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/run_semi_eval.sh" "$TARGET:$REMOTE_RUN_DIR/"
   if [ -n "$NPU_SHAPE_TABLE" ]; then
     scp "${SSH_OPTS[@]}" "$NPU_SHAPE_TABLE" "$TARGET:$REMOTE_NPU_SHAPE_TABLE"
+  fi
+  if [ -n "$NPU_WAIT_POLICY_JSON" ]; then
+    scp "${SSH_OPTS[@]}" "$NPU_WAIT_POLICY_JSON" "$TARGET:$REMOTE_NPU_WAIT_POLICY_JSON"
   fi
 
   if [ "$RUN_ACC" -eq 1 ]; then
@@ -666,13 +813,14 @@ run_remote_eval() {
   local npu_runtime_env_extra_b64
   npu_runtime_env_extra_b64="$(printf '%s' "$npu_runtime_env_extra" | base64 -w0)"
 
-  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' RUN_TTFT_ONLY='$RUN_TTFT_ONLY' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' MERGE_PREFILL_TRACE='$MERGE_PREFILL_TRACE' TTFT_CACHE_PROMPT='$TTFT_CACHE_PROMPT' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
+  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' NPU_DRIVER_MAX_BUFFER_MB='$NPU_DRIVER_MAX_BUFFER_MB' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' GENERIC_FASTPATH='$GENERIC_FASTPATH' GENERIC_PREFILL_FW='$GENERIC_PREFILL_FW' GENERIC_DECODE_FW='$GENERIC_DECODE_FW' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' CTX_SIZE='$CTX_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' RUN_ENERGY_ONLY='$RUN_ENERGY_ONLY' ENERGY_MAX_TOKENS='$ENERGY_MAX_TOKENS' RUN_CORRECTNESS_ONLY='$RUN_CORRECTNESS_ONLY' CORRECTNESS_MAX_TOKENS='$CORRECTNESS_MAX_TOKENS' CORRECTNESS_PROMPT_B64='$CORRECTNESS_PROMPT_B64' RUN_TTFT_ONLY='$RUN_TTFT_ONLY' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' PROFILE_COMPARE='$PROFILE_COMPARE' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_FUSED_FFN_COMPARE_JSONL='$REMOTE_FUSED_FFN_COMPARE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' NPU_WAIT_POLICY='$NPU_WAIT_POLICY' NPU_WAIT_TRACE='$NPU_WAIT_TRACE' REMOTE_NPU_WAIT_TRACE='$REMOTE_NPU_WAIT_TRACE' REMOTE_NPU_WAIT_POLICY_JSON='$REMOTE_NPU_WAIT_POLICY_JSON' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' MERGE_PREFILL_TRACE='$MERGE_PREFILL_TRACE' TTFT_CACHE_PROMPT='$TTFT_CACHE_PROMPT' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
 set -euo pipefail
 
 cd "\$RUN_DIR"
 rm -f server.log server.pid
 mkdir -p results
 THROUGHPUT_PROFILE_PROMPT="\$(printf '%s' "\$THROUGHPUT_PROFILE_PROMPT_B64" | base64 -d)"
+CORRECTNESS_PROMPT="\$(printf '%s' "\$CORRECTNESS_PROMPT_B64" | base64 -d)"
 
 cleanup() {
   if [ -f server.pid ]; then
@@ -695,7 +843,7 @@ fi
 if lsmod | grep -q '^npu_kv260 '; then
   echo "[reuse] loaded npu_kv260 module"
 else
-  echo "\$SUDO_PASSWORD" | sudo -S insmod "\$REMOTE_NPU_DRIVER_KO"
+  echo "\$SUDO_PASSWORD" | sudo -S insmod "\$REMOTE_NPU_DRIVER_KO" max_buffer_mb="\$NPU_DRIVER_MAX_BUFFER_MB"
 fi
 for _ in \$(seq 1 30); do
   [ -e /dev/npu_kv260 ] && break
@@ -710,6 +858,53 @@ fi
 echo "\$SUDO_PASSWORD" | sudo -S chmod 666 /dev/npu_kv260
 printf '%s\n' "\$OVERLAY_APP" > /tmp/aicas_npu_overlay_state
 
+if [ "\$GENERIC_FASTPATH" = "1" ]; then
+cat > "\$REMOTE_NPU_OVERLAY_SWITCH" <<'EOSWITCH'
+#!/usr/bin/env bash
+set -euo pipefail
+target_app="\$1"
+state_file="/tmp/aicas_npu_overlay_state"
+prefill_app="\${GENERIC_PREFILL_APP:?}"
+decode_app="\${GENERIC_DECODE_APP:?}"
+prefill_fw="\${GENERIC_PREFILL_FW:?}"
+decode_fw="\${GENERIC_DECODE_FW:?}"
+current=""
+if [ -f "\$state_file" ]; then
+  current="\$(cat "\$state_file" 2>/dev/null || true)"
+fi
+if [ "\$current" = "\$target_app" ] && [ -e /dev/npu_kv260 ]; then
+  echo "NPU overlay already active: \$target_app"
+  exit 0
+fi
+case "\$target_app" in
+  "\$prefill_app") firmware="\$prefill_fw" ;;
+  "\$decode_app") firmware="\$decode_fw" ;;
+  *)
+    echo "Unknown generic NPU overlay target: \$target_app" >&2
+    exit 1
+    ;;
+esac
+echo "Switching NPU bitstream: \${current:-none} -> \$target_app (\$firmware)"
+echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo 0 > /sys/class/fpga_manager/fpga0/flags"
+echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo '\$firmware' > /sys/class/fpga_manager/fpga0/firmware"
+for _ in \$(seq 1 60); do
+  state="\$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null || true)"
+  [ "\$state" = "operating" ] && break
+  sleep 0.1
+done
+state="\$(cat /sys/class/fpga_manager/fpga0/state 2>/dev/null || true)"
+if [ "\$state" != "operating" ]; then
+  echo "FPGA manager did not reach operating after loading \$firmware; state=\$state" >&2
+  exit 1
+fi
+if [ ! -e /dev/npu_kv260 ]; then
+  echo "NPU device missing after bitstream switch to \$target_app; generic DT/driver must stay loaded" >&2
+  exit 1
+fi
+echo "\$SUDO_PASSWORD" | sudo -S chmod 666 /dev/npu_kv260
+printf '%s\n' "\$target_app" > "\$state_file"
+EOSWITCH
+else
 cat > "\$REMOTE_NPU_OVERLAY_SWITCH" <<'EOSWITCH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -737,6 +932,7 @@ fi
 echo "\$SUDO_PASSWORD" | sudo -S chmod 666 /dev/npu_kv260
 printf '%s\n' "\$target_app" > "\$state_file"
 EOSWITCH
+fi
 chmod +x "\$REMOTE_NPU_OVERLAY_SWITCH"
 
 wait_ready() {
@@ -789,23 +985,30 @@ start_server() {
   pkill -f "./llama-server --host 127.0.0.1 --port \$PORT" >/dev/null 2>&1 || true
 
   local profile_env=""
+  local fused_ffn_compare_env=""
   local npu_shape_env=""
   local ubatch_trace_env=""
   local decode_overlay_env=""
-  local npu_runtime_env="GGML_NPU_EAGER_INIT=1 VERSA_P_CMA_SIZE=1024M VERSA_P_CMA_HEAP_OFFSET=0 VERSA_P_CMA_HEAP_SIZE=832M NPU_CMA_SIZE=1024M NPU_CMA_HEAP_OFFSET=832M NPU_CMA_HEAP_SIZE=192M"
+  local wait_env=""
+  local ctx_arg=""
+  local npu_runtime_env="GGML_NPU_EAGER_INIT=1 VERSA_P_CMA_SIZE=1408M VERSA_P_CMA_HEAP_OFFSET=0 VERSA_P_CMA_HEAP_SIZE=832M NPU_CMA_SIZE=1408M NPU_CMA_HEAP_OFFSET=832M NPU_CMA_HEAP_SIZE=576M"
   if [ -n "\$NPU_RUNTIME_ENV_EXTRA_B64" ]; then
     npu_runtime_env="\$npu_runtime_env \$(printf '%s' "\$NPU_RUNTIME_ENV_EXTRA_B64" | base64 -d)"
   fi
   local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' LLAMA_MTMD_MERGE_PREFILL_TRACE='\$MERGE_PREFILL_TRACE' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
   if [ "\$DECODE_NPU" = "1" ]; then
-    decode_overlay_env="AICAS_TEXT_DECODE_AWQ_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=1 AICAS_NPU_PREFILL_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$OVERLAY_APP\"' AICAS_NPU_DECODE_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$DECODE_OVERLAY_APP\"'"
+    decode_overlay_env="AICAS_TEXT_DECODE_AWQ_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=1 AICAS_NPU_PREFILL_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$OVERLAY_APP\"' AICAS_NPU_DECODE_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$DECODE_OVERLAY_APP\"'"
+    if [ "\$RUN_CORRECTNESS_ONLY" = "1" ] || { [ "\$enable_profile" = "1" ] && [ "\$PROFILE_COMPARE" = "1" ]; }; then
+      rm -f "\$REMOTE_FUSED_FFN_COMPARE_JSONL"
+      fused_ffn_compare_env="AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE=1 AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_LIMIT=1 AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_JSONL='\$REMOTE_FUSED_FFN_COMPARE_JSONL'"
+    fi
   fi
   local best_config_env="\$BEST_CONFIG_ENV"
   if [ -n "\$REMOTE_NPU_SHAPE_TABLE" ]; then
     npu_shape_env="GGML_NPU_SHAPE_TABLE_JSON='\$REMOTE_NPU_SHAPE_TABLE'"
   fi
   if [ "\$NPU_PRELOAD_WEIGHTS" = "1" ]; then
-    npu_shape_env="\$npu_shape_env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=1 AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD=1"
+    npu_shape_env="\$npu_shape_env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=1 AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD=1 AICAS_TEXT_LM_HEAD_W16A16_NPU_PRELOAD=1"
   fi
   if [ "\$NPU_SHAPE_RECORD" = "1" ]; then
     rm -f "\$REMOTE_NPU_SHAPE_RECORD"
@@ -815,20 +1018,33 @@ start_server() {
     rm -f "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL"
     profile_env="LLAMA_MTMD_PREFILL_SUMMARY_JSON='\$REMOTE_MTMD_SUMMARY' AICAS_NPU_OVERLAY_PROFILE_JSONL='\$REMOTE_NPU_OVERLAY_PROFILE_JSONL'"
     if [ "\$PREFILL_PROFILE_MODE" = "diagnostic" ]; then
-      profile_env="\$profile_env LLAMA_MTMD_CPU_OP_PROFILE=1 LLAMA_TEXT_CPU_PROFILE_JSON='\$REMOTE_TEXT_CPU_PROFILE' GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL='\$NPU_PROFILE_LEVEL' GGML_NPU_DECODE_PROFILE_JSONL='\$REMOTE_NPU_DECODE_PROFILE_JSONL'"
+      profile_env="\$profile_env LLAMA_MTMD_CPU_OP_PROFILE=1 LLAMA_TEXT_CPU_PROFILE_JSON='\$REMOTE_TEXT_CPU_PROFILE' GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL='\$NPU_PROFILE_LEVEL' GGML_NPU_DECODE_PROFILE_JSONL='\$REMOTE_NPU_DECODE_PROFILE_JSONL' GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS='\${GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS:-100000}'"
     fi
   fi
   if [ "\$TRACE_UBATCH" = "1" ]; then
     rm -f "\$REMOTE_UBATCH_TRACE"
     ubatch_trace_env="LLAMA_UBATCH_TRACE_JSONL='\$REMOTE_UBATCH_TRACE'"
   fi
+  if [ -n "\$NPU_WAIT_POLICY" ]; then
+    wait_env="\$wait_env NPU_WAIT_POLICY='\$NPU_WAIT_POLICY'"
+  fi
+  if [ -n "\$REMOTE_NPU_WAIT_POLICY_JSON" ]; then
+    wait_env="\$wait_env NPU_WAIT_POLICY_JSON='\$REMOTE_NPU_WAIT_POLICY_JSON'"
+  fi
+  if [ "\$NPU_WAIT_TRACE" = "1" ]; then
+    rm -f "\$REMOTE_NPU_WAIT_TRACE"
+    wait_env="\$wait_env NPU_WAIT_TRACE_JSONL='\$REMOTE_NPU_WAIT_TRACE'"
+  fi
   local log_disable_arg="--log-disable"
-  local server_env_for_log_check="\$npu_runtime_env \$best_config_env \$npu_shape_env \$profile_env \$ubatch_trace_env"
+  local server_env_for_log_check="\$npu_runtime_env \$best_config_env \$npu_shape_env \$profile_env \$ubatch_trace_env \$wait_env"
   if [ "\$MERGE_PREFILL_TRACE" = "1" ] || printf '%s' "\$server_env_for_log_check" | grep -q 'GGML_NPU_TILE_ALIGN_DEBUG\\|GGML_NPU_DEBUG_LOG\\|GGML_NPU_PROFILE_TILING_SEARCH\\|AICAS_MMPROJ_W8A8_DEBUG\\|AICAS_TEXT_DECODE_AWQ_NPU_DEBUG'; then
     log_disable_arg=""
   fi
+  if [ -n "\$CTX_SIZE" ]; then
+    ctx_arg="--ctx-size '\$CTX_SIZE'"
+  fi
 
-  bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$decode_overlay_env \$best_config_env \$npu_shape_env \$profile_env \$ubatch_trace_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k '\$CACHE_TYPE_K' --cache-type-v '\$CACHE_TYPE_V' --flash-attn '\$FLASH_ATTN' -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' \$log_disable_arg --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
+  bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$decode_overlay_env \$best_config_env \$npu_shape_env \$profile_env \$fused_ffn_compare_env \$ubatch_trace_env \$wait_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k '\$CACHE_TYPE_K' --cache-type-v '\$CACHE_TYPE_V' --flash-attn '\$FLASH_ATTN' \$ctx_arg -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' \$log_disable_arg --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
 
   if ! wait_ready; then
     tail -n 120 "\$log_path" >&2 || true
@@ -837,7 +1053,22 @@ start_server() {
   fi
 }
 
-if [ "\$RUN_THROUGHPUT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+if [ "\$RUN_CORRECTNESS_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+  start_server server.log 0
+
+  correctness_cmd=(python3 "\$RUN_DIR/code/throughput_eval.py" \
+    -i "\$RUN_DIR/code/test2.jpg" \
+    -o "\$RUN_DIR/results/correctness_metrics.json" \
+    --base-url "http://127.0.0.1:\$PORT/v1" \
+    --model "\$MODEL_ALIAS" \
+    --max-tokens "\$CORRECTNESS_MAX_TOKENS")
+  if [ -n "\$CORRECTNESS_PROMPT" ]; then
+    correctness_cmd+=(--prompt "\$CORRECTNESS_PROMPT")
+  fi
+  "\${correctness_cmd[@]}"
+
+  stop_server
+elif [ "\$RUN_THROUGHPUT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
   start_server server.log 0
 
   python3 "\$RUN_DIR/code/throughput_eval.py" \
@@ -845,6 +1076,20 @@ if [ "\$RUN_THROUGHPUT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; t
     -o "\$RUN_DIR/results/throughput_metrics.json" \
     --base-url "http://127.0.0.1:\$PORT/v1" \
     --model "\$MODEL_ALIAS"
+
+  stop_server
+elif [ "\$RUN_ENERGY_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+  start_server server.log 0
+
+  python3 "\$RUN_DIR/code/energy_eval.py" \
+    -i "\$RUN_DIR/code/test2.jpg" \
+    -o "\$RUN_DIR/results/energy_metrics.json" \
+    --base-url "http://127.0.0.1:\$PORT/v1" \
+    --model "\$MODEL_ALIAS" \
+    --power_path "\$POWER_PATH" \
+    --sample_hz "\$SAMPLE_HZ" \
+    --max-tokens "\$ENERGY_MAX_TOKENS" \
+    --request-timeout 1800
 
   stop_server
 elif [ "\$RUN_TTFT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
@@ -919,12 +1164,12 @@ if [ "\$RUN_THROUGHPUT_PROFILE" -eq 1 ]; then
     sleep 0.25
   done
 
-  python3 - "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL" "\$NPU_PROFILE_LEVEL" "\$PREFILL_PROFILE_MODE" <<'PY'
+  python3 - "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_FUSED_FFN_COMPARE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL" "\$NPU_PROFILE_LEVEL" "\$PREFILL_PROFILE_MODE" <<'PY'
 import json
 import os
 import sys
 
-out_path, metrics_path, mtmd_path, text_cpu_path, npu_path, manifest_path, decode_path, overlay_path, npu_level, prefill_mode = sys.argv[1:11]
+out_path, metrics_path, mtmd_path, text_cpu_path, npu_path, manifest_path, decode_path, fused_ffn_path, overlay_path, npu_level, prefill_mode = sys.argv[1:12]
 
 def info(path):
     return {
@@ -941,6 +1186,7 @@ payload = {
     "ggml_npu_profile": info(npu_path),
     "ggml_npu_manifest": info(manifest_path),
     "ggml_npu_decode_profile": info(decode_path),
+    "decode_swiglu_ffn_compare": info(fused_ffn_path),
     "npu_overlay_switch_profile": info(overlay_path),
     "npu_profile_level": npu_level,
     "prefill_profile_mode": prefill_mode,

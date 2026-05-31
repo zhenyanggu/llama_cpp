@@ -35,13 +35,31 @@
 #define DRIVER_NAME "npu_kv260"
 #define CLASS_NAME  "npu_kv260_class"
 
-#define REG_IPR 0xD8
-#define REG_ISR 0xD0
-#define REG_IAR 0xB8
-#define REG_MER 0xC0
-#define REG_IER 0xC8
+#define REG_DECODE_IAR 0xB8
+#define REG_DECODE_MER 0xC0
+#define REG_DECODE_IER 0xC8
+#define REG_DECODE_ISR 0xD0
+#define REG_DECODE_IPR 0xD8
 
-#define DEFAULT_REG_SIZE 0x400UL
+#define REG_PREFILL_IAR 0x100
+#define REG_PREFILL_MER 0x108
+#define REG_PREFILL_IER 0x110
+#define REG_PREFILL_ISR 0x118
+#define REG_PREFILL_IPR 0x120
+
+#define REG_GENERIC_MAGIC   0xFF00
+#define REG_GENERIC_VERSION 0xFF08
+#define REG_GENERIC_MODE    0xFF10
+#define REG_GENERIC_CAPS    0xFF18
+#define REG_GENERIC_CONTROL 0xFF20
+#define REG_GENERIC_STATUS  0xFF28
+#define REG_GENERIC_ERROR   0xFF30
+
+#define GENERIC_CONTROL_SOFT_RESET  BIT(0)
+#define GENERIC_CONTROL_IRQ_CLEAR   BIT(1)
+#define GENERIC_CONTROL_ERROR_CLEAR BIT(2)
+
+#define DEFAULT_REG_SIZE 0x10000UL
 
 static unsigned long reg_base;
 module_param(reg_base, ulong, 0444);
@@ -77,7 +95,10 @@ struct npu_dev {
     int irq;
     bool has_irq;
 
+    struct clk *npu_clk;
     struct clk *aclk;
+    struct clk *prefill_clk;
+    struct clk *decode_clk;
     struct reset_control *rst;
 
     dev_t dev_num;
@@ -90,6 +111,20 @@ struct npu_dev {
     atomic_t irq_mode;
     u32 last_isr_status;
 
+    struct mutex state_lock;
+    u32 hw_magic;
+    u32 hw_abi_version;
+    u32 hw_mode_id;
+    u32 hw_caps;
+    u32 hw_status;
+    u32 hw_error;
+    u32 reg_iar;
+    u32 reg_mer;
+    u32 reg_ier;
+    u32 reg_isr;
+    u32 reg_ipr;
+    bool hw_ready;
+
     struct dma_chan *dma_chan;
     struct mutex dma_lock;
 };
@@ -101,7 +136,6 @@ struct npu_file_ctx {
     struct device *dma_dev;
     dma_addr_t dma_addr;
     size_t size;
-    bool cacheable;
 };
 
 static struct platform_device *fallback_pdev;
@@ -110,10 +144,8 @@ struct npu_shared_buffer {
     struct mutex lock;
     struct device *dev;
     void *cpu_addr;
-    struct page *pages;
     dma_addr_t dma_addr;
     size_t size;
-    bool cacheable;
 };
 
 static struct npu_shared_buffer shared_buffer = {
@@ -159,15 +191,135 @@ static int npu_hw_reset(struct npu_dev *npu)
     return 0;
 }
 
+static struct clk *npu_runtime_clk(struct npu_dev *npu)
+{
+    if (npu->hw_mode_id == NPU_KV260_MODE_PREFILL && npu->prefill_clk)
+        return npu->prefill_clk;
+    if (npu->hw_mode_id == NPU_KV260_MODE_DECODE && npu->decode_clk)
+        return npu->decode_clk;
+    if (npu->npu_clk)
+        return npu->npu_clk;
+    if (npu->aclk)
+        return npu->aclk;
+    if (npu->prefill_clk)
+        return npu->prefill_clk;
+    return npu->decode_clk;
+}
+
+static int npu_set_runtime_clock_rate(struct npu_dev *npu,
+                                      struct npu_kv260_clock_rate *rate)
+{
+    struct clk *clk = npu_runtime_clk(npu);
+    int ret;
+
+    if (!clk)
+        return -EOPNOTSUPP;
+    if (!rate->requested_hz || rate->requested_hz > ULONG_MAX)
+        return -EINVAL;
+
+    ret = clk_set_rate(clk, (unsigned long)rate->requested_hz);
+    if (ret)
+        return ret;
+
+    rate->actual_hz = clk_get_rate(clk);
+    return 0;
+}
+
+static void npu_apply_irq_mode(struct npu_dev *npu);
+
+static void npu_use_decode_irq_regs(struct npu_dev *npu)
+{
+    npu->reg_iar = REG_DECODE_IAR;
+    npu->reg_mer = REG_DECODE_MER;
+    npu->reg_ier = REG_DECODE_IER;
+    npu->reg_isr = REG_DECODE_ISR;
+    npu->reg_ipr = REG_DECODE_IPR;
+}
+
+static void npu_use_prefill_irq_regs(struct npu_dev *npu)
+{
+    npu->reg_iar = REG_PREFILL_IAR;
+    npu->reg_mer = REG_PREFILL_MER;
+    npu->reg_ier = REG_PREFILL_IER;
+    npu->reg_isr = REG_PREFILL_ISR;
+    npu->reg_ipr = REG_PREFILL_IPR;
+}
+
+static void npu_fill_hw_state(struct npu_dev *npu,
+                              struct npu_kv260_hw_state *state)
+{
+    memset(state, 0, sizeof(*state));
+    state->magic = npu->hw_magic;
+    state->abi_version = npu->hw_abi_version;
+    state->mode_id = npu->hw_mode_id;
+    state->caps = npu->hw_caps;
+    state->status = npu->hw_status;
+    state->error = npu->hw_error;
+}
+
+static int npu_reinit_hw_locked(struct npu_dev *npu,
+                                struct npu_kv260_hw_state *state)
+{
+    u32 magic;
+    u32 mode;
+
+    if (npu_reg_bounds_check(npu, REG_GENERIC_ERROR, sizeof(u32)))
+        return -ERANGE;
+
+    magic = npu_read(npu, REG_GENERIC_MAGIC);
+    if (magic != NPU_KV260_HW_MAGIC) {
+        npu->hw_ready = false;
+        npu->hw_magic = magic;
+        npu->hw_abi_version = 0;
+        npu->hw_mode_id = NPU_KV260_MODE_UNKNOWN;
+        npu->hw_caps = 0;
+        npu->hw_status = 0;
+        npu->hw_error = 0;
+        return -ENODEV;
+    }
+
+    mode = npu_read(npu, REG_GENERIC_MODE);
+    if (mode == NPU_KV260_MODE_PREFILL) {
+        npu_use_prefill_irq_regs(npu);
+    } else if (mode == NPU_KV260_MODE_DECODE) {
+        npu_use_decode_irq_regs(npu);
+    } else {
+        npu->hw_ready = false;
+        return -EINVAL;
+    }
+
+    npu->hw_magic = magic;
+    npu->hw_abi_version = npu_read(npu, REG_GENERIC_VERSION);
+    npu->hw_mode_id = mode;
+    npu->hw_caps = npu_read(npu, REG_GENERIC_CAPS);
+    npu->hw_status = npu_read(npu, REG_GENERIC_STATUS);
+    npu->hw_error = npu_read(npu, REG_GENERIC_ERROR);
+    npu->hw_ready = true;
+
+    npu_write(npu, REG_GENERIC_CONTROL,
+              GENERIC_CONTROL_IRQ_CLEAR | GENERIC_CONTROL_ERROR_CLEAR);
+    atomic_set(&npu->irq_done, 0);
+    npu->last_isr_status = 0;
+    npu_apply_irq_mode(npu);
+
+    if (state)
+        npu_fill_hw_state(npu, state);
+    return 0;
+}
+
 static void npu_apply_irq_mode(struct npu_dev *npu)
 {
-    npu_write(npu, REG_MER, 0x03);
+    if (npu_reg_bounds_check(npu, npu->reg_mer, sizeof(u32)) ||
+        npu_reg_bounds_check(npu, npu->reg_ier, sizeof(u32)))
+        return;
+
+    npu_write(npu, npu->reg_mer, 0x03);
 
     if (atomic_read(&npu->irq_mode) == NPU_KV260_IRQ_MODE_KERNEL &&
         npu->has_irq) {
-        npu_write(npu, REG_IER, 0x3F);
+        npu_write(npu, npu->reg_ier, 0x3F);
     } else {
-        npu_write(npu, REG_IER, 0x00);
+        npu_write(npu, npu->reg_ier, 0x00);
     }
 }
 
@@ -179,11 +331,15 @@ static irqreturn_t npu_irq_handler(int irq_num, void *data)
     if (atomic_read(&npu->irq_mode) == NPU_KV260_IRQ_MODE_USERSPACE)
         return IRQ_HANDLED;
 
-    status = npu_read(npu, REG_IPR);
+    if (npu_reg_bounds_check(npu, npu->reg_ipr, sizeof(u32)) ||
+        npu_reg_bounds_check(npu, npu->reg_iar, sizeof(u32)))
+        return IRQ_NONE;
+
+    status = npu_read(npu, npu->reg_ipr);
     if (!status)
         return IRQ_NONE;
 
-    npu_write(npu, REG_IAR, status);
+    npu_write(npu, npu->reg_iar, status);
     npu->last_isr_status = status;
     atomic_set(&npu->irq_done, 1);
     wake_up_interruptible(&npu->wait_q);
@@ -196,16 +352,13 @@ static void npu_free_ctx_buffer(struct npu_file_ctx *ctx)
         return;
 
     /*
-     * The accelerator has two userspace runtimes, one per overlay phase. Keep
-     * the coherent CMA allocation module-global so both runtimes can attach to
-     * the same physical window instead of consuming two independent CMA heaps.
-     * The backing memory is released only when the module exits.
+     * Keep one module-global coherent buffer so multiple userspace runtimes
+     * can reuse the same CMA window across overlay switches.
      */
     ctx->cpu_addr = NULL;
     ctx->dma_dev = NULL;
     ctx->dma_addr = 0;
     ctx->size = 0;
-    ctx->cacheable = false;
 }
 
 static int npu_open(struct inode *inode, struct file *file)
@@ -240,13 +393,11 @@ static int npu_release(struct inode *inode, struct file *file)
     return 0;
 }
 
-static int npu_alloc_buffer_ex(struct npu_file_ctx *ctx,
-                               struct npu_kv260_buffer_request_ex *req)
+static int npu_alloc_buffer(struct npu_file_ctx *ctx,
+                            struct npu_kv260_buffer_request *req)
 {
     size_t size;
     u64 max_size;
-    bool want_cacheable;
-    bool cacheable_required;
     int ret = 0;
 
     if (!req->size)
@@ -266,38 +417,16 @@ static int npu_alloc_buffer_ex(struct npu_file_ctx *ctx,
     if (!size)
         return -EINVAL;
 
-    want_cacheable = (req->flags & NPU_KV260_BUFFER_FLAG_CACHEABLE) != 0;
-    cacheable_required = (req->flags & NPU_KV260_BUFFER_FLAG_CACHEABLE_REQUIRED) != 0;
-
     mutex_lock(&shared_buffer.lock);
     if (shared_buffer.cpu_addr) {
-        if (shared_buffer.cacheable != want_cacheable &&
-            (cacheable_required || shared_buffer.cacheable)) {
-            ret = -EINVAL;
-            goto out_unlock;
-        }
         if (shared_buffer.size < size) {
             ret = -EINVAL;
             goto out_unlock;
         }
     } else {
-        if (want_cacheable) {
-            shared_buffer.pages = dma_alloc_pages(ctx->npu->dev, size,
-                                                  &shared_buffer.dma_addr,
-                                                  DMA_BIDIRECTIONAL,
-                                                  GFP_KERNEL);
-            if (shared_buffer.pages) {
-                shared_buffer.cpu_addr = page_address(shared_buffer.pages);
-                shared_buffer.cacheable = true;
-            }
-        }
-        if (!shared_buffer.cpu_addr && !cacheable_required) {
-            shared_buffer.cpu_addr = dma_alloc_coherent(ctx->npu->dev, size,
-                                                        &shared_buffer.dma_addr,
-                                                        GFP_KERNEL);
-            shared_buffer.pages = NULL;
-            shared_buffer.cacheable = false;
-        }
+        shared_buffer.cpu_addr = dma_alloc_coherent(ctx->npu->dev, size,
+                                                    &shared_buffer.dma_addr,
+                                                    GFP_KERNEL);
         if (!shared_buffer.cpu_addr) {
             ret = -ENOMEM;
             goto out_unlock;
@@ -320,32 +449,11 @@ static int npu_alloc_buffer_ex(struct npu_file_ctx *ctx,
     ctx->dma_dev = shared_buffer.dev;
     ctx->dma_addr = shared_buffer.dma_addr;
     ctx->size = shared_buffer.size;
-    ctx->cacheable = shared_buffer.cacheable;
     req->size = shared_buffer.size;
     req->dma_addr = ctx->dma_addr;
-    if (ctx->cacheable) {
-        req->flags |= NPU_KV260_BUFFER_FLAG_CACHEABLE;
-    } else {
-        req->flags &= ~NPU_KV260_BUFFER_FLAG_CACHEABLE;
-    }
 
 out_unlock:
     mutex_unlock(&shared_buffer.lock);
-    return ret;
-}
-
-static int npu_alloc_buffer(struct npu_file_ctx *ctx,
-                            struct npu_kv260_buffer_request *req)
-{
-    struct npu_kv260_buffer_request_ex req_ex = {
-        .size = req->size,
-        .dma_addr = req->dma_addr,
-        .flags = 0,
-    };
-    int ret = npu_alloc_buffer_ex(ctx, &req_ex);
-
-    req->size = req_ex.size;
-    req->dma_addr = req_ex.dma_addr;
     return ret;
 }
 
@@ -427,6 +535,9 @@ static int npu_dma_copy_ioctl(struct npu_file_ctx *ctx,
     if (chunk > req->size)
         chunk = PAGE_ALIGN((size_t)req->size);
 
+    if (!npu->dma_chan)
+        return -EOPNOTSUPP;
+
     dma_dev = npu->dma_chan->device->dev;
     bounce = kmalloc(chunk, GFP_KERNEL);
     if (!bounce)
@@ -484,48 +595,6 @@ static int npu_dma_copy_ioctl(struct npu_file_ctx *ctx,
     return ret;
 }
 
-static int npu_sync_buffer_ioctl(struct npu_file_ctx *ctx,
-                                 const struct npu_kv260_buffer_sync *req)
-{
-    enum dma_data_direction dir;
-    u64 end;
-
-    if (!ctx->cpu_addr)
-        return -ENODATA;
-    if (!req->size)
-        return -EINVAL;
-    if (req->target != NPU_KV260_SYNC_FOR_CPU &&
-        req->target != NPU_KV260_SYNC_FOR_DEVICE)
-        return -EINVAL;
-    if (req->direction == NPU_KV260_SYNC_FROM_DEVICE) {
-        dir = DMA_FROM_DEVICE;
-    } else if (req->direction == NPU_KV260_SYNC_TO_DEVICE) {
-        dir = DMA_TO_DEVICE;
-    } else if (req->direction == NPU_KV260_SYNC_BIDIRECTIONAL) {
-        dir = DMA_BIDIRECTIONAL;
-    } else {
-        return -EINVAL;
-    }
-    if (req->cma_offset > ctx->size)
-        return -EINVAL;
-    if (check_add_overflow(req->cma_offset, req->size, &end) ||
-        end > ctx->size)
-        return -EINVAL;
-
-    if (!ctx->cacheable)
-        return 0;
-
-    if (req->target == NPU_KV260_SYNC_FOR_CPU) {
-        dma_sync_single_for_cpu(ctx->dma_dev, ctx->dma_addr + req->cma_offset,
-                                req->size, dir);
-    } else {
-        dma_sync_single_for_device(ctx->dma_dev,
-                                   ctx->dma_addr + req->cma_offset,
-                                   req->size, dir);
-    }
-    return 0;
-}
-
 static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct npu_file_ctx *ctx = file->private_data;
@@ -557,7 +626,6 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         struct npu_kv260_buffer_info info = {
             .size = ctx->size,
             .dma_addr = ctx->dma_addr,
-            .flags = ctx->cacheable ? NPU_KV260_BUFFER_FLAG_CACHEABLE : 0,
         };
 
         if (!ctx->cpu_addr)
@@ -569,6 +637,11 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
     case NPU_KV260_IOC_RESET_DEV:
         ret = npu_hw_reset(npu);
+        if (ret)
+            return ret;
+        mutex_lock(&npu->state_lock);
+        ret = npu_reinit_hw_locked(npu, NULL);
+        mutex_unlock(&npu->state_lock);
         if (ret)
             return ret;
         npu_apply_irq_mode(npu);
@@ -600,23 +673,6 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         return 0;
     }
 
-    case NPU_KV260_IOC_ALLOC_BUFFER_EX: {
-        struct npu_kv260_buffer_request_ex req;
-
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
-            return -EFAULT;
-
-        mutex_lock(&ctx->lock);
-        ret = npu_alloc_buffer_ex(ctx, &req);
-        mutex_unlock(&ctx->lock);
-        if (ret)
-            return ret;
-
-        if (copy_to_user((void __user *)arg, &req, sizeof(req)))
-            return -EFAULT;
-        return 0;
-    }
-
     case NPU_KV260_IOC_FREE_BUFFER:
         mutex_lock(&ctx->lock);
         npu_free_ctx_buffer(ctx);
@@ -629,8 +685,7 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             .regs_size = npu->regs_size,
             .dma_addr_bits = 32,
             .has_irq = npu->has_irq ? 1 : 0,
-            .flags = (npu->dma_chan ? NPU_KV260_INFO_FLAG_DMA_COPY : 0) |
-                     (ctx->cacheable ? NPU_KV260_INFO_FLAG_CACHEABLE_BUFFER : 0),
+            .flags = npu->dma_chan ? NPU_KV260_INFO_FLAG_DMA_COPY : 0,
         };
 
         if (copy_to_user((void __user *)arg, &info, sizeof(info)))
@@ -667,8 +722,6 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     case NPU_KV260_IOC_DMA_COPY: {
         struct npu_kv260_dma_copy copy;
 
-        if (!npu->dma_chan)
-            return -EOPNOTSUPP;
         if (copy_from_user(&copy, (void __user *)arg, sizeof(copy)))
             return -EFAULT;
         ret = npu_dma_copy_ioctl(ctx, &copy);
@@ -677,12 +730,43 @@ static long npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         return ret;
     }
 
-    case NPU_KV260_IOC_SYNC_BUFFER: {
-        struct npu_kv260_buffer_sync sync;
+    case NPU_KV260_IOC_REINIT: {
+        struct npu_kv260_hw_state state;
 
-        if (copy_from_user(&sync, (void __user *)arg, sizeof(sync)))
+        mutex_lock(&npu->state_lock);
+        ret = npu_reinit_hw_locked(npu, &state);
+        mutex_unlock(&npu->state_lock);
+        if (ret)
+            return ret;
+        if (copy_to_user((void __user *)arg, &state, sizeof(state)))
             return -EFAULT;
-        return npu_sync_buffer_ioctl(ctx, &sync);
+        return 0;
+    }
+
+    case NPU_KV260_IOC_GET_HW_STATE: {
+        struct npu_kv260_hw_state state;
+
+        mutex_lock(&npu->state_lock);
+        npu->hw_status = npu->hw_ready ? npu_read(npu, REG_GENERIC_STATUS) : 0;
+        npu->hw_error = npu->hw_ready ? npu_read(npu, REG_GENERIC_ERROR) : 0;
+        npu_fill_hw_state(npu, &state);
+        mutex_unlock(&npu->state_lock);
+        if (copy_to_user((void __user *)arg, &state, sizeof(state)))
+            return -EFAULT;
+        return 0;
+    }
+
+    case NPU_KV260_IOC_SET_CLOCK_RATE: {
+        struct npu_kv260_clock_rate rate;
+
+        if (copy_from_user(&rate, (void __user *)arg, sizeof(rate)))
+            return -EFAULT;
+        ret = npu_set_runtime_clock_rate(npu, &rate);
+        if (ret)
+            return ret;
+        if (copy_to_user((void __user *)arg, &rate, sizeof(rate)))
+            return -EFAULT;
+        return 0;
     }
 
     default:
@@ -699,25 +783,20 @@ static int npu_mmap(struct file *file, struct vm_area_struct *vma)
     unsigned long regs_offset_pfn = NPU_KV260_MMAP_REGS_OFFSET >> PAGE_SHIFT;
     unsigned long regs_map_size = PAGE_ALIGN(npu->regs_size);
 
+    vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+
     if (offset == 0) {
         int ret;
 
-        vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
         mutex_lock(&ctx->lock);
         if (!ctx->cpu_addr || size != ctx->size) {
             mutex_unlock(&ctx->lock);
             return -EINVAL;
         }
 
-        if (ctx->cacheable) {
-            ret = dma_mmap_pages(ctx->dma_dev ? ctx->dma_dev : npu->dev,
-                                 vma, ctx->size, virt_to_page(ctx->cpu_addr));
-        } else {
-            vm_flags_set(vma, VM_IO);
-            ret = dma_mmap_coherent(ctx->dma_dev ? ctx->dma_dev : npu->dev,
-                                    vma, ctx->cpu_addr, ctx->dma_addr,
-                                    ctx->size);
-        }
+        ret = dma_mmap_coherent(ctx->dma_dev ? ctx->dma_dev : npu->dev,
+                                vma, ctx->cpu_addr, ctx->dma_addr,
+                                ctx->size);
         mutex_unlock(&ctx->lock);
         return ret;
     }
@@ -728,7 +807,6 @@ static int npu_mmap(struct file *file, struct vm_area_struct *vma)
     if (size > regs_map_size)
         return -EINVAL;
 
-    vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
     if (remap_pfn_range(vma, vma->vm_start,
                         npu->regs_phys_base >> PAGE_SHIFT, size,
@@ -807,8 +885,10 @@ static int npu_probe(struct platform_device *pdev)
     }
 
     npu->dev = &pdev->dev;
-    platform_set_drvdata(pdev, npu);
+    mutex_init(&npu->state_lock);
     mutex_init(&npu->dma_lock);
+    npu_use_decode_irq_regs(npu);
+    platform_set_drvdata(pdev, npu);
 
     res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     if (!res) {
@@ -845,15 +925,48 @@ static int npu_probe(struct platform_device *pdev)
         dev_warn(&pdev->dev, "no IRQ resource; runtime will use userspace polling only\n");
     }
 
+    npu->npu_clk = devm_clk_get_optional(&pdev->dev, "npu_clk");
+    if (IS_ERR(npu->npu_clk)) {
+        ret = PTR_ERR(npu->npu_clk);
+        goto err_active;
+    }
+    if (npu->npu_clk) {
+        ret = clk_prepare_enable(npu->npu_clk);
+        if (ret)
+            goto err_active;
+    }
+
+    npu->prefill_clk = devm_clk_get_optional(&pdev->dev, "prefill_clk");
+    if (IS_ERR(npu->prefill_clk)) {
+        ret = PTR_ERR(npu->prefill_clk);
+        goto err_npu_clk;
+    }
+    if (npu->prefill_clk) {
+        ret = clk_prepare_enable(npu->prefill_clk);
+        if (ret)
+            goto err_npu_clk;
+    }
+
+    npu->decode_clk = devm_clk_get_optional(&pdev->dev, "decode_clk");
+    if (IS_ERR(npu->decode_clk)) {
+        ret = PTR_ERR(npu->decode_clk);
+        goto err_prefill_clk;
+    }
+    if (npu->decode_clk) {
+        ret = clk_prepare_enable(npu->decode_clk);
+        if (ret)
+            goto err_prefill_clk;
+    }
+
     npu->aclk = devm_clk_get_optional(&pdev->dev, "clk");
     if (IS_ERR(npu->aclk)) {
         ret = PTR_ERR(npu->aclk);
-        goto err_active;
+        goto err_decode_clk;
     }
     if (npu->aclk) {
         ret = clk_prepare_enable(npu->aclk);
         if (ret)
-            return ret;
+            goto err_decode_clk;
     }
 
     npu->rst = devm_reset_control_get_optional_exclusive(&pdev->dev, "rst");
@@ -869,6 +982,13 @@ static int npu_probe(struct platform_device *pdev)
     init_waitqueue_head(&npu->wait_q);
     atomic_set(&npu->irq_done, 0);
     atomic_set(&npu->irq_mode, NPU_KV260_IRQ_MODE_KERNEL);
+    mutex_lock(&npu->state_lock);
+    ret = npu_reinit_hw_locked(npu, NULL);
+    mutex_unlock(&npu->state_lock);
+    if (ret)
+        dev_warn(&pdev->dev,
+                 "generic capability probe failed (%d); REINIT will fail until a generic bitstream is loaded\n",
+                 ret);
 
     {
         dma_cap_mask_t mask;
@@ -898,6 +1018,15 @@ err_dma:
 err_clk:
     if (npu->aclk)
         clk_disable_unprepare(npu->aclk);
+err_decode_clk:
+    if (npu->decode_clk)
+        clk_disable_unprepare(npu->decode_clk);
+err_prefill_clk:
+    if (npu->prefill_clk)
+        clk_disable_unprepare(npu->prefill_clk);
+err_npu_clk:
+    if (npu->npu_clk)
+        clk_disable_unprepare(npu->npu_clk);
 err_active:
     atomic_set(&active_devices, 0);
     return ret;
@@ -915,13 +1044,18 @@ static void npu_remove(struct platform_device *pdev)
         reset_control_assert(npu->rst);
     if (npu->aclk)
         clk_disable_unprepare(npu->aclk);
+    if (npu->decode_clk)
+        clk_disable_unprepare(npu->decode_clk);
+    if (npu->prefill_clk)
+        clk_disable_unprepare(npu->prefill_clk);
+    if (npu->npu_clk)
+        clk_disable_unprepare(npu->npu_clk);
     atomic_set(&active_devices, 0);
 }
 
 static const struct of_device_id npu_of_match[] = {
-    { .compatible = "xlnx,T-NPU-FPGA-v-1.0" },
+    { .compatible = "xlnx,kv260-npu-generic-1.0" },
     { .compatible = "xlnx,T-NPU-FPGA-1.0" },
-    { .compatible = "xlnx,Versa-P-ip-1.0" },
     { }
 };
 MODULE_DEVICE_TABLE(of, npu_of_match);
@@ -990,21 +1124,13 @@ static void __exit npu_module_exit(void)
     platform_driver_unregister(&npu_driver);
     mutex_lock(&shared_buffer.lock);
     if (shared_buffer.cpu_addr) {
-        if (shared_buffer.cacheable) {
-            dma_free_pages(shared_buffer.dev, shared_buffer.size,
-                           shared_buffer.pages, shared_buffer.dma_addr,
-                           DMA_BIDIRECTIONAL);
-        } else {
-            dma_free_coherent(shared_buffer.dev, shared_buffer.size,
-                              shared_buffer.cpu_addr, shared_buffer.dma_addr);
-        }
+        dma_free_coherent(shared_buffer.dev, shared_buffer.size,
+                          shared_buffer.cpu_addr, shared_buffer.dma_addr);
         put_device(shared_buffer.dev);
         shared_buffer.cpu_addr = NULL;
-        shared_buffer.pages = NULL;
         shared_buffer.dev = NULL;
         shared_buffer.dma_addr = 0;
         shared_buffer.size = 0;
-        shared_buffer.cacheable = false;
     }
     mutex_unlock(&shared_buffer.lock);
 }

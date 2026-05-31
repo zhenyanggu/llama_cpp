@@ -21,9 +21,15 @@ artifacts
 *.log
 *.metallib
 *.o
+*.ko
+*.mod
+*.mod.c
 *.so
 *.swp
 *.tmp
+.*.cmd
+Module.symvers
+modules.order
 npuruntime/kv260/runtime/kv260_*
 AICAS/bin
 AICAS/data

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cctype>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -144,10 +145,27 @@ struct NpuLastOpContext {
     MvoutConfig mvout {};
     GemmConfig gemm {};
     GemmPlanConfig gemm_plan {};
+    std::string shape_key;
+    uint64_t bytes = 0;
 };
 
 thread_local NpuLastOpContext g_op_history[4];
 thread_local NpuLastOpContext g_last_op_ctx;
+
+enum class NpuWaitStrategy {
+    Hybrid,
+    Spin,
+    Irq,
+};
+
+struct PreparedWaitContext {
+    NpuWaitStrategy strategy = NpuWaitStrategy::Hybrid;
+    std::string shape_key;
+    int64_t layer_id = -1;
+    bool prepared = false;
+};
+
+thread_local PreparedWaitContext g_prepared_wait;
 
 static void dump_op_context(const char * label, const NpuLastOpContext & op_ctx) {
     if (op_ctx.has_mvin) {
@@ -1014,6 +1032,224 @@ static void dumpProfilerReport(const char* pathOverride) {
 
 static NpuRuntime* g_npu_runtime = nullptr;
 
+static const char * wait_strategy_name(NpuWaitStrategy strategy) {
+    switch (strategy) {
+    case NpuWaitStrategy::Spin: return "spin";
+    case NpuWaitStrategy::Irq: return "irq";
+    case NpuWaitStrategy::Hybrid:
+    default: return "hybrid";
+    }
+}
+
+static NpuWaitStrategy parse_wait_strategy(const std::string & value, NpuWaitStrategy fallback) {
+    std::string lower;
+    lower.reserve(value.size());
+    for (char c : value) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (lower == "spin") return NpuWaitStrategy::Spin;
+    if (lower == "irq" || lower == "kernel") return NpuWaitStrategy::Irq;
+    if (lower == "hybrid") return NpuWaitStrategy::Hybrid;
+    return fallback;
+}
+
+static NpuWaitStrategy env_wait_policy() {
+    const char * env = std::getenv("NPU_WAIT_POLICY");
+    if (env == nullptr || env[0] == '\0' || std::strcmp(env, "adaptive") == 0) {
+        return NpuWaitStrategy::Hybrid;
+    }
+    return parse_wait_strategy(env, NpuWaitStrategy::Hybrid);
+}
+
+struct WaitPolicyTable {
+    bool loaded = false;
+    NpuWaitStrategy default_strategy = NpuWaitStrategy::Hybrid;
+    std::map<std::string, NpuWaitStrategy> entries;
+};
+
+static std::optional<std::string> extract_json_string_field(const std::string & object, const char * key) {
+    const std::string needle = std::string("\"") + key + "\"";
+    size_t pos = object.find(needle);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    pos = object.find(':', pos + needle.size());
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    pos = object.find('"', pos + 1);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+    std::string out;
+    bool escape = false;
+    for (size_t i = pos + 1; i < object.size(); ++i) {
+        const char c = object[i];
+        if (escape) {
+            out.push_back(c);
+            escape = false;
+            continue;
+        }
+        if (c == '\\') {
+            escape = true;
+            continue;
+        }
+        if (c == '"') {
+            return out;
+        }
+        out.push_back(c);
+    }
+    return std::nullopt;
+}
+
+static WaitPolicyTable & get_wait_policy_table() {
+    static WaitPolicyTable table;
+    if (table.loaded) {
+        return table;
+    }
+    table.loaded = true;
+
+    const char * path = std::getenv("NPU_WAIT_POLICY_JSON");
+    if (path == nullptr || path[0] == '\0') {
+        return table;
+    }
+
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        std::fprintf(stderr, "[NPU_WAIT] failed to open policy JSON: %s\n", path);
+        return table;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (auto default_strategy = extract_json_string_field(content, "default_strategy")) {
+        table.default_strategy = parse_wait_strategy(*default_strategy, table.default_strategy);
+    }
+
+    size_t pos = 0;
+    while ((pos = content.find('{', pos)) != std::string::npos) {
+        size_t end = content.find('}', pos + 1);
+        if (end == std::string::npos) {
+            break;
+        }
+        const std::string object = content.substr(pos, end - pos + 1);
+        auto op = extract_json_string_field(object, "op");
+        auto shape = extract_json_string_field(object, "shape_key");
+        auto strategy = extract_json_string_field(object, "strategy");
+        if (op && shape && strategy) {
+            table.entries[*op + "\t" + *shape] =
+                parse_wait_strategy(*strategy, table.default_strategy);
+        }
+        pos = end + 1;
+    }
+
+    return table;
+}
+
+static bool adaptive_wait_enabled() {
+    const char * env = std::getenv("NPU_WAIT_POLICY");
+    return env != nullptr && std::strcmp(env, "adaptive") == 0;
+}
+
+static NpuWaitStrategy select_wait_strategy(const NpuLastOpContext & op_ctx, const std::string & shape_key) {
+    if (!adaptive_wait_enabled()) {
+        return env_wait_policy();
+    }
+    WaitPolicyTable & table = get_wait_policy_table();
+    const auto it = table.entries.find(std::string(op_ctx.op ? op_ctx.op : "none") + "\t" + shape_key);
+    if (it != table.entries.end()) {
+        return it->second;
+    }
+    return table.default_strategy;
+}
+
+static uint64_t bytes_for_precision(uint64_t row, uint64_t col, uint8_t precision) {
+    uint64_t bytes_per_elem = 1;
+    if (precision == 1) bytes_per_elem = 2;
+    else if (precision >= 2) bytes_per_elem = 4;
+    return row * col * bytes_per_elem;
+}
+
+static std::string current_shape_key(const NpuLastOpContext & op_ctx) {
+    if (!op_ctx.shape_key.empty()) {
+        return op_ctx.shape_key;
+    }
+
+    std::ostringstream oss;
+    if (op_ctx.has_mvin) {
+        const MvinConfig & cfg = op_ctx.mvin;
+        oss << "row=" << cfg.row_num
+            << ",col=" << cfg.col_num
+            << ",precision=" << static_cast<unsigned>(cfg.precision & 0x3)
+            << ",dma=" << op_ctx.dma_id
+            << ",bytes=" << op_ctx.bytes;
+    } else if (op_ctx.has_mvout) {
+        const MvoutConfig & cfg = op_ctx.mvout;
+        oss << "row=" << cfg.row_num
+            << ",col=" << cfg.col_num
+            << ",precision=" << static_cast<unsigned>(cfg.precision & 0x3)
+            << ",dma=" << op_ctx.dma_id
+            << ",source=" << static_cast<unsigned>(cfg.source)
+            << ",bytes=" << op_ctx.bytes;
+    } else if (op_ctx.has_gemm_plan) {
+        const GemmPlanConfig & cfg = op_ctx.gemm_plan;
+        oss << "m=" << cfg.block_m
+            << ",n=" << cfg.block_n
+            << ",k=" << cfg.block_k
+            << ",bias=" << (cfg.have_bias ? 1 : 0)
+            << ",accumulate=" << (cfg.is_accumulate ? 1 : 0)
+            << ",asym=" << (cfg.asymmetric_activations ? 1 : 0);
+    } else if (op_ctx.has_gemm) {
+        const GemmConfig & cfg = op_ctx.gemm;
+        oss << "a_row=" << static_cast<unsigned>(cfg.input_a_row_num)
+            << ",a_col=" << cfg.input_a_col_num
+            << ",b_row=" << cfg.input_b_row_num
+            << ",b_col=" << static_cast<unsigned>(cfg.input_b_col_num)
+            << ",optype=" << static_cast<unsigned>(cfg.optype)
+            << ",accumulate=" << (cfg.isaccu ? 1 : 0)
+            << ",bias=" << (cfg.is_bias ? 1 : 0);
+    } else {
+        oss << "start=0x" << std::hex << op_ctx.start_bit
+            << ",reg0=0x" << op_ctx.reg0
+            << ",reg1=0x" << op_ctx.reg1
+            << ",cfg0=0x" << op_ctx.cfg0;
+    }
+    return oss.str();
+}
+
+static void write_wait_trace(
+        const NpuLastOpContext & op_ctx,
+        const PreparedWaitContext & prepared,
+        const char * path_kind,
+        uint64_t wait_us,
+        int spin_iters,
+        int yield_iters,
+        bool kernel_wait,
+        const char * status) {
+    const char * trace_path = std::getenv("NPU_WAIT_TRACE_JSONL");
+    if (trace_path == nullptr || trace_path[0] == '\0') {
+        return;
+    }
+
+    std::ofstream out(trace_path, std::ios::app);
+    if (!out.is_open()) {
+        return;
+    }
+
+    out << "{"
+        << "\"layer_id\":" << prepared.layer_id << ","
+        << "\"op\":\"" << jsonEscape(op_ctx.op ? op_ctx.op : "none") << "\","
+        << "\"shape_key\":\"" << jsonEscape(prepared.shape_key) << "\","
+        << "\"bytes\":" << op_ctx.bytes << ","
+        << "\"wait_us\":" << wait_us << ","
+        << "\"strategy\":\"" << wait_strategy_name(prepared.strategy) << "\","
+        << "\"path\":\"" << jsonEscape(path_kind ? path_kind : "") << "\","
+        << "\"spin_iters\":" << spin_iters << ","
+        << "\"yield_iters\":" << yield_iters << ","
+        << "\"kernel_wait\":" << (kernel_wait ? "true" : "false") << ","
+        << "\"status\":\"" << jsonEscape(status ? status : "") << "\""
+        << "}\n";
+}
+
 static uint64_t parse_size_with_suffix(const char* value, uint64_t fallback) {
     if (!value || value[0] == '\0') return fallback;
 
@@ -1491,37 +1727,126 @@ void NpuRuntime::dump_irq_regs() {
     // NPU_ERR("IRQ timeout: IAR=0x%08X MER=0x%08X IER=0x%08X ISR=0x%08X IPR=0x%08X", iar, mer, ier, isr, ipr);
 }
 
+void NpuRuntime::prepare_wait_irq_before_start(uint32_t wait_mask) {
+    (void) wait_mask;
+    g_prepared_wait.shape_key = current_shape_key(g_last_op_ctx);
+    g_prepared_wait.layer_id = g_activeLayer.active ? g_activeLayer.layerId : -1;
+    g_prepared_wait.strategy = select_wait_strategy(g_last_op_ctx, g_prepared_wait.shape_key);
+    g_prepared_wait.prepared = true;
+
+    if (g_prepared_wait.strategy == NpuWaitStrategy::Irq) {
+        ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
+    }
+}
+
 void NpuRuntime::wait_irq() {
     ScopedStageTimer waitTimer(ProfileStage::WaitIrq);
     NPU_TIMER_SECTION_BEGIN("wait_irq")
-    NPU_LOG("Waiting for IRQ (hybrid polling)...");
     const uint32_t expected_irq = g_last_op_ctx.start_bit & NPU_REGS__IAR__ACK_bm;
     const uint32_t wait_mask = expected_irq ? expected_irq : NPU_REGS__IAR__ACK_bm;
+    PreparedWaitContext prepared = g_prepared_wait;
+    if (!prepared.prepared) {
+        prepared.shape_key = current_shape_key(g_last_op_ctx);
+        prepared.layer_id = g_activeLayer.active ? g_activeLayer.layerId : -1;
+        prepared.strategy = select_wait_strategy(g_last_op_ctx, prepared.shape_key);
+        prepared.prepared = true;
+    }
+    g_prepared_wait = PreparedWaitContext{};
+    NPU_LOG("Waiting for IRQ (%s)...", wait_strategy_name(prepared.strategy));
 
     // ========== Phase 1: 自旋轮询（无延迟，最低延迟路径）==========
     // 在用户态轮询模式下，IER=0，因此 IPR = ISR & IER = 0（永远为0）
     // 所以必须直接检查 ISR 寄存器，而不是 IPR
     // ISR 是原始中断状态，不受 IER 影响
     volatile uint32_t* isr_ptr = (volatile uint32_t*)((char*)regs_virt_base + RegOffset::ISR);
+    const auto wait_start = std::chrono::steady_clock::now();
+    auto elapsed_us = [&]() -> uint64_t {
+        const auto now = std::chrono::steady_clock::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - wait_start).count());
+    };
+    auto trace = [&](const char * path_kind, int spin_iters, int yield_iters, bool kernel_wait, const char * status) {
+        write_wait_trace(g_last_op_ctx, prepared, path_kind, elapsed_us(),
+            spin_iters, yield_iters, kernel_wait, status);
+    };
+    auto kernel_wait = [&](const char * path_kind, int spin_iters, int yield_iters) -> bool {
+        uint32_t status = 0;
+        int ret = ioctl(fd, IOCTL_WAIT_IRQ, &status);
+        ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
+
+        if (ret < 0) {
+            trace(path_kind, spin_iters, yield_iters, true, "error");
+            perror("Wait IRQ failed");
+            dump_irq_regs();
+            std::fprintf(stderr, "[NPU_ERROR] "
+                "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX\n",
+                g_last_op_ctx.op,
+                g_last_op_ctx.start_bit,
+                (unsigned long long) g_last_op_ctx.reg0,
+                (unsigned long long) g_last_op_ctx.reg1,
+                (unsigned long long) g_last_op_ctx.cfg0,
+                (unsigned long long) g_last_op_ctx.cfg1);
+            dump_last_op_context();
+            if (abort_on_irq_timeout()) {
+                NPU_ERR("abort due to IRQ timeout (set NPU_ABORT_ON_IRQ_TIMEOUT=0 to disable abort)");
+                std::abort();
+            }
+            return false;
+        }
+        trace(path_kind, spin_iters, yield_iters, true, "ok");
+        NPU_LOG("IRQ received via interrupt (status=0x%X).", status);
+        return true;
+    };
+
+    if (prepared.strategy == NpuWaitStrategy::Irq) {
+        if (*isr_ptr & wait_mask) {
+            ack_irq(wait_mask);
+            ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
+            trace("late", 0, 0, false, "ok");
+            NPU_TIMER_SECTION_END()
+            return;
+        }
+        ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
+        if (kernel_wait("kernel", 0, 0)) {
+            NPU_TIMER_SECTION_END()
+            return;
+        }
+        NPU_TIMER_SECTION_END()
+        return;
+    }
 
     // 循环展开：每次迭代检测4次，减少循环开销
     int i = 0;
     for (; i < NPU_POLL_SPIN_COUNT - 3; i += 4) {
-        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+1); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+2); NPU_TIMER_SECTION_END() return; }
-        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i+3); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); trace("spin", i + 1, 0, false, "ok"); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); trace("spin", i + 2, 0, false, "ok"); NPU_LOG("IRQ received via spin polling (iter=%d)", i+1); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); trace("spin", i + 3, 0, false, "ok"); NPU_LOG("IRQ received via spin polling (iter=%d)", i+2); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); trace("spin", i + 4, 0, false, "ok"); NPU_LOG("IRQ received via spin polling (iter=%d)", i+3); NPU_TIMER_SECTION_END() return; }
     }
     // 处理剩余迭代
     for (; i < NPU_POLL_SPIN_COUNT; ++i) {
-        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
+        if (*isr_ptr & wait_mask) { ack_irq(wait_mask); trace("spin", i + 1, 0, false, "ok"); NPU_LOG("IRQ received via spin polling (iter=%d)", i); NPU_TIMER_SECTION_END() return; }
+    }
+
+    if (prepared.strategy == NpuWaitStrategy::Spin) {
+        if (*isr_ptr & wait_mask) {
+            ack_irq(wait_mask);
+            trace("late", i, 0, false, "ok");
+            NPU_TIMER_SECTION_END()
+            return;
+        }
+        ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
+        kernel_wait("kernel_after_spin", i, 0);
+        NPU_TIMER_SECTION_END()
+        return;
     }
 
     // ========== Phase 2: 让出式轮询（短暂sleep，减少CPU占用）==========
-    for (int i = 0; i < NPU_POLL_YIELD_COUNT; ++i) {
+    for (int yi = 0; yi < NPU_POLL_YIELD_COUNT; ++yi) {
         if (*isr_ptr & wait_mask) {
             ack_irq(wait_mask);
-            NPU_LOG("IRQ received via yield polling (iter=%d)", i);
+            trace("yield", i, yi + 1, false, "ok");
+            NPU_LOG("IRQ received via yield polling (iter=%d)", yi);
             NPU_TIMER_SECTION_END()
             return;
         }
@@ -1534,6 +1859,7 @@ void NpuRuntime::wait_irq() {
     // and make IOCTL_WAIT_IRQ time out on an operation that already completed.
     if (*isr_ptr & wait_mask) {
         ack_irq(wait_mask);
+        trace("late", i, NPU_POLL_YIELD_COUNT, false, "ok");
         NPU_LOG("IRQ received after polling window, before kernel wait");
         NPU_TIMER_SECTION_END()
         return;
@@ -1543,32 +1869,7 @@ void NpuRuntime::wait_irq() {
     ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_KERNEL);
 
     NPU_LOG("Polling timeout, falling back to kernel IRQ wait...");
-    uint32_t status = 0;
-    int ret = ioctl(fd, IOCTL_WAIT_IRQ, &status);
-
-    // 返回用户态轮询模式：为下一次 wait_irq 做准备
-    ioctl(fd, IOCTL_SET_IRQ_MODE, IRQ_MODE_USERSPACE);
-
-    if (ret < 0) {
-        perror("Wait IRQ failed");
-        dump_irq_regs();
-        std::fprintf(stderr, "[NPU_ERROR] "
-            "wait_irq failed after op=%s start_bit=0x%08X reg0=0x%016llX reg1=0x%016llX cfg0=0x%016llX cfg1=0x%016llX\n",
-            g_last_op_ctx.op,
-            g_last_op_ctx.start_bit,
-            (unsigned long long) g_last_op_ctx.reg0,
-            (unsigned long long) g_last_op_ctx.reg1,
-            (unsigned long long) g_last_op_ctx.cfg0,
-            (unsigned long long) g_last_op_ctx.cfg1);
-        dump_last_op_context();
-        if (abort_on_irq_timeout()) {
-            NPU_ERR("abort due to IRQ timeout (set NPU_ABORT_ON_IRQ_TIMEOUT=0 to disable abort)");
-            std::abort();
-        }
-        NPU_TIMER_SECTION_END()
-        return;
-    }
-    NPU_LOG("IRQ received via interrupt (status=0x%X).", status);
+    kernel_wait("kernel_after_hybrid", i, NPU_POLL_YIELD_COUNT);
     NPU_TIMER_SECTION_END()
 }
 
@@ -1699,6 +2000,7 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
     g_last_op_ctx.has_mvin = true;
     g_last_op_ctx.dma_id = dma_id;
     g_last_op_ctx.mvin = cfg;
+    g_last_op_ctx.bytes = bytes_for_precision(cfg.row_num, cfg.col_num, precision);
 
     if (cfg.is_quant) {
         uint64_t val_quant = REG_FIELD(CFG_MVIN1, ZEROPOINT, cfg.quant_zero) |
@@ -1707,9 +2009,10 @@ void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
         reg_write64_cached(RegOffset::MVIN_QUANT, val_quant, &shadow.mvin_quant);
         g_last_op_ctx.cfg1 = val_quant;
     }
-    ack_irq(BIT_START_DMA_MVIN);
     const uint32_t start_word =
         BIT_START_DMA_MVIN | static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id));
+    ack_irq(BIT_START_DMA_MVIN);
+    prepare_wait_irq_before_start(BIT_START_DMA_MVIN);
     reg_write(RegOffset::START, start_word);
     NPU_TIMER_SECTION_END()
 }
@@ -1769,6 +2072,7 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
     g_last_op_ctx.has_mvout = true;
     g_last_op_ctx.dma_id = dma_id;
     g_last_op_ctx.mvout = cfg;
+    g_last_op_ctx.bytes = bytes_for_precision(cfg.row_num, cfg.col_num, precision);
 
     if (precision == 3) {
         uint16_t quant_scale = static_cast<uint16_t>(cfg.scale_or_addr & 0xFFFF);
@@ -1779,9 +2083,10 @@ void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
         reg_write64_cached(RegOffset::MVOUT_QUANT, val_quant, &shadow.mvout_quant);
         g_last_op_ctx.cfg1 = val_quant;
     }
-    ack_irq(BIT_START_DMA_MVOUT);
     const uint32_t start_word =
         BIT_START_DMA_MVOUT | static_cast<uint32_t>(REG_FIELD(START_REG, MVOUT_DMA_SEL, dma_id));
+    ack_irq(BIT_START_DMA_MVOUT);
+    prepare_wait_irq_before_start(BIT_START_DMA_MVOUT);
     reg_write(RegOffset::START, start_word);
     NPU_TIMER_SECTION_END()
 }
@@ -1855,6 +2160,23 @@ void NpuRuntime::run_sfu(const SfuConfig& cfg) {
     uint64_t val_output = REG_FIELD(SFU_EXE1, OUT_ADDR, cfg.output_sram_addr);
     reg_write64(RegOffset::SFU_OUTPUT, val_output);
 
+    remember_last_op();
+    g_last_op_ctx = {"SFU", val_input, val_output, val_cfg1, val_cfg2, BIT_START_SFU};
+    {
+        std::ostringstream shape;
+        shape << "op=" << static_cast<unsigned>(cfg.op_type)
+              << ",row=" << cfg.input_row_num
+              << ",col=" << cfg.input_col_num
+              << ",int_type=" << static_cast<unsigned>(cfg.int_type)
+              << ",quant=" << (cfg.is_quant ? 1 : 0);
+        g_last_op_ctx.shape_key = shape.str();
+        g_last_op_ctx.bytes = bytes_for_precision(
+            static_cast<uint64_t>(cfg.input_row_num) + 1,
+            static_cast<uint64_t>(cfg.input_col_num) + 1,
+            cfg.int_type);
+    }
+    ack_irq(BIT_START_SFU);
+    prepare_wait_irq_before_start(BIT_START_SFU);
     reg_write(RegOffset::START, BIT_START_SFU);
     NPU_TIMER_SECTION_END()
 
@@ -1928,6 +2250,21 @@ void NpuRuntime::run_conv(const ConvConfig& cfg) {
     reg_write64_cached(RegOffset::CFG_ACCU_2, val_acc2, &shadow.accu_cfg2);
 
     // 7. Start SA
+    remember_last_op();
+    g_last_op_ctx = {"CONV", val_input_a, val_input_b, val_cfg1, val_cfg2, BIT_START_SA};
+    {
+        std::ostringstream shape;
+        shape << "a_row=" << static_cast<unsigned>(cfg.input_a_row_num_m1)
+              << ",a_col=" << cfg.input_a_col_num_m1
+              << ",b_row=" << cfg.input_b_row_num_m1
+              << ",b_col=" << static_cast<unsigned>(cfg.input_b_col_num_m1)
+              << ",optype=" << static_cast<unsigned>(cfg.op_type)
+              << ",bias=" << (cfg.is_bias ? 1 : 0)
+              << ",accumulate=" << (cfg.is_accumulate ? 1 : 0);
+        g_last_op_ctx.shape_key = shape.str();
+    }
+    ack_irq(BIT_START_SA);
+    prepare_wait_irq_before_start(BIT_START_SA);
     reg_write(RegOffset::START, BIT_START_SA);
     NPU_TIMER_SECTION_END()
 
@@ -2181,6 +2518,7 @@ void NpuRuntime::run_gemm(const GemmConfig& cfg) {
 
     // 7. Start SA
     ack_irq(BIT_START_SA);
+    prepare_wait_irq_before_start(BIT_START_SA);
     reg_write(RegOffset::START, BIT_START_SA);
     NPU_TIMER_SECTION_END()
 
@@ -2295,6 +2633,7 @@ void NpuRuntime::run_gemm_plan(const GemmPlanConfig& cfg) {
     g_last_op_ctx.gemm_plan = cfg;
 
     ack_irq(BIT_START_SA);
+    prepare_wait_irq_before_start(BIT_START_SA);
     reg_write(RegOffset::START, BIT_START_SA);
     NPU_TIMER_SECTION_END()
 
@@ -2333,6 +2672,16 @@ void NpuRuntime::run_matadd(const MataddConfig& cfg) {
     reg_write64(RegOffset::MATADD_CTRL_1, val_ctrl1);
 
     // 4. Start MATADD
+    remember_last_op();
+    g_last_op_ctx = {"MATADD", val_ctrl0, val_ctrl1, val_cfg2, 0, BIT_START_MATADD};
+    {
+        std::ostringstream shape;
+        shape << "row=" << static_cast<unsigned>(cfg.row_num_m1)
+              << ",col=" << static_cast<unsigned>(cfg.col_num_m1);
+        g_last_op_ctx.shape_key = shape.str();
+    }
+    ack_irq(BIT_START_MATADD);
+    prepare_wait_irq_before_start(BIT_START_MATADD);
     reg_write(RegOffset::START, BIT_START_MATADD);
     NPU_TIMER_SECTION_END()
 
@@ -2384,6 +2733,21 @@ void NpuRuntime::run_transpose(const TransposeConfig& cfg) {
     reg_write64(RegOffset::SFU_OUTPUT, val_output);
 
     // 5. Start SFU
+    remember_last_op();
+    g_last_op_ctx = {"TRANSPOSE", val_input, val_output, val_cfg1, 0, BIT_START_SFU};
+    {
+        std::ostringstream shape;
+        shape << "row=" << cfg.row_num
+              << ",col=" << cfg.col_num
+              << ",pad_row=" << (cfg.out_padding_row ? 1 : 0)
+              << ",pad_col=" << (cfg.out_padding_col ? 1 : 0);
+        g_last_op_ctx.shape_key = shape.str();
+        g_last_op_ctx.bytes =
+            (static_cast<uint64_t>(cfg.row_num) + 1) *
+            (static_cast<uint64_t>(cfg.col_num) + 1);
+    }
+    ack_irq(BIT_START_SFU);
+    prepare_wait_irq_before_start(BIT_START_SFU);
     reg_write(RegOffset::START, BIT_START_SFU);
     NPU_TIMER_SECTION_END()
 
@@ -2494,6 +2858,19 @@ void NpuRuntime::run_resample(const ResampleConfig& cfg) {
         reg_write64(RegOffset::SFU_OUTPUT, val_output);
 
         // 5. Start SFU
+        remember_last_op();
+        g_last_op_ctx = {"RESAMPLE", val_input, val_output, val_cfg1, 0, BIT_START_SFU};
+        {
+            std::ostringstream shape;
+            shape << "type=" << static_cast<unsigned>(cfg.resample_type)
+                  << ",op=" << static_cast<unsigned>(cfg.resample_op)
+                  << ",row=" << (chunk_rows - 1)
+                  << ",col=" << cfg.input_col_num;
+            g_last_op_ctx.shape_key = shape.str();
+            g_last_op_ctx.bytes = chunk_rows * in_cols;
+        }
+        ack_irq(BIT_START_SFU);
+        prepare_wait_irq_before_start(BIT_START_SFU);
         reg_write(RegOffset::START, BIT_START_SFU);
 
         NPU_TIMER_SECTION_END()

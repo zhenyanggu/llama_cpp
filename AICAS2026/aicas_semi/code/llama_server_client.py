@@ -72,6 +72,7 @@ def chat_completion(
     temperature: float = 0.0,
     stream: bool = False,
     cache_prompt: bool | None = None,
+    ignore_eos: bool | None = None,
     timeout: float = 300.0,
     loading_wait_timeout: float = 600.0,
     loading_retry_delay: float = 5.0,
@@ -85,6 +86,8 @@ def chat_completion(
     }
     if cache_prompt is not None:
         payload["cache_prompt"] = cache_prompt
+    if ignore_eos is not None:
+        payload["ignore_eos"] = ignore_eos
     if not stream:
         return _request(
             f"{normalize_base_url(base_url)}/chat/completions",

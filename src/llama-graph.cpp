@@ -118,6 +118,21 @@ extern "C" bool ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
         void * dst_data,
         int dst_type,
         int64_t dst_nb1);
+extern "C" bool ggml_backend_npu_decode_w16a16_gemv_ex(
+        const char * op_name,
+        const void * weight_data,
+        int64_t k,
+        int64_t out_channels,
+        int64_t weight_nb0,
+        int64_t weight_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
 #endif
 
 struct llama_text_activation_stats {
@@ -378,11 +393,6 @@ static bool llama_npu_text_decode_awq_enabled() {
 
 static bool llama_npu_text_decode_awq_fused_ffn_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_FUSED_FFN");
-    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_decode_awq_fused_ffn_general_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_FUSED_FFN_GENERAL");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
@@ -424,6 +434,39 @@ static bool llama_npu_text_decode_awq_compare_take(const char * op_name) {
     return true;
 }
 
+static bool llama_npu_text_decode_awq_fused_ffn_compare_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_decode_awq_fused_ffn_compare_take(const char * op_name) {
+    if (!llama_npu_text_decode_awq_fused_ffn_compare_enabled()) {
+        return false;
+    }
+    const char * filter = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_OP");
+    if (filter != nullptr && filter[0] != '\0' &&
+            (op_name == nullptr || std::strstr(op_name, filter) == nullptr)) {
+        return false;
+    }
+    const char * limit_env = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_LIMIT");
+    int64_t limit = 1;
+    if (limit_env != nullptr && limit_env[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(limit_env, &end, 10);
+        if (end != limit_env && parsed > 0) {
+            limit = parsed;
+        }
+    }
+    static std::mutex mutex;
+    static int64_t taken = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (taken >= limit) {
+        return false;
+    }
+    ++taken;
+    return true;
+}
+
 static double llama_npu_text_decode_awq_compare_threshold(const char * name, double fallback) {
     const char * value = std::getenv(name);
     if (value == nullptr || value[0] == '\0') {
@@ -437,6 +480,44 @@ static double llama_npu_text_decode_awq_compare_threshold(const char * name, dou
 static bool llama_text_decode_awq_output_f16_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_OUTPUT_F16");
     return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_lm_head_w16a16_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_NPU");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_lm_head_w16a16_compare_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool llama_npu_text_lm_head_w16a16_compare_take(const char * op_name) {
+    if (!llama_npu_text_lm_head_w16a16_compare_enabled()) {
+        return false;
+    }
+    const char * filter = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_OP");
+    if (filter != nullptr && filter[0] != '\0' &&
+            (op_name == nullptr || std::strstr(op_name, filter) == nullptr)) {
+        return false;
+    }
+    const char * limit_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_LIMIT");
+    int64_t limit = 1;
+    if (limit_env != nullptr && limit_env[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(limit_env, &end, 10);
+        if (end != limit_env && parsed > 0) {
+            limit = parsed;
+        }
+    }
+    static std::mutex mutex;
+    static int64_t taken = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (taken >= limit) {
+        return false;
+    }
+    ++taken;
+    return true;
 }
 
 static void llama_npu_record_shape(
@@ -1782,7 +1863,179 @@ static void llama_decode_awq_write_compare_record(
     out << "}\n";
 }
 
+static void llama_compute_text_lm_head_w16a16(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+    GGML_UNUSED(userdata);
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
+    GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
+    GGML_ASSERT(c->type == GGML_TYPE_F16);
+
+    const int64_t k = c->ne[0];
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+    GGML_ASSERT(b->ne[0] == k);
+
+    const int64_t total_tasks = n_cols * out_channels;
+    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
+    const int64_t task_begin = ith * tasks_per_thread;
+    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
+    if (task_begin >= task_end) {
+        return;
+    }
+
+    for (int64_t task = task_begin; task < task_end; ++task) {
+        const int64_t col = task / out_channels;
+        const int64_t row = task % out_channels;
+        const char * act_col = (const char *) b->data + col * b->nb[1];
+        const char * weight_row = (const char *) c->data + row * c->nb[1];
+        float acc = 0.0f;
+        for (int64_t i = 0; i < k; ++i) {
+            const float act_value = llama_decode_awq_read_act(b, act_col, i);
+            const float weight_value = ggml_fp16_to_fp32(*(const ggml_fp16_t *) (weight_row + i * c->nb[0]));
+            acc += act_value * weight_value;
+        }
+        llama_decode_awq_write_dst(dst, (char *) dst->data + col * dst->nb[1], row, acc);
+    }
+}
+
+static std::vector<float> llama_compute_text_lm_head_w16a16_reference_f32(
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c) {
+    const int64_t k = c->ne[0];
+    const int64_t out_channels = c->ne[1];
+    const int64_t n_cols = b->ne[1];
+    std::vector<float> result(static_cast<size_t>(n_cols * out_channels), 0.0f);
+    for (int64_t col = 0; col < n_cols; ++col) {
+        const char * act_col = (const char *) b->data + col * b->nb[1];
+        for (int64_t row = 0; row < out_channels; ++row) {
+            const char * weight_row = (const char *) c->data + row * c->nb[1];
+            float acc = 0.0f;
+            for (int64_t i = 0; i < k; ++i) {
+                const float act_value = llama_decode_awq_read_act(b, act_col, i);
+                const float weight_value = ggml_fp16_to_fp32(*(const ggml_fp16_t *) (weight_row + i * c->nb[0]));
+                acc += act_value * weight_value;
+            }
+            result[static_cast<size_t>(col * out_channels + row)] = acc;
+        }
+    }
+    return result;
+}
+
+static void llama_lm_head_w16a16_write_compare_record(
+        const char * op_name,
+        int64_t out_channels,
+        int64_t k,
+        int64_t n_cols,
+        bool npu_ok,
+        const llama_decode_awq_compare_stats & cpu_vs_npu) {
+    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
+    const char * path_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_JSONL");
+    std::string path;
+    if (path_env != nullptr && path_env[0] != '\0') {
+        path = path_env;
+    } else if (dir != nullptr && dir[0] != '\0') {
+        path = dir;
+        if (path.back() != '/') {
+            path += '/';
+        }
+        path += "lm_head_w16a16_compare.jsonl";
+    } else {
+        path = "lm_head_w16a16_compare.jsonl";
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(path, std::ios::app);
+    if (!out.good()) {
+        return;
+    }
+    out << "{\"profile_kind\":\"aicas_lm_head_w16a16_compare\""
+        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
+        << ",\"dims\":{\"m\":" << out_channels << ",\"k\":" << k << ",\"n_cols\":" << n_cols << "}"
+        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
+        << ",\"cpu_vs_npu\":{"
+        << "\"count\":" << cpu_vs_npu.count
+        << ",\"bad\":" << cpu_vs_npu.bad
+        << ",\"first_bad\":" << cpu_vs_npu.first_bad
+        << ",\"first_ref\":" << cpu_vs_npu.first_ref
+        << ",\"first_got\":" << cpu_vs_npu.first_got
+        << ",\"max_abs\":" << cpu_vs_npu.max_abs
+        << ",\"max_rel\":" << cpu_vs_npu.max_rel
+        << "}}\n";
+}
+
 #ifdef GGML_USE_NPU
+static void llama_compute_text_lm_head_w16a16_npu(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * b,
+        const struct ggml_tensor * c,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(a);
+    GGML_UNUSED(nth);
+    GGML_UNUSED(userdata);
+
+    if (ith != 0) {
+        return;
+    }
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
+    GGML_ASSERT(b->type == GGML_TYPE_F16 || b->type == GGML_TYPE_F32);
+    GGML_ASSERT(c->type == GGML_TYPE_F16);
+    const bool compare = llama_npu_text_lm_head_w16a16_compare_take(c->name);
+    std::vector<float> cpu_ref;
+    if (compare) {
+        cpu_ref = llama_compute_text_lm_head_w16a16_reference_f32(b, c);
+    }
+
+    const bool ok = ggml_backend_npu_decode_w16a16_gemv_ex(
+            c->name,
+            c->data,
+            c->ne[0],
+            c->ne[1],
+            c->nb[0],
+            c->nb[1],
+            b->data,
+            (int) b->type,
+            b->nb[0],
+            b->nb[1],
+            b->ne[1],
+            dst->data,
+            (int) dst->type,
+            dst->nb[1]);
+
+    if (compare) {
+        std::vector<float> npu_out(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
+        if (ok) {
+            for (int64_t col = 0; col < b->ne[1]; ++col) {
+                for (int64_t row = 0; row < c->ne[1]; ++row) {
+                    npu_out[static_cast<size_t>(col * c->ne[1] + row)] =
+                        llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], col, row);
+                }
+            }
+        }
+        const double atol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_ATOL", 8.0e-2);
+        const double rtol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_RTOL", 3.0e-2);
+        const llama_decode_awq_compare_stats cpu_vs_npu =
+            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
+        llama_lm_head_w16a16_write_compare_record(c->name, c->ne[1], c->ne[0], b->ne[1], ok, cpu_vs_npu);
+    }
+
+    if (!ok) {
+        llama_compute_text_lm_head_w16a16(dst, a, b, c, 0, 1, userdata);
+    }
+}
+
 static void llama_compute_text_decode_awq_mul_mat_npu(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -1941,23 +2194,6 @@ static bool llama_decode_awq_cfg_can_use_w4a16_npu(
         cfg->has_valid_group_params(cfg->quant_tensor->ne[1]);
 }
 
-static bool llama_decode_awq_smooth_scales_match(
-        const llama_aicas_text_decode_awq_tensor * lhs,
-        const llama_aicas_text_decode_awq_tensor * rhs) {
-    if (lhs == nullptr || rhs == nullptr || lhs->smooth_scale.size() != rhs->smooth_scale.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < lhs->smooth_scale.size(); ++i) {
-        const float a = lhs->smooth_scale[i];
-        const float b = rhs->smooth_scale[i];
-        const float tol = 1.0e-5f * std::max(1.0f, std::max(std::fabs(a), std::fabs(b)));
-        if (std::fabs(a - b) > tol) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static std::vector<float> llama_compute_text_decode_awq_from_f32_vector(
         const std::vector<float> & act,
         const llama_aicas_text_decode_awq_tensor * cfg) {
@@ -2010,6 +2246,65 @@ static void llama_compute_text_decode_swiglu_ffn_cpu_fallback(
     }
 }
 
+static std::vector<float> llama_compute_text_decode_swiglu_ffn_reference_f32(
+        const struct ggml_tensor * act,
+        const llama_decode_swiglu_ffn_npu_userdata * cfg) {
+    const std::vector<float> gate = llama_compute_text_decode_awq_reference_f32(act, cfg->gate->quant_tensor, cfg->gate);
+    const std::vector<float> up = llama_compute_text_decode_awq_reference_f32(act, cfg->up->quant_tensor, cfg->up);
+    std::vector<float> swiglu(gate.size());
+    for (size_t i = 0; i < gate.size(); ++i) {
+        const float x = gate[i];
+        swiglu[i] = (x / (1.0f + std::exp(-x))) * up[i];
+    }
+    return llama_compute_text_decode_awq_from_f32_vector(swiglu, cfg->down);
+}
+
+static void llama_decode_swiglu_ffn_write_compare_record(
+        const char * op_name,
+        int64_t out_channels,
+        int64_t k,
+        int64_t hidden,
+        bool npu_ok,
+        const llama_decode_awq_compare_stats & cpu_vs_npu) {
+    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
+    const char * path_env = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_JSONL");
+    std::string path;
+    if (path_env != nullptr && path_env[0] != '\0') {
+        path = path_env;
+    } else if (dir != nullptr && dir[0] != '\0') {
+        path = dir;
+        if (path.back() != '/') {
+            path += '/';
+        }
+        path += "decode_swiglu_ffn_compare.jsonl";
+    } else {
+        path = "decode_swiglu_ffn_compare.jsonl";
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(path, std::ios::app);
+    if (!out.good()) {
+        return;
+    }
+    out << "{\"profile_kind\":\"aicas_decode_swiglu_ffn_compare\""
+        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
+        << ",\"dims\":{\"m\":" << out_channels
+        << ",\"k\":" << k
+        << ",\"hidden\":" << hidden
+        << ",\"n_cols\":1}"
+        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
+        << ",\"cpu_vs_npu\":{"
+        << "\"count\":" << cpu_vs_npu.count
+        << ",\"bad\":" << cpu_vs_npu.bad
+        << ",\"first_bad\":" << cpu_vs_npu.first_bad
+        << ",\"first_ref\":" << cpu_vs_npu.first_ref
+        << ",\"first_got\":" << cpu_vs_npu.first_got
+        << ",\"max_abs\":" << cpu_vs_npu.max_abs
+        << ",\"max_rel\":" << cpu_vs_npu.max_rel
+        << "}}\n";
+}
+
 static void llama_compute_text_decode_swiglu_ffn_npu(
         struct ggml_tensor * dst,
         const struct ggml_tensor * out_template,
@@ -2032,11 +2327,18 @@ static void llama_compute_text_decode_swiglu_ffn_npu(
     GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
     GGML_ASSERT(act->type == GGML_TYPE_F32 || act->type == GGML_TYPE_F16);
 
+    constexpr const char * op_name = "text_decode_awq_w4a16_swiglu_ffn_npu";
+    const bool compare = llama_npu_text_decode_awq_fused_ffn_compare_take(op_name);
+    std::vector<float> cpu_ref;
+    if (compare) {
+        cpu_ref = llama_compute_text_decode_swiglu_ffn_reference_f32(act, cfg);
+    }
+
     const ggml_npu_decode_awq_view gate_view = llama_make_decode_awq_npu_view(cfg->gate);
     const ggml_npu_decode_awq_view up_view = llama_make_decode_awq_npu_view(cfg->up);
     const ggml_npu_decode_awq_view down_view = llama_make_decode_awq_npu_view(cfg->down);
     const bool ok = ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
-            "text_decode_awq_w4a16_swiglu_ffn_npu",
+            op_name,
             &gate_view,
             &up_view,
             &down_view,
@@ -2047,6 +2349,28 @@ static void llama_compute_text_decode_swiglu_ffn_npu(
             dst->data,
             (int) dst->type,
             dst->nb[1]);
+    if (compare) {
+        std::vector<float> npu_out(static_cast<size_t>(cfg->down->quant_tensor->ne[1]), 0.0f);
+        if (ok) {
+            for (int64_t row = 0; row < cfg->down->quant_tensor->ne[1]; ++row) {
+                npu_out[static_cast<size_t>(row)] =
+                    llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], 0, row);
+            }
+        }
+        const double atol = llama_npu_text_decode_awq_compare_threshold(
+                "AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_ATOL", 2.0e-1);
+        const double rtol = llama_npu_text_decode_awq_compare_threshold(
+                "AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_RTOL", 5.0e-2);
+        const llama_decode_awq_compare_stats cpu_vs_npu =
+            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
+        llama_decode_swiglu_ffn_write_compare_record(
+                op_name,
+                cfg->down->quant_tensor->ne[1],
+                cfg->gate->in_features,
+                cfg->gate->quant_tensor->ne[1],
+                ok,
+                cpu_vs_npu);
+    }
     if (!ok) {
         llama_compute_text_decode_swiglu_ffn_cpu_fallback(dst, act, cfg);
     }
@@ -2992,6 +3316,35 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         }
     }
 
+#ifdef GGML_USE_NPU
+    if (res == nullptr &&
+            !is_prefill_gemm &&
+            llama_npu_text_lm_head_w16a16_enabled() &&
+            std::strcmp(w->name, "output.weight") == 0 &&
+            w->type == GGML_TYPE_F16 &&
+            w->ne[0] == cur->ne[0] &&
+            ubatch.n_tokens == 1 &&
+            cur->ne[1] == 1) {
+        ggml_tensor * cur_lm_head = cur;
+        if (cur_lm_head->type == GGML_TYPE_F32) {
+            cur_lm_head = ggml_cast(ctx0, cur_lm_head, GGML_TYPE_F16);
+            ggml_set_name(cur_lm_head, "lm_head_w16a16_act_f16");
+        }
+        if (cur_lm_head->type == GGML_TYPE_F16) {
+            ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
+            res = ggml_map_custom3(
+                    ctx0,
+                    out_template,
+                    cur_lm_head,
+                    w,
+                    llama_compute_text_lm_head_w16a16_npu,
+                    1,
+                    nullptr);
+            ggml_set_name(res, "text_lm_head_w16a16_gemv_npu");
+        }
+    }
+#endif
+
     if (res == nullptr) {
         res = ggml_mul_mat(ctx0, w, cur);
     }
@@ -3113,6 +3466,7 @@ ggml_tensor * llm_graph_context::build_ffn(
             act_scales == nullptr &&
             type_op == LLM_FFN_SILU &&
             type_gate == LLM_FFN_PAR &&
+            ubatch.n_tokens == 1 &&
             cur->ne[1] == 1 &&
             loras->empty() &&
             arch != LLM_ARCH_GLM4 &&
@@ -3126,13 +3480,11 @@ ggml_tensor * llm_graph_context::build_ffn(
             const llama_aicas_text_decode_awq_tensor * gate_cfg = &it_gate->second;
             const llama_aicas_text_decode_awq_tensor * up_cfg = &it_up->second;
             const llama_aicas_text_decode_awq_tensor * down_cfg = &it_down->second;
-            const bool smooth_match = llama_decode_awq_smooth_scales_match(gate_cfg, up_cfg);
             const bool compatible =
                 llama_decode_awq_cfg_can_use_w4a16_npu(gate_cfg, cur->ne[0]) &&
                 llama_decode_awq_cfg_can_use_w4a16_npu(up_cfg, cur->ne[0]) &&
                 gate_cfg->quant_tensor->ne[1] == up_cfg->quant_tensor->ne[1] &&
                 gate_cfg->quant_tensor->ne[1] <= 4096 &&
-                (smooth_match || llama_npu_text_decode_awq_fused_ffn_general_enabled()) &&
                 llama_decode_awq_cfg_can_use_w4a16_npu(down_cfg, gate_cfg->quant_tensor->ne[1]);
             if (compatible) {
                 ggml_tensor * cur_awq = cur;

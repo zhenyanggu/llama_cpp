@@ -382,6 +382,7 @@ private:
     void reg_write64_cached(uint32_t offset, uint64_t val, uint64_t* cache_ptr);
 
     // 混合轮询+中断等待
+    void prepare_wait_irq_before_start(uint32_t wait_mask);
     void wait_irq();
     bool check_irq_pending();  // 检查中断是否挂起，返回挂起的中断位
     void ack_irq(uint32_t mask = NPU_REGS__IAR__ACK_bm);  // 清除/应答中断位

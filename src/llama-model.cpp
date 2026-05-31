@@ -55,6 +55,13 @@ extern "C" bool ggml_backend_npu_decode_w4a16_preload(
         int64_t k,
         const float * smooth_scale,
         size_t smooth_scale_len);
+extern "C" bool ggml_backend_npu_decode_w16a16_preload(
+        const char * weight_name,
+        const void * weight_data,
+        int64_t k,
+        int64_t out_channels,
+        int64_t weight_nb0,
+        int64_t weight_nb1);
 #endif
 
 const char * llm_type_name(llm_type type) {
@@ -6548,6 +6555,37 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             }
             LLAMA_LOG_INFO("%s: prepacked %d AICAS decode AWQ W4A16 tensors for NPU (%d failed)\n",
                     __func__, preloaded, preload_failed);
+        }
+    }
+    {
+        const char * lm_head_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_NPU");
+        const bool lm_head_enabled = lm_head_env != nullptr && lm_head_env[0] != '\0' && std::strcmp(lm_head_env, "0") != 0;
+        const char * awq_preload_env = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD");
+        const bool awq_preload = awq_preload_env != nullptr && awq_preload_env[0] != '\0' && std::strcmp(awq_preload_env, "0") != 0;
+        const char * lm_head_preload_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_NPU_PRELOAD");
+        const bool lm_head_preload =
+            lm_head_preload_env == nullptr || lm_head_preload_env[0] == '\0' || std::strcmp(lm_head_preload_env, "0") != 0;
+        if (lm_head_enabled && awq_preload && lm_head_preload) {
+            const ggml_tensor * output = get_tensor("output.weight");
+            if (output != nullptr &&
+                    output->data != nullptr &&
+                    output->type == GGML_TYPE_F16 &&
+                    output->ne[0] > 0 &&
+                    output->ne[1] > 0 &&
+                    output->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+                const bool ok = ggml_backend_npu_decode_w16a16_preload(
+                        ggml_get_name(output),
+                        output->data,
+                        output->ne[0],
+                        output->ne[1],
+                        output->nb[0],
+                        output->nb[1]);
+                LLAMA_LOG_INFO("%s: %s AICAS lm_head W16A16 output.weight preload into NPU CMA\n",
+                        __func__, ok ? "completed" : "failed");
+            } else {
+                LLAMA_LOG_WARN("%s: skipped AICAS lm_head W16A16 preload; output.weight is missing or not contiguous F16\n",
+                        __func__);
+            }
         }
     }
 #endif
