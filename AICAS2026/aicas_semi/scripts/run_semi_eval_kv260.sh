@@ -899,6 +899,15 @@ if lsmod | grep -q '^npu_kv260 '; then
 else
   echo "\$SUDO_PASSWORD" | sudo -S insmod "\$REMOTE_NPU_DRIVER_KO" max_buffer_mb="\$NPU_DRIVER_MAX_BUFFER_MB"
 fi
+if [ ! -e /dev/npu_kv260 ]; then
+  for dev in /sys/bus/platform/devices/*.npu_generic /sys/bus/platform/devices/*Versa*; do
+    [ -e "\$dev" ] || continue
+    dev_name="\$(basename "\$dev")"
+    echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo npu_kv260 > '\$dev/driver_override'" >/dev/null 2>&1 || true
+    echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo '\$dev_name' > /sys/bus/platform/drivers/npu_kv260/bind" >/dev/null 2>&1 || true
+    [ -e /dev/npu_kv260 ] && break
+  done
+fi
 for _ in \$(seq 1 30); do
   [ -e /dev/npu_kv260 ] && break
   sleep 1
@@ -977,6 +986,15 @@ echo "\$SUDO_PASSWORD" | sudo -S xmutil unloadapp >/dev/null 2>&1 || true
 echo "\$SUDO_PASSWORD" | sudo -S xmutil loadapp "\$target_app"
 if ! lsmod | grep -q '^npu_kv260 '; then
   echo "\$SUDO_PASSWORD" | sudo -S insmod "\$REMOTE_NPU_DRIVER_KO" max_buffer_mb="\${NPU_DRIVER_MAX_BUFFER_MB:-1500}"
+fi
+if [ ! -e /dev/npu_kv260 ]; then
+  for dev in /sys/bus/platform/devices/*.npu_generic /sys/bus/platform/devices/*Versa*; do
+    [ -e "\$dev" ] || continue
+    dev_name="\$(basename "\$dev")"
+    echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo npu_kv260 > '\$dev/driver_override'" >/dev/null 2>&1 || true
+    echo "\$SUDO_PASSWORD" | sudo -S sh -c "echo '\$dev_name' > /sys/bus/platform/drivers/npu_kv260/bind" >/dev/null 2>&1 || true
+    [ -e /dev/npu_kv260 ] && break
+  done
 fi
 for _ in \$(seq 1 30); do
   [ -e /dev/npu_kv260 ] && break
