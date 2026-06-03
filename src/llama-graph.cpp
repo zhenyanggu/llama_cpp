@@ -10,21 +10,32 @@
 #include "llama-memory-hybrid.h"
 #include "llama-memory-recurrent.h"
 
+#define GGML_COMMON_DECL_CPP
+#include "../ggml/src/ggml-common.h"
+#include "../ggml/src/ggml-cpu/aicas-rtl-fp16.h"
+
+#include "../vendor/nlohmann/json.hpp"
+
 #include <cassert>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <cinttypes>
 #include <cstdlib>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <limits>
-#include <memory>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
+
+using json = nlohmann::ordered_json;
 
 namespace {
 
@@ -40,99 +51,64 @@ extern "C" bool ggml_backend_npu_w8a8_register(
         size_t sum_w_len,
         const float * smooth_scale,
         size_t smooth_scale_len);
-extern "C" bool ggml_backend_npu_decode_w4a16_gemv_ex(
-        const char * op_name,
-        const void * q4_data,
-        int64_t packed_k,
-        int64_t out_channels,
-        int64_t q4_nb1,
-        const void * scale_data,
-        int scale_type,
-        int64_t scale_nb0,
-        int64_t scale_nb1,
-        const void * zero_data,
-        int zero_type,
-        int64_t zero_nb0,
-        int64_t zero_nb1,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        const float * smooth_scale,
-        int64_t k,
-        int64_t n_cols,
-        void * dst_data,
-        int dst_type,
-        int64_t dst_nb1);
-extern "C" bool ggml_backend_npu_decode_w4a16_simulate_ex(
-        const char * op_name,
-        const void * q4_data,
-        int64_t packed_k,
-        int64_t out_channels,
-        int64_t q4_nb1,
-        const void * scale_data,
-        int scale_type,
-        int64_t scale_nb0,
-        int64_t scale_nb1,
-        const void * zero_data,
-        int zero_type,
-        int64_t zero_nb0,
-        int64_t zero_nb1,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        const float * smooth_scale,
-        int64_t k,
-        int64_t n_cols,
-        void * dst_data,
-        int dst_type,
-        int64_t dst_nb1);
-struct ggml_npu_decode_awq_view {
-        const char * weight_name;
-        const void * q4_data;
-        int64_t packed_k;
-        int64_t out_channels;
-        int64_t q4_nb1;
-        const void * scale_data;
-        int scale_type;
-        int64_t scale_nb0;
-        int64_t scale_nb1;
-        const void * zero_data;
-        int zero_type;
-        int64_t zero_nb0;
-        int64_t zero_nb1;
-        const float * smooth_scale;
-        size_t smooth_scale_len;
-        int64_t k;
+extern "C" bool ggml_backend_npu_text_log8pv_attention(
+        const int8_t * q,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t tokens,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms);
+struct ggml_backend_npu_log8pv_attention_profile {
+    uint32_t kv_tokens;
+    uint32_t q_rows;
+    uint32_t q_row_start;
+    uint32_t exec_rows;
+    uint32_t chunks;
+    uint32_t group_size;
+    uint32_t kv_reuse_hit;
+    uint32_t workspace_reuse;
+    uint64_t total_us;
+    uint64_t mvin_q_us;
+    uint64_t mvin_k_us;
+    uint64_t mvin_v_us;
+    uint64_t qk_us;
+    uint64_t logp_mvout_us;
+    uint64_t mvin_p_us;
+    uint64_t pv_us;
+    uint64_t pv_mvout_us;
+    uint64_t qk_overlap_us;
+    uint64_t pv_overlap_us;
 };
-extern "C" bool ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
-        const char * op_name,
-        const struct ggml_npu_decode_awq_view * gate,
-        const struct ggml_npu_decode_awq_view * up,
-        const struct ggml_npu_decode_awq_view * down,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        void * dst_data,
-        int dst_type,
-        int64_t dst_nb1);
-extern "C" bool ggml_backend_npu_decode_w16a16_gemv_ex(
-        const char * op_name,
-        const void * weight_data,
-        int64_t k,
-        int64_t out_channels,
-        int64_t weight_nb0,
-        int64_t weight_nb1,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        int64_t n_cols,
-        void * dst_data,
-        int dst_type,
-        int64_t dst_nb1);
+extern "C" bool ggml_backend_npu_log8pv_attention_ex(
+        const int8_t * q,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile);
+extern "C" bool ggml_backend_npu_log8pv_attention_group(
+        const int8_t * q_group,
+        uint32_t group_size,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        const uint32_t * gamma16_fix_group,
+        int32_t * output_group,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile_group);
 #endif
 
 struct llama_text_activation_stats {
@@ -217,6 +193,100 @@ enum class llama_text_act_collect_mode {
     both,
 };
 
+enum class llama_decode_awq_accum_mode {
+    fp32,
+    fp16,
+};
+
+struct llama_decode_awq_int24_sample {
+    int64_t col = 0;
+    int64_t row = 0;
+    float ref = 0.0f;
+    float int24 = 0.0f;
+    float err = 0.0f;
+};
+
+struct llama_decode_awq_int24_thread_stats {
+    static constexpr int hist_log2_min_exp = -32;
+    static constexpr int hist_log2_max_exp = 16;
+    static constexpr size_t hist_log2_bins = 2 + (hist_log2_max_exp - hist_log2_min_exp + 1) + 1;
+
+    uint64_t count = 0;
+    uint64_t scalar_count = 0;
+    uint64_t clip_count = 0;
+    uint64_t non_integer_zero_count = 0;
+    double sum_abs_scaled_act = 0.0;
+    double sum_sq_scaled_act = 0.0;
+    double max_abs_scaled_act = 0.0;
+    double max_abs_scaled_act_nonzero = 0.0;
+    double sum_abs_scalar_err = 0.0;
+    double sum_sq_scalar_err = 0.0;
+    double max_abs_scalar_err = 0.0;
+    double sum_abs_err = 0.0;
+    double sum_sq_err = 0.0;
+    double sum_ref_sq = 0.0;
+    double max_abs_err = 0.0;
+    double max_abs_ref = 0.0;
+    double max_abs_int24 = 0.0;
+    int32_t max_abs_q24 = 0;
+    std::array<uint64_t, hist_log2_bins> scaled_act_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> scalar_err_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> output_err_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> ref_abs_hist = {};
+    std::vector<llama_decode_awq_int24_sample> samples;
+
+    static void update_log2_abs_hist(std::array<uint64_t, hist_log2_bins> & hist, double value) {
+        const double abs_value = std::fabs(value);
+        if (abs_value == 0.0) {
+            ++hist[0];
+            return;
+        }
+        const int exp = (int) std::floor(std::log2(abs_value));
+        if (exp < hist_log2_min_exp) {
+            ++hist[1];
+            return;
+        }
+        if (exp > hist_log2_max_exp) {
+            ++hist[hist_log2_bins - 1];
+            return;
+        }
+        ++hist[2 + (size_t) (exp - hist_log2_min_exp)];
+    }
+
+    void update_scalar(double scaled_act, int32_t q24, int frac_bits) {
+        const double deq = std::ldexp((double) q24, -frac_bits);
+        const double err = deq - scaled_act;
+        const double abs_scaled_act = std::fabs(scaled_act);
+        const double abs_err = std::fabs(err);
+        ++scalar_count;
+        sum_abs_scaled_act += abs_scaled_act;
+        sum_sq_scaled_act += scaled_act * scaled_act;
+        max_abs_scaled_act = std::max(max_abs_scaled_act, abs_scaled_act);
+        if (abs_scaled_act > 0.0) {
+            max_abs_scaled_act_nonzero = std::max(max_abs_scaled_act_nonzero, abs_scaled_act);
+        }
+        sum_abs_scalar_err += abs_err;
+        sum_sq_scalar_err += err * err;
+        max_abs_scalar_err = std::max(max_abs_scalar_err, abs_err);
+        update_log2_abs_hist(scaled_act_abs_hist, scaled_act);
+        update_log2_abs_hist(scalar_err_abs_hist, err);
+    }
+
+    void update(float ref, float int24) {
+        const double err = (double) int24 - (double) ref;
+        const double abs_err = std::fabs(err);
+        ++count;
+        sum_abs_err += abs_err;
+        sum_sq_err += err * err;
+        sum_ref_sq += (double) ref * (double) ref;
+        max_abs_err = std::max(max_abs_err, abs_err);
+        max_abs_ref = std::max(max_abs_ref, std::fabs((double) ref));
+        max_abs_int24 = std::max(max_abs_int24, std::fabs((double) int24));
+        update_log2_abs_hist(output_err_abs_hist, err);
+        update_log2_abs_hist(ref_abs_hist, ref);
+    }
+};
+
 static llama_text_act_collect_mode llama_text_act_collect_mode_from_env() {
     static const llama_text_act_collect_mode mode = []() {
         const char * value = std::getenv("AICAS_TEXT_ACT_COLLECT_MODE");
@@ -232,6 +302,174 @@ static llama_text_act_collect_mode llama_text_act_collect_mode_from_env() {
         return llama_text_act_collect_mode::prefill;
     }();
     return mode;
+}
+
+static llama_decode_awq_accum_mode llama_text_decode_awq_accum_mode_from_env() {
+    static const llama_decode_awq_accum_mode mode = []() {
+        const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_ACCUM");
+        if (value != nullptr && std::strcmp(value, "fp32") == 0) {
+            return llama_decode_awq_accum_mode::fp32;
+        }
+        return llama_decode_awq_accum_mode::fp16;
+    }();
+    return mode;
+}
+
+static bool llama_text_decode_awq_int24_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_INT24");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int llama_text_decode_awq_int24_frac_bits() {
+    static const int bits = []() {
+        const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_INT24_FRAC");
+        if (value == nullptr || value[0] == '\0') {
+            return 20;
+        }
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed < 0 || parsed > 30) {
+            return 20;
+        }
+        return (int) parsed;
+    }();
+    return bits;
+}
+
+static std::string llama_text_decode_awq_int24_diag_path() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_INT24_DIAG_FILE");
+    return value != nullptr ? std::string(value) : std::string();
+}
+
+static size_t llama_text_decode_awq_int24_dump_limit() {
+    static const size_t limit = []() {
+        const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_INT24_DUMP_LIMIT");
+        if (value == nullptr || value[0] == '\0') {
+            return (size_t) 32;
+        }
+        char * end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end == value || *end != '\0') {
+            return (size_t) 32;
+        }
+        return (size_t) parsed;
+    }();
+    return limit;
+}
+
+static std::string llama_text_lm_head_w8a16_int24_diag_path() {
+    const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_INT24_DIAG_FILE");
+    return value != nullptr ? std::string(value) : std::string();
+}
+
+static bool llama_text_lm_head_w8a16_int24_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_INT24");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int llama_text_lm_head_w8a16_int24_frac_bits() {
+    static const int bits = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_INT24_FRAC");
+        if (value == nullptr || value[0] == '\0') {
+            return 23;
+        }
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed < 0 || parsed > 30) {
+            return 23;
+        }
+        return (int) parsed;
+    }();
+    return bits;
+}
+
+static bool llama_text_flash_attn_accum_fp16() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_FLASH_ATTN_ACCUM");
+        return value != nullptr && std::strcmp(value, "fp16") == 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_lm_head_w16a16_dp128_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_DP128");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_lm_head_w8a16_dp128_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_DP128");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int64_t llama_text_lm_head_w8a16_group() {
+    static const int64_t group = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_GROUP");
+        if (value == nullptr || value[0] == '\0') {
+            return (int64_t) 128;
+        }
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed <= 0 || parsed > 128) {
+            return (int64_t) 128;
+        }
+        return (int64_t) parsed;
+    }();
+    return group;
+}
+
+static bool llama_text_token_embd_w8a16_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_TOKEN_EMBD_W8A16");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int64_t llama_text_token_embd_w8a16_group() {
+    static const int64_t group = []() {
+        const char * value = std::getenv("AICAS_TEXT_TOKEN_EMBD_W8A16_GROUP");
+        if (value == nullptr || value[0] == '\0') {
+            return (int64_t) 64;
+        }
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed <= 0 || parsed > 128) {
+            return (int64_t) 64;
+        }
+        return (int64_t) parsed;
+    }();
+    return group;
+}
+
+static bool llama_text_lm_head_w16a16_accum_fp16() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_ACCUM");
+        return value != nullptr && std::strcmp(value, "fp16") == 0;
+    }();
+    return enabled;
 }
 
 static bool llama_text_sq_enable_decode_gemv() {
@@ -386,140 +624,6 @@ static bool llama_npu_text_prefill_dynamic_enabled() {
     return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
 }
 
-static bool llama_npu_text_decode_awq_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_decode_awq_fused_ffn_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_FUSED_FFN");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_decode_awq_compare_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static int64_t llama_npu_text_decode_awq_compare_limit() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_LIMIT");
-    if (value == nullptr || value[0] == '\0') {
-        return 1;
-    }
-    char * end = nullptr;
-    const long parsed = std::strtol(value, &end, 10);
-    return end != value && parsed > 0 ? parsed : 1;
-}
-
-static bool llama_npu_text_decode_awq_compare_match(const char * op_name) {
-    const char * filter = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_OP");
-    if (filter == nullptr || filter[0] == '\0') {
-        return true;
-    }
-    return op_name != nullptr && std::strstr(op_name, filter) != nullptr;
-}
-
-static bool llama_npu_text_decode_awq_compare_take(const char * op_name) {
-    if (!llama_npu_text_decode_awq_compare_enabled() ||
-            !llama_npu_text_decode_awq_compare_match(op_name)) {
-        return false;
-    }
-    static std::mutex mutex;
-    static int64_t taken = 0;
-    std::lock_guard<std::mutex> lock(mutex);
-    if (taken >= llama_npu_text_decode_awq_compare_limit()) {
-        return false;
-    }
-    ++taken;
-    return true;
-}
-
-static bool llama_npu_text_decode_awq_fused_ffn_compare_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_decode_awq_fused_ffn_compare_take(const char * op_name) {
-    if (!llama_npu_text_decode_awq_fused_ffn_compare_enabled()) {
-        return false;
-    }
-    const char * filter = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_OP");
-    if (filter != nullptr && filter[0] != '\0' &&
-            (op_name == nullptr || std::strstr(op_name, filter) == nullptr)) {
-        return false;
-    }
-    const char * limit_env = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_LIMIT");
-    int64_t limit = 1;
-    if (limit_env != nullptr && limit_env[0] != '\0') {
-        char * end = nullptr;
-        const long parsed = std::strtol(limit_env, &end, 10);
-        if (end != limit_env && parsed > 0) {
-            limit = parsed;
-        }
-    }
-    static std::mutex mutex;
-    static int64_t taken = 0;
-    std::lock_guard<std::mutex> lock(mutex);
-    if (taken >= limit) {
-        return false;
-    }
-    ++taken;
-    return true;
-}
-
-static double llama_npu_text_decode_awq_compare_threshold(const char * name, double fallback) {
-    const char * value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0') {
-        return fallback;
-    }
-    char * end = nullptr;
-    const double parsed = std::strtod(value, &end);
-    return end != value && parsed >= 0.0 ? parsed : fallback;
-}
-
-static bool llama_text_decode_awq_output_f16_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_OUTPUT_F16");
-    return value == nullptr || value[0] == '\0' || std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_lm_head_w16a16_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_NPU");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_lm_head_w16a16_compare_enabled() {
-    const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
-static bool llama_npu_text_lm_head_w16a16_compare_take(const char * op_name) {
-    if (!llama_npu_text_lm_head_w16a16_compare_enabled()) {
-        return false;
-    }
-    const char * filter = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_OP");
-    if (filter != nullptr && filter[0] != '\0' &&
-            (op_name == nullptr || std::strstr(op_name, filter) == nullptr)) {
-        return false;
-    }
-    const char * limit_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_LIMIT");
-    int64_t limit = 1;
-    if (limit_env != nullptr && limit_env[0] != '\0') {
-        char * end = nullptr;
-        const long parsed = std::strtol(limit_env, &end, 10);
-        if (end != limit_env && parsed > 0) {
-            limit = parsed;
-        }
-    }
-    static std::mutex mutex;
-    static int64_t taken = 0;
-    std::lock_guard<std::mutex> lock(mutex);
-    if (taken >= limit) {
-        return false;
-    }
-    ++taken;
-    return true;
-}
-
 static void llama_npu_record_shape(
         const llama_npu_shape_key & key,
         const char * source,
@@ -620,6 +724,166 @@ static bool llama_text_prefill_attn_bfp8m_enabled() {
         const char * value = std::getenv("AICAS_TEXT_PREFILL_ATTN_BFP8M");
         if (value == nullptr || value[0] == '\0') {
             return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_prefill_attn_log8pv_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_ATTN_LOG8PV");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_prefill_log8pv_npu_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_NPU");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_log8pv_cpu_npu_pipeline_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_LOG8PV_CPU_NPU_PIPELINE");
+        if (value == nullptr || value[0] == '\0') {
+            return true;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_text_prefill_log8pv_direct_kv_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_DIRECT_KV");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int64_t llama_text_prefill_log8pv_tile() {
+    static const int64_t tile = []() {
+        constexpr int64_t default_tile = 64;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_TILE");
+        if (value == nullptr || value[0] == '\0') {
+            return default_tile;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            return (int64_t) parsed;
+        }
+        return default_tile;
+    }();
+    return tile;
+}
+
+static float llama_text_prefill_log8pv_p_log2_range() {
+    static const float range = []() {
+        constexpr float default_range = 16.0f;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_P_LOG2_RANGE");
+        if (value == nullptr || value[0] == '\0') {
+            return default_range;
+        }
+        char * end = nullptr;
+        const float parsed = std::strtof(value, &end);
+        if (end != value && *end == '\0' && std::isfinite(parsed) && parsed > 0.0f) {
+            return parsed;
+        }
+        return default_range;
+    }();
+    return range;
+}
+
+static bool llama_text_prefill_log8pv_p_direct_u16() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_P_MODE");
+        return value != nullptr &&
+            (std::strcmp(value, "direct_u16") == 0 || std::strcmp(value, "direct-u16") == 0);
+    }();
+    return enabled;
+}
+
+static int llama_text_prefill_log8pv_p_bits() {
+    static const int bits = []() {
+        constexpr int default_bits = 15;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_P_BITS");
+        if (value == nullptr || value[0] == '\0') {
+            return default_bits;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && (parsed == 14 || parsed == 15 || parsed == 16)) {
+            return (int) parsed;
+        }
+        return default_bits;
+    }();
+    return bits;
+}
+
+static bool llama_text_prefill_log8pv_bit_accurate_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_BIT_ACCURATE");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int llama_text_prefill_log8pv_alpha_bits() {
+    static const int bits = []() {
+        constexpr int default_bits = 20;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_ALPHA_BITS");
+        if (value == nullptr || value[0] == '\0') {
+            return default_bits;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && (parsed == 20 || parsed == 24)) {
+            return (int) parsed;
+        }
+        return default_bits;
+    }();
+    return bits;
+}
+
+static int llama_text_prefill_log8pv_v_bits() {
+    static const int bits = []() {
+        constexpr int default_bits = 8;
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_V_BITS");
+        if (value == nullptr || value[0] == '\0') {
+            return default_bits;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && (parsed == 8 || parsed == 10)) {
+            return (int) parsed;
+        }
+        return default_bits;
+    }();
+    return bits;
+}
+
+static bool llama_text_prefill_log8pv_v_centering_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_V_CENTERING");
+        if (value == nullptr || value[0] == '\0') {
+            return true;
         }
         return std::strcmp(value, "0") != 0;
     }();
@@ -949,6 +1213,209 @@ struct llama_text_bfp8m_userdata {
     llama_bfp8m_scale_mode scale_mode = llama_bfp8m_scale_mode::block;
 };
 
+struct llama_text_log8pv_attn_userdata {
+    const ggml_tensor * mask = nullptr;
+    const struct llama_text_log8pv_static_layer * calib = nullptr;
+    struct llama_text_log8pv_collect_layer * collect = nullptr;
+    float kq_scale = 1.0f;
+    int layer = 0;
+    int64_t tile = 64;
+    float p_log2_range = 16.0f;
+    int alpha_bits = 20;
+    int v_bits = 8;
+    int p_bits = 15;
+    bool p_direct_u16 = false;
+    bool bit_accurate = false;
+    int qk_scale_mode = 0; // 0=static, 1=dynamic per head, 2=dynamic per tile
+    int64_t qk_scale_tile = 32;
+    int v_scale_mode = 0; // 0=static, 1=dynamic per head/channel
+    bool v_centering = true;
+};
+
+struct llama_text_log8pv_static_layer {
+    int layer = 0;
+    int64_t n_head = 0;
+    int64_t n_kv_head = 0;
+    int64_t d_head = 0;
+    std::vector<float> q_threshold_head;
+    std::vector<float> k_threshold_head;
+    std::vector<float> qk_gain_head;
+    std::vector<float> v_mean;
+    std::vector<float> v_threshold;
+
+    bool valid_for(int64_t heads, int64_t kv_heads, int64_t dim) const {
+        return n_head == heads &&
+            n_kv_head == kv_heads &&
+            d_head == dim &&
+            q_threshold_head.size() == (size_t) heads &&
+            k_threshold_head.size() == (size_t) kv_heads &&
+            (qk_gain_head.empty() || qk_gain_head.size() == (size_t) heads) &&
+            v_mean.size() == (size_t) (kv_heads * dim) &&
+            v_threshold.size() == (size_t) (kv_heads * dim);
+    }
+};
+
+struct llama_text_log8pv_collect_layer {
+    int layer = 0;
+    int64_t n_head = 0;
+    int64_t n_kv_head = 0;
+    int64_t d_head = 0;
+    uint64_t calls = 0;
+    std::vector<float> q_absmax_head;
+    std::vector<float> k_absmax_head;
+    std::vector<double> v_sum;
+    std::vector<uint64_t> v_count;
+    std::vector<float> v_min;
+    std::vector<float> v_max;
+
+    void ensure(int in_layer, int64_t heads, int64_t kv_heads, int64_t dim) {
+        if (n_head == 0 && n_kv_head == 0 && d_head == 0) {
+            layer = in_layer;
+            n_head = heads;
+            n_kv_head = kv_heads;
+            d_head = dim;
+            q_absmax_head.assign((size_t) heads, 0.0f);
+            k_absmax_head.assign((size_t) kv_heads, 0.0f);
+            const size_t n = (size_t) (kv_heads * dim);
+            v_sum.assign(n, 0.0);
+            v_count.assign(n, 0);
+            v_min.assign(n, std::numeric_limits<float>::infinity());
+            v_max.assign(n, -std::numeric_limits<float>::infinity());
+            return;
+        }
+        GGML_ASSERT(layer == in_layer);
+        GGML_ASSERT(n_head == heads);
+        GGML_ASSERT(n_kv_head == kv_heads);
+        GGML_ASSERT(d_head == dim);
+    }
+
+    json to_json() const {
+        return {
+            {"layer", layer},
+            {"n_head", n_head},
+            {"n_kv_head", n_kv_head},
+            {"d_head", d_head},
+            {"calls", calls},
+            {"q_absmax_head", q_absmax_head},
+            {"k_absmax_head", k_absmax_head},
+            {"v_sum", v_sum},
+            {"v_count", v_count},
+            {"v_min", v_min},
+            {"v_max", v_max},
+        };
+    }
+};
+
+struct llama_text_log8pv_calib_registry {
+    std::string calib_path;
+    std::string collect_path;
+    std::once_flag load_once;
+    std::mutex collect_mutex;
+    std::map<int, llama_text_log8pv_static_layer> layers;
+    std::map<int, llama_text_log8pv_collect_layer> collect_layers;
+
+    llama_text_log8pv_calib_registry() {
+        const char * calib_env = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_CALIB_FILE");
+        calib_path = calib_env ? calib_env : "";
+        const char * collect_env = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_CALIB_COLLECT_FILE");
+        collect_path = collect_env ? collect_env : "";
+    }
+
+    ~llama_text_log8pv_calib_registry() {
+        flush_collect();
+    }
+
+    void load() {
+        if (calib_path.empty()) {
+            return;
+        }
+        std::ifstream fin(calib_path, std::ios::binary);
+        if (!fin.is_open()) {
+            LLAMA_LOG_ERROR("%s: failed to open AICAS_TEXT_PREFILL_LOG8PV_CALIB_FILE=%s\n",
+                    __func__, calib_path.c_str());
+            GGML_ABORT("missing text log8PV calibration file");
+        }
+
+        json doc;
+        try {
+            fin >> doc;
+        } catch (const std::exception & e) {
+            LLAMA_LOG_ERROR("%s: failed to parse text log8PV calibration file %s: %s\n",
+                    __func__, calib_path.c_str(), e.what());
+            GGML_ABORT("invalid text log8PV calibration file");
+        }
+
+        const std::string schema = doc.value("schema", "");
+        if (schema != "aicas.text_prefill.log8pv_calib.v1") {
+            LLAMA_LOG_ERROR("%s: unsupported text log8PV calibration schema '%s' in %s\n",
+                    __func__, schema.c_str(), calib_path.c_str());
+            GGML_ABORT("unsupported text log8PV calibration schema");
+        }
+
+        for (const auto & item : doc.value("layers", json::array())) {
+            llama_text_log8pv_static_layer layer;
+            layer.layer = item.value("layer", 0);
+            layer.n_head = item.value("n_head", 0);
+            layer.n_kv_head = item.value("n_kv_head", 0);
+            layer.d_head = item.value("d_head", 0);
+            layer.q_threshold_head = item.value("q_threshold_head", std::vector<float>{});
+            layer.k_threshold_head = item.value("k_threshold_head", std::vector<float>{});
+            layer.qk_gain_head = item.value("qk_gain_head", std::vector<float>{});
+            layer.v_mean = item.value("v_mean", std::vector<float>{});
+            layer.v_threshold = item.value("v_threshold", std::vector<float>{});
+            if (layer.n_head <= 0 || layer.n_kv_head <= 0 || layer.d_head <= 0) {
+                LLAMA_LOG_WARN("%s: ignoring invalid text log8PV calibration layer=%d\n", __func__, layer.layer);
+                continue;
+            }
+            layers[layer.layer] = std::move(layer);
+        }
+        LLAMA_LOG_INFO("%s: loaded text log8PV static calibration layers=%zu from %s\n",
+                __func__, layers.size(), calib_path.c_str());
+    }
+
+    const llama_text_log8pv_static_layer * get_layer(int layer) {
+        std::call_once(load_once, [this]() { load(); });
+        auto it = layers.find(layer);
+        return it == layers.end() ? nullptr : &it->second;
+    }
+
+    llama_text_log8pv_collect_layer * get_collect_layer(int layer) {
+        if (collect_path.empty()) {
+            return nullptr;
+        }
+        std::lock_guard<std::mutex> lock(collect_mutex);
+        return &collect_layers[layer];
+    }
+
+    void flush_collect() {
+        if (collect_path.empty()) {
+            return;
+        }
+        json out = {
+            {"schema", "aicas.text_prefill.log8pv_calib_raw.v1"},
+            {"layers", json::array()},
+        };
+        {
+            std::lock_guard<std::mutex> lock(collect_mutex);
+            for (const auto & kv : collect_layers) {
+                out["layers"].push_back(kv.second.to_json());
+            }
+        }
+        std::ofstream fout(collect_path, std::ios::binary);
+        if (!fout.is_open()) {
+            LLAMA_LOG_ERROR("%s: failed to write text log8PV calibration collect file: %s\n",
+                    __func__, collect_path.c_str());
+            return;
+        }
+        fout << out.dump(2);
+    }
+};
+
+static llama_text_log8pv_calib_registry & llama_text_log8pv_calib_state() {
+    static llama_text_log8pv_calib_registry state;
+    return state;
+}
+
 struct llama_scale_shift32 {
     int32_t scale = 0;
     int32_t shift = 0;
@@ -967,8 +1434,16 @@ static inline float llama_tensor_get_f32_4d(
             return *(const float *) ptr;
         case GGML_TYPE_F16:
             return ggml_fp16_to_fp32(*(const ggml_fp16_t *) ptr);
+        case GGML_TYPE_Q8_0:
+            {
+                const char * row_ptr = (const char *) tensor->data + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
+                const block_q8_0 * blocks = reinterpret_cast<const block_q8_0 *>(row_ptr);
+                const int64_t block_idx = i0 / QK8_0;
+                const int64_t block_off = i0 % QK8_0;
+                return ggml_fp16_to_fp32(blocks[block_idx].d) * (float) blocks[block_idx].qs[block_off];
+            }
         default:
-            GGML_ABORT("unsupported AICAS text BFP16-M tensor type");
+            GGML_ABORT("unsupported AICAS tensor read type");
     }
 }
 
@@ -1112,6 +1587,360 @@ static inline int8_t llama_bfp8m_quant_value(float value, llama_scale_shift32 sc
     q = std::max<long>(-127, std::min<long>(127, q));
     return static_cast<int8_t>(q);
 }
+
+static inline int8_t llama_attn_log8pv_quant_i8(float value, float threshold) {
+    if (!std::isfinite(value) || !std::isfinite(threshold) || threshold <= 0.0f) {
+        return 0;
+    }
+    long q = std::lrint((double) value / (double) threshold * 127.0);
+    q = std::max<long>(-127, std::min<long>(127, q));
+    return (int8_t) q;
+}
+
+static inline int16_t llama_attn_log8pv_quant_v(float value, float mean, float threshold, int v_absmax) {
+    if (!std::isfinite(value) || !std::isfinite(mean) || !std::isfinite(threshold) || threshold <= 0.0f) {
+        return 0;
+    }
+    long v8 = std::lrint((double) (value - mean) / (double) threshold * 127.0);
+    v8 = std::max<long>(-127, std::min<long>(127, v8));
+    if (v_absmax == 127) {
+        return (int16_t) v8;
+    }
+    long vq = std::lrint((double) v8 * (double) v_absmax / 127.0);
+    vq = std::max<long>(-v_absmax, std::min<long>(v_absmax, vq));
+    return (int16_t) vq;
+}
+
+static inline int8_t llama_attn_log8pv_quant_v_i8(float value, float mean, float threshold) {
+    return (int8_t) llama_attn_log8pv_quant_v(value, mean, threshold, 127);
+}
+
+static uint16_t llama_attn_log8pv_p_max(int p_bits) {
+    return (uint16_t) ((1u << p_bits) - 1u);
+}
+
+static std::array<uint16_t, 256> llama_attn_log8pv_make_base2_lut(int p_bits) {
+    std::array<uint16_t, 256> out{};
+    const uint16_t p_max = llama_attn_log8pv_p_max(p_bits);
+    for (int d = 0; d < 255; ++d) {
+        const long decoded = std::lrint((double) p_max * std::exp2(-(double) d / 16.0));
+        out[(size_t) d] = (uint16_t) std::max<long>(0, std::min<long>((long) p_max, decoded));
+    }
+    out[255] = 0;
+    return out;
+}
+
+static uint16_t llama_attn_log8pv_decode_u16(uint8_t code, float p_log2_range, int p_bits) {
+    if (code == 0) {
+        return 0;
+    }
+    const uint16_t p_max = llama_attn_log8pv_p_max(p_bits);
+    const double exponent = -static_cast<double>(p_log2_range) *
+        static_cast<double>(255 - code) / 254.0;
+    const long decoded = std::lrint((double) p_max * std::exp2(exponent));
+    return (uint16_t) std::max<long>(0, std::min<long>((long) p_max, decoded));
+}
+
+static uint16_t llama_attn_log8pv_encode_decode_u16(float distance, float p_log2_range, int p_bits) {
+    if (!std::isfinite(distance) || distance < 0.0f) {
+        return 0;
+    }
+    const double cutoff = static_cast<double>(p_log2_range) * std::log(2.0);
+    if ((double) distance >= cutoff) {
+        return 0;
+    }
+    long code = 255 - std::lrint((double) distance / cutoff * 254.0);
+    code = std::max<long>(1, std::min<long>(255, code));
+    return llama_attn_log8pv_decode_u16((uint8_t) code, p_log2_range, p_bits);
+}
+
+static uint16_t llama_attn_log8pv_encode_decode_u16_q8_12(int32_t distance_q8_12, float p_log2_range, int p_bits) {
+    if (distance_q8_12 < 0) {
+        return 0;
+    }
+    const int64_t cutoff_q8_12 = std::max<int64_t>(1,
+            (int64_t) std::llround((double) p_log2_range * std::log(2.0) * 4096.0));
+    if ((int64_t) distance_q8_12 >= cutoff_q8_12) {
+        return 0;
+    }
+    int64_t code = 255 - ((int64_t) distance_q8_12 * 254 + cutoff_q8_12 / 2) / cutoff_q8_12;
+    code = std::max<int64_t>(1, std::min<int64_t>(255, code));
+    return llama_attn_log8pv_decode_u16((uint8_t) code, p_log2_range, p_bits);
+}
+
+static uint16_t llama_attn_p_direct_u16(float distance, int p_bits) {
+    if (!std::isfinite(distance) || distance < 0.0f) {
+        return 0;
+    }
+    const uint16_t p_max = llama_attn_log8pv_p_max(p_bits);
+    const long decoded = std::lrint((double) p_max * std::exp(-(double) distance));
+    return (uint16_t) std::max<long>(0, std::min<long>((long) p_max, decoded));
+}
+
+static uint16_t llama_attn_p_direct_u16_q8_12(int32_t distance_q8_12, int p_bits) {
+    if (distance_q8_12 < 0) {
+        return 0;
+    }
+    const uint16_t p_max = llama_attn_log8pv_p_max(p_bits);
+    const long decoded = std::lrint((double) p_max * std::exp(-(double) distance_q8_12 / 4096.0));
+    return (uint16_t) std::max<long>(0, std::min<long>((long) p_max, decoded));
+}
+
+static const std::array<uint16_t, 256> & llama_attn_log8pv_base2_lut(int p_bits) {
+    static const std::array<uint16_t, 256> lut16 = llama_attn_log8pv_make_base2_lut(16);
+    static const std::array<uint16_t, 256> lut15 = llama_attn_log8pv_make_base2_lut(15);
+    static const std::array<uint16_t, 256> lut14 = llama_attn_log8pv_make_base2_lut(14);
+    return p_bits == 14 ? lut14 : (p_bits == 15 ? lut15 : lut16);
+}
+
+static inline uint16_t llama_attn_log8pv_base2_p(uint32_t code, int p_bits) {
+    return llama_attn_log8pv_base2_lut(p_bits)[std::min<uint32_t>(255, code)];
+}
+
+struct llama_log8pv_diag_stat {
+    uint64_t count = 0;
+    uint64_t zero_count = 0;
+    uint64_t clip_count = 0;
+    double sum_ref = 0.0;
+    double sum_hat = 0.0;
+    double sum_abs_err = 0.0;
+    double sum_sq_err = 0.0;
+    double max_abs_err = 0.0;
+    double max_abs_ref = 0.0;
+
+    void update(double ref, double hat) {
+        const double err = hat - ref;
+        const double abs_err = std::fabs(err);
+        ++count;
+        sum_ref += ref;
+        sum_hat += hat;
+        sum_abs_err += abs_err;
+        sum_sq_err += err * err;
+        max_abs_err = std::max(max_abs_err, abs_err);
+        max_abs_ref = std::max(max_abs_ref, std::fabs(ref));
+    }
+
+    json to_json() const {
+        return {
+            {"count", count},
+            {"zero_count", zero_count},
+            {"zero_rate", count > 0 ? (double) zero_count / (double) count : 0.0},
+            {"clip_count", clip_count},
+            {"clip_rate", count > 0 ? (double) clip_count / (double) count : 0.0},
+            {"mean_ref", count > 0 ? sum_ref / (double) count : 0.0},
+            {"mean_hat", count > 0 ? sum_hat / (double) count : 0.0},
+            {"bias", count > 0 ? (sum_hat - sum_ref) / (double) count : 0.0},
+            {"mae", count > 0 ? sum_abs_err / (double) count : 0.0},
+            {"rmse", count > 0 ? std::sqrt(sum_sq_err / (double) count) : 0.0},
+            {"max_abs_err", max_abs_err},
+            {"max_abs_ref", max_abs_ref},
+        };
+    }
+};
+
+struct llama_log8pv_diag_row_stat {
+    uint64_t rows = 0;
+    double sum_l_rel_err = 0.0;
+    double max_l_rel_err = 0.0;
+    double sum_p_zero_mass_frac = 0.0;
+    double max_p_zero_mass_frac = 0.0;
+
+    json to_json() const {
+        return {
+            {"rows", rows},
+            {"mean_l_rel_err", rows > 0 ? sum_l_rel_err / (double) rows : 0.0},
+            {"max_l_rel_err", max_l_rel_err},
+            {"mean_p_zero_mass_frac", rows > 0 ? sum_p_zero_mass_frac / (double) rows : 0.0},
+            {"max_p_zero_mass_frac", max_p_zero_mass_frac},
+        };
+    }
+};
+
+static std::string llama_text_log8pv_diag_path() {
+    const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_DIAG_FILE");
+    return value == nullptr ? std::string() : std::string(value);
+}
+
+static std::string llama_text_log8pv_pv_diag_path() {
+    const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_PV_DIAG_FILE");
+    return value == nullptr ? std::string() : std::string(value);
+}
+
+static const char * llama_text_log8pv_qk_scale_mode_name(int mode) {
+    switch (mode) {
+        case 1: return "dynamic_perhead";
+        case 2: return "dynamic_pertile";
+        default: return "static";
+    }
+}
+
+static const char * llama_text_log8pv_v_scale_mode_name(int mode) {
+    switch (mode) {
+        case 1: return "dynamic_perhead";
+        default: return "static";
+    }
+}
+
+static int64_t llama_attn_log8pv_round_shift_signed(int64_t value, int bits) {
+    const int64_t half = 1LL << (bits - 1);
+    if (value >= 0) {
+        return (value + half) >> bits;
+    }
+    return -(((-value) + half) >> bits);
+}
+
+static int64_t llama_attn_log8pv_saturate_int48(int64_t value) {
+    constexpr int64_t min_value = -(1LL << 47);
+    constexpr int64_t max_value =  (1LL << 47) - 1;
+    return std::max<int64_t>(min_value, std::min<int64_t>(max_value, value));
+}
+
+static int32_t llama_attn_log8pv_saturate_q8_12(int64_t value) {
+    constexpr int64_t min_value = -128LL * 4096LL;
+    constexpr int64_t max_value =  128LL * 4096LL - 1;
+    return (int32_t) std::max<int64_t>(min_value, std::min<int64_t>(max_value, value));
+}
+
+static float llama_attn_mask_get_f32(const ggml_tensor * mask, int64_t ik, int64_t iq) {
+    if (mask == nullptr) {
+        return 0.0f;
+    }
+    if (ik >= mask->ne[0] || iq >= mask->ne[1]) {
+        return -INFINITY;
+    }
+    return llama_tensor_get_f32_4d(mask, ik, iq, 0, 0);
+}
+
+struct llama_log8pv_attention_host_profile {
+    int64_t threshold_us = 0;
+    int64_t q_quant_us = 0;
+    int64_t kv_quant_us = 0;
+    int64_t v8_cast_us = 0;
+    int64_t gamma_us = 0;
+    int64_t npu_call_wall_us = 0;
+    int64_t dequant_store_us = 0;
+    int64_t cpu_quant_overlap_us = 0;
+    int64_t kv_quant_hidden_us = 0;
+    int64_t q_quant_hidden_us = 0;
+    int64_t npu_wait_after_quant_us = 0;
+    int64_t post_hidden_us = 0;
+    int64_t pipeline_group = -1;
+    int64_t pipeline_enabled = 0;
+};
+
+static bool llama_log8pv_npu_profile_enabled() {
+    static const bool enabled = []() {
+        const char * path = std::getenv("AICAS_LOG8PV_NPU_PROFILE_JSONL");
+        return path != nullptr && path[0] != '\0';
+    }();
+    return enabled;
+}
+
+#ifdef GGML_USE_NPU
+static bool llama_text_log8pv_infer_causal_q_start(
+        const ggml_tensor * mask,
+        int64_t n_q,
+        int64_t n_k,
+        uint32_t * q_row_start) {
+    if (q_row_start == nullptr || n_q <= 0 || n_k <= 0 || n_q > n_k) {
+        return false;
+    }
+    if (mask == nullptr) {
+        *q_row_start = 0;
+        return n_q == n_k;
+    }
+
+    int64_t inferred_start = -1;
+    for (int64_t iq = 0; iq < n_q; ++iq) {
+        int64_t max_allowed = -1;
+        for (int64_t ik = 0; ik < n_k; ++ik) {
+            const float mask_value = llama_attn_mask_get_f32(mask, ik, iq);
+            if (std::isfinite(mask_value) && mask_value > -1.0e20f) {
+                max_allowed = ik;
+            }
+        }
+        if (max_allowed < 0) {
+            return false;
+        }
+        const int64_t row_start = max_allowed - iq;
+        if (row_start < 0 || row_start + n_q > n_k) {
+            return false;
+        }
+        if (inferred_start < 0) {
+            inferred_start = row_start;
+        } else if (inferred_start != row_start) {
+            return false;
+        }
+    }
+
+    *q_row_start = (uint32_t) inferred_start;
+    return true;
+}
+
+static void llama_log8pv_npu_profile_append(
+        const char * scope,
+        int layer,
+        int64_t head,
+        int64_t kv_head,
+        int64_t n_q,
+        int64_t n_k,
+        uint32_t q_row_start,
+        const ggml_backend_npu_log8pv_attention_profile & profile,
+        const llama_log8pv_attention_host_profile & host_profile) {
+    const char * path = std::getenv("AICAS_LOG8PV_NPU_PROFILE_JSONL");
+    if (path == nullptr || path[0] == '\0') {
+        return;
+    }
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    json record = {
+        {"schema", "aicas.log8pv_npu_attention_profile.v1"},
+        {"scope", scope},
+        {"layer", layer},
+        {"head", head},
+        {"kv_head", kv_head},
+        {"n_q", n_q},
+        {"n_k", n_k},
+        {"q_row_start", q_row_start},
+        {"kv_tokens", profile.kv_tokens},
+        {"q_rows", profile.q_rows},
+        {"exec_rows", profile.exec_rows},
+        {"chunks", profile.chunks},
+        {"group_size", profile.group_size},
+        {"kv_reuse_hit", profile.kv_reuse_hit},
+        {"workspace_reuse", profile.workspace_reuse},
+        {"total_us", profile.total_us},
+        {"mvin_q_us", profile.mvin_q_us},
+        {"mvin_k_us", profile.mvin_k_us},
+        {"mvin_v_us", profile.mvin_v_us},
+        {"qk_us", profile.qk_us},
+        {"logp_mvout_us", profile.logp_mvout_us},
+        {"mvin_p_us", profile.mvin_p_us},
+        {"pv_us", profile.pv_us},
+        {"pv_mvout_us", profile.pv_mvout_us},
+        {"qk_overlap_us", profile.qk_overlap_us},
+        {"pv_overlap_us", profile.pv_overlap_us},
+        {"threshold_us", host_profile.threshold_us},
+        {"q_quant_us", host_profile.q_quant_us},
+        {"kv_quant_us", host_profile.kv_quant_us},
+        {"v8_cast_us", host_profile.v8_cast_us},
+        {"gamma_us", host_profile.gamma_us},
+        {"npu_call_wall_us", host_profile.npu_call_wall_us},
+        {"dequant_store_us", host_profile.dequant_store_us},
+        {"cpu_quant_overlap_us", host_profile.cpu_quant_overlap_us},
+        {"kv_quant_hidden_us", host_profile.kv_quant_hidden_us},
+        {"q_quant_hidden_us", host_profile.q_quant_hidden_us},
+        {"npu_wait_after_quant_us", host_profile.npu_wait_after_quant_us},
+        {"post_hidden_us", host_profile.post_hidden_us},
+        {"pipeline_group", host_profile.pipeline_group},
+        {"pipeline_enabled", host_profile.pipeline_enabled},
+    };
+    std::ofstream fout(path, std::ios::app | std::ios::binary);
+    if (fout.is_open()) {
+        fout << record.dump() << "\n";
+    }
+}
+#endif
 
 static llama_scale_shift32 llama_bfp8m_block_scale_for_a(
         const struct ggml_tensor * a,
@@ -1504,6 +2333,1016 @@ static ggml_tensor * llama_build_text_bfp8m_mul_mat(
             &cfg);
 }
 
+static void llama_compute_text_log8pv_attn(
+        struct ggml_tensor * dst,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(nth);
+
+    const auto * cfg = static_cast<const llama_text_log8pv_attn_userdata *>(userdata);
+    const struct ggml_tensor * q = dst->src[0];
+    const struct ggml_tensor * k = dst->src[1];
+    const struct ggml_tensor * v = dst->src[2];
+    const struct ggml_tensor * mask = dst->src[3] != nullptr ? dst->src[3] : cfg->mask;
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(q != nullptr);
+    GGML_ASSERT(k != nullptr);
+    GGML_ASSERT(v != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16);
+    GGML_ASSERT(k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(v->type == GGML_TYPE_F32 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_Q8_0);
+    GGML_ASSERT(q->ne[0] == k->ne[0]);
+    GGML_ASSERT(q->ne[0] == v->ne[0]);
+    GGML_ASSERT(dst->ne[0] == q->ne[0]);
+    GGML_ASSERT(dst->ne[1] == q->ne[2]);
+    GGML_ASSERT(dst->ne[2] == q->ne[1]);
+    GGML_ASSERT(dst->ne[3] == q->ne[3]);
+
+    if (ith != 0) {
+        return;
+    }
+
+    const int64_t d_head = q->ne[0];
+    const int64_t n_q = q->ne[1];
+    const int64_t n_head = q->ne[2];
+    const int64_t n_batch = q->ne[3];
+    const int64_t n_k = k->ne[1];
+    const int64_t n_kv_head = k->ne[2];
+    const int64_t tile = std::max<int64_t>(1, cfg->tile);
+    const uint16_t p_max = llama_attn_log8pv_p_max(cfg->p_bits);
+    const bool dynamic_qk_head = cfg->qk_scale_mode == 1;
+    const bool dynamic_qk_tile = cfg->qk_scale_mode == 2;
+    const bool dynamic_v_head = cfg->v_scale_mode == 1;
+    const int64_t dynamic_scale_tile = std::max<int64_t>(1, cfg->qk_scale_tile);
+    const int64_t n_q_scale_tiles = (n_q + dynamic_scale_tile - 1) / dynamic_scale_tile;
+    const int64_t n_k_scale_tiles = (n_k + dynamic_scale_tile - 1) / dynamic_scale_tile;
+    GGML_ASSERT(d_head == 64);
+    GGML_ASSERT(n_head % n_kv_head == 0);
+
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LLAMA_LOG_INFO(
+                "llama_compute_text_log8pv_attn: AICAS text prefill log8PV CPU reference enabled, "
+                "tile=%" PRId64 " qk_scale_mode=%s qk_scale_tile=%" PRId64 " v_scale_mode=%s"
+                " v_centering=%d p_log2_range=%.3f p_mode=%s p_bits=%d bit_accurate=%d alpha_bits=%d v_bits=%d\n",
+                tile, llama_text_log8pv_qk_scale_mode_name(cfg->qk_scale_mode), dynamic_scale_tile,
+                llama_text_log8pv_v_scale_mode_name(cfg->v_scale_mode),
+                cfg->v_centering ? 1 : 0,
+                (double) cfg->p_log2_range, cfg->p_direct_u16 ? "direct_u16" : "log8",
+                cfg->p_bits, cfg->bit_accurate ? 1 : 0, cfg->alpha_bits, cfg->v_bits);
+    }
+
+    const bool has_calib = cfg->calib != nullptr && cfg->calib->valid_for(n_head, n_kv_head, d_head);
+    if (!has_calib && cfg->collect == nullptr && !dynamic_v_head) {
+        LLAMA_LOG_ERROR("%s: AICAS_TEXT_PREFILL_LOG8PV_CALIB_FILE is required for static text log8PV attention\n",
+                __func__);
+        GGML_ABORT("missing static text log8PV calibration");
+    }
+    if (cfg->calib != nullptr && !has_calib) {
+        LLAMA_LOG_ERROR("%s: text log8PV calibration layer=%d shape mismatch, got heads=%" PRId64
+                " kv_heads=%" PRId64 " dim=%" PRId64 "\n",
+                __func__, cfg->layer, n_head, n_kv_head, d_head);
+        GGML_ABORT("invalid static text log8PV calibration shape");
+    }
+    if (cfg->p_direct_u16 || cfg->p_log2_range != 16.0f || cfg->alpha_bits != 20 || cfg->v_bits != 8) {
+        LLAMA_LOG_WARN("%s: text log8PV hardware-equivalent path ignores legacy p/alpha/v controls; "
+                "using base2 S_q, P%d LUT, and V8\n", __func__, cfg->p_bits);
+    }
+
+    constexpr int v_absmax = 127;
+    constexpr int32_t invalid_score = std::numeric_limits<int32_t>::min();
+    std::vector<int8_t> q8((size_t) (n_q * d_head));
+    std::vector<int8_t> k8((size_t) (n_k * d_head));
+    std::vector<int16_t> vq((size_t) (n_k * d_head));
+    std::vector<int32_t> score_s16((size_t) n_k);
+    std::vector<uint8_t> q_local((size_t) n_k);
+    std::vector<int32_t> m_tile((size_t) ((n_k + tile - 1) / tile));
+    std::vector<float> v_mean((size_t) d_head);
+    std::vector<float> v_threshold((size_t) d_head);
+    std::vector<float> q_threshold_dyn_tile(dynamic_qk_tile ? (size_t) n_q_scale_tiles : 0);
+    std::vector<float> k_threshold_dyn_tile(dynamic_qk_tile ? (size_t) n_k_scale_tiles : 0);
+    std::vector<int64_t> accum((size_t) d_head);
+    const std::string diag_path = llama_text_log8pv_diag_path();
+    const std::string pv_diag_path = llama_text_log8pv_pv_diag_path();
+    const bool diag_enabled = !diag_path.empty();
+    const bool pv_diag_enabled = diag_enabled || !pv_diag_path.empty();
+    llama_log8pv_diag_stat diag_q;
+    llama_log8pv_diag_stat diag_k;
+    llama_log8pv_diag_stat diag_v;
+    llama_log8pv_diag_stat diag_qk;
+    llama_log8pv_diag_stat diag_p;
+    llama_log8pv_diag_stat diag_o;
+    llama_log8pv_diag_row_stat diag_rows;
+    int64_t diag_pv_max_abs_product = 0;
+    int64_t diag_pv_max_abs_accum = 0;
+    int64_t diag_pv_max_abs_final_accum = 0;
+    int64_t diag_pv_max_row_l = 0;
+    uint64_t diag_pv_accum_over_i32 = 0;
+    uint64_t diag_pv_final_over_i32 = 0;
+    uint64_t diag_pv_accum_updates = 0;
+    std::vector<double> ref_logits(diag_enabled ? (size_t) n_k : 0);
+    std::vector<double> ref_out(diag_enabled ? (size_t) d_head : 0);
+
+#ifdef GGML_USE_NPU
+    const bool text_log8pv_npu_requested_fast = llama_text_prefill_log8pv_npu_enabled();
+    uint32_t npu_fast_q_row_start = 0;
+    const bool text_log8pv_npu_causal_ok_fast =
+        llama_text_log8pv_infer_causal_q_start(mask, n_q, n_k, &npu_fast_q_row_start);
+    const bool text_log8pv_npu_fast_shape_ok =
+        text_log8pv_npu_requested_fast &&
+        cfg->collect == nullptr &&
+        !diag_enabled &&
+        !pv_diag_enabled &&
+        has_calib &&
+        !dynamic_qk_head &&
+        !dynamic_qk_tile &&
+        !dynamic_v_head &&
+        !cfg->p_direct_u16 &&
+        cfg->p_log2_range == 16.0f &&
+        cfg->p_bits == 15 &&
+        cfg->alpha_bits == 20 &&
+        cfg->v_bits == 8 &&
+        d_head == 64 &&
+        n_q > 0 &&
+        n_k > 0 &&
+        n_k <= 1024 &&
+        n_head % n_kv_head == 0 &&
+        (n_head / n_kv_head) <= 8 &&
+        npu_fast_q_row_start + (uint32_t) n_q <= (uint32_t) n_k &&
+        text_log8pv_npu_causal_ok_fast &&
+        (mask != nullptr || (n_k % 32) == 0);
+
+    if (text_log8pv_npu_requested_fast && text_log8pv_npu_fast_shape_ok) {
+        const int64_t gqa_ratio = n_head / n_kv_head;
+        const bool causal_mask = mask != nullptr;
+        std::vector<int8_t> q_group((size_t) gqa_ratio * n_q * d_head);
+        std::vector<int8_t> k8_group((size_t) n_k * d_head);
+        std::vector<int8_t> v8_group((size_t) n_k * d_head);
+        std::vector<int32_t> npu_out_group((size_t) gqa_ratio * n_q * d_head);
+        std::vector<uint32_t> gamma_group((size_t) gqa_ratio);
+        std::vector<ggml_backend_npu_log8pv_attention_profile> npu_profiles((size_t) gqa_ratio);
+        std::vector<llama_log8pv_attention_host_profile> host_profiles((size_t) gqa_ratio);
+        std::vector<float> v_mean_group((size_t) d_head);
+        std::vector<float> v_threshold_group((size_t) d_head);
+
+        bool npu_fast_ok = true;
+        static std::atomic<bool> npu_group_logged{false};
+        if (!npu_group_logged.exchange(true)) {
+            LLAMA_LOG_INFO(
+                    "llama_compute_text_log8pv_attn: trying Versa_P NPU grouped text log8PV attention, "
+                    "n_q=%" PRId64 " n_k=%" PRId64 " q_row_start=%u gqa_ratio=%" PRId64 " causal=%d\n",
+                    n_q, n_k, npu_fast_q_row_start, gqa_ratio, causal_mask ? 1 : 0);
+        }
+
+        struct prepared_group {
+            int64_t ib = 0;
+            int64_t ikh = 0;
+            int64_t group_index = 0;
+            bool ok = true;
+            int64_t prepare_wall_us = 0;
+            std::vector<int8_t> q;
+            std::vector<int8_t> k;
+            std::vector<int8_t> v;
+            std::vector<int32_t> out;
+            std::vector<uint32_t> gamma;
+            std::vector<ggml_backend_npu_log8pv_attention_profile> npu_profiles;
+            std::vector<llama_log8pv_attention_host_profile> host_profiles;
+            std::vector<float> v_mean;
+            std::vector<float> v_threshold;
+        };
+
+        const bool pipeline_enabled =
+            llama_text_log8pv_cpu_npu_pipeline_enabled() &&
+            (n_batch * n_kv_head) > 1;
+        auto prepare_group = [&](int64_t group_index) {
+            prepared_group work;
+            work.ib = group_index / n_kv_head;
+            work.ikh = group_index % n_kv_head;
+            work.group_index = group_index;
+            work.q.resize((size_t) gqa_ratio * n_q * d_head);
+            work.k.resize((size_t) n_k * d_head);
+            work.v.resize((size_t) n_k * d_head);
+            work.out.resize((size_t) gqa_ratio * n_q * d_head);
+            work.gamma.resize((size_t) gqa_ratio);
+            work.npu_profiles.resize((size_t) gqa_ratio);
+            work.host_profiles.resize((size_t) gqa_ratio);
+            work.v_mean.resize((size_t) d_head);
+            work.v_threshold.resize((size_t) d_head);
+            const int64_t prepare_start_us = ggml_time_us();
+            int64_t npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+            const float k_threshold = std::max(cfg->calib->k_threshold_head[(size_t) work.ikh], 1.0e-6f);
+            for (int64_t id = 0; id < d_head; ++id) {
+                const size_t offset = (size_t) (work.ikh * d_head + id);
+                if (cfg->v_centering) {
+                    work.v_mean[(size_t) id] = cfg->calib->v_mean[offset];
+                    work.v_threshold[(size_t) id] = std::max(cfg->calib->v_threshold[offset], 1.0e-6f);
+                } else {
+                    work.v_mean[(size_t) id] = 0.0f;
+                    work.v_threshold[(size_t) id] = std::max(
+                            std::fabs(cfg->calib->v_mean[offset]) + cfg->calib->v_threshold[offset],
+                            1.0e-6f);
+                }
+            }
+            if (llama_log8pv_npu_profile_enabled()) {
+                work.host_profiles[0].threshold_us += ggml_time_us() - npu_profile_t0;
+            }
+
+            npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+            for (int64_t ik = 0; ik < n_k; ++ik) {
+                for (int64_t id = 0; id < d_head; ++id) {
+                    work.k[(size_t) ik * d_head + id] = llama_attn_log8pv_quant_i8(
+                            llama_tensor_get_f32_4d(k, id, ik, work.ikh, work.ib),
+                            k_threshold);
+                    work.v[(size_t) ik * d_head + id] = llama_attn_log8pv_quant_v_i8(
+                            llama_tensor_get_f32_4d(v, id, ik, work.ikh, work.ib),
+                            work.v_mean[(size_t) id],
+                            work.v_threshold[(size_t) id]);
+                }
+            }
+            if (llama_log8pv_npu_profile_enabled()) {
+                work.host_profiles[0].kv_quant_us += ggml_time_us() - npu_profile_t0;
+            }
+
+            for (int64_t local = 0; local < gqa_ratio; ++local) {
+                const int64_t ih = work.ikh * gqa_ratio + local;
+                const float q_threshold = std::max(cfg->calib->q_threshold_head[(size_t) ih], 1.0e-6f);
+                npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        work.q[(size_t) local * n_q * d_head + (size_t) iq * d_head + id] =
+                            llama_attn_log8pv_quant_i8(
+                                    llama_tensor_get_f32_4d(q, id, iq, ih, work.ib),
+                                    q_threshold);
+                    }
+                }
+                if (llama_log8pv_npu_profile_enabled()) {
+                    work.host_profiles[(size_t) local].q_quant_us += ggml_time_us() - npu_profile_t0;
+                }
+
+                const double qk_gain = cfg->calib->qk_gain_head.size() == (size_t) n_head &&
+                    std::isfinite(cfg->calib->qk_gain_head[(size_t) ih]) &&
+                    cfg->calib->qk_gain_head[(size_t) ih] > 0.0f
+                        ? (double) cfg->calib->qk_gain_head[(size_t) ih]
+                        : 1.0;
+                npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+                const double gamma2 =
+                    (double) q_threshold / 127.0 *
+                    (double) k_threshold / 127.0 *
+                    (double) cfg->kq_scale *
+                    qk_gain / std::log(2.0);
+                const double gamma_fix_f = std::round(16.0 * gamma2 * (double) (UINT64_C(1) << 24));
+                work.gamma[(size_t) local] =
+                    gamma_fix_f > 1.0 && gamma_fix_f < (double) std::numeric_limits<uint32_t>::max()
+                        ? (uint32_t) gamma_fix_f
+                        : 0u;
+                if (llama_log8pv_npu_profile_enabled()) {
+                    work.host_profiles[(size_t) local].gamma_us += ggml_time_us() - npu_profile_t0;
+                }
+                if (work.gamma[(size_t) local] == 0) {
+                    work.ok = false;
+                    break;
+                }
+            }
+
+            work.prepare_wall_us = ggml_time_us() - prepare_start_us;
+            return work;
+        };
+
+        auto launch_prepare = [&](int64_t group_index) {
+            return std::async(std::launch::async, prepare_group, group_index);
+        };
+
+        const int64_t group_count = n_batch * n_kv_head;
+        std::future<prepared_group> pending;
+        if (pipeline_enabled) {
+            pending = launch_prepare(0);
+        }
+        for (int64_t group_index = 0; group_index < group_count && npu_fast_ok; ++group_index) {
+            int64_t prepare_wait_us = 0;
+            prepared_group work;
+            if (pipeline_enabled) {
+                const int64_t wait_start_us = ggml_time_us();
+                work = pending.get();
+                prepare_wait_us = ggml_time_us() - wait_start_us;
+                if (group_index + 1 < group_count) {
+                    pending = launch_prepare(group_index + 1);
+                }
+            } else {
+                work = prepare_group(group_index);
+            }
+
+            const int64_t prepare_hidden_us = pipeline_enabled
+                ? std::max<int64_t>(0, work.prepare_wall_us - prepare_wait_us)
+                : 0;
+            for (int64_t local = 0; local < gqa_ratio; ++local) {
+                llama_log8pv_attention_host_profile & hp = work.host_profiles[(size_t) local];
+                hp.pipeline_enabled = pipeline_enabled ? 1 : 0;
+                hp.pipeline_group = work.group_index;
+                hp.cpu_quant_overlap_us += prepare_hidden_us / std::max<int64_t>(1, gqa_ratio);
+                hp.npu_wait_after_quant_us += prepare_wait_us / std::max<int64_t>(1, gqa_ratio);
+                hp.q_quant_hidden_us += std::min<int64_t>(hp.q_quant_us, prepare_hidden_us);
+            }
+            work.host_profiles[0].kv_quant_hidden_us += std::min<int64_t>(
+                    work.host_profiles[0].kv_quant_us,
+                    prepare_hidden_us);
+            if (!work.ok) {
+                npu_fast_ok = false;
+                break;
+            }
+
+            int64_t npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+            const bool group_ok = ggml_backend_npu_log8pv_attention_group(
+                    work.q.data(),
+                    (uint32_t) gqa_ratio,
+                    (uint32_t) n_q,
+                    work.k.data(),
+                    work.v.data(),
+                    (uint32_t) n_k,
+                    npu_fast_q_row_start,
+                    causal_mask,
+                    work.gamma.data(),
+                    work.out.data(),
+                    (uint32_t) d_head,
+                    60000,
+                    work.npu_profiles.data());
+            if (llama_log8pv_npu_profile_enabled()) {
+                work.host_profiles[0].npu_call_wall_us += ggml_time_us() - npu_profile_t0;
+            }
+            if (!group_ok) {
+                npu_fast_ok = false;
+                break;
+            }
+
+            for (int64_t local = 0; local < gqa_ratio; ++local) {
+                const int64_t ih = work.ikh * gqa_ratio + local;
+                npu_profile_t0 = llama_log8pv_npu_profile_enabled() ? ggml_time_us() : 0;
+                const int32_t * npu_out = work.out.data() + (size_t) local * n_q * d_head;
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        const float out = (float) (
+                                (double) npu_out[(size_t) iq * d_head + id] *
+                                ((double) work.v_threshold[(size_t) id] / (double) v_absmax) +
+                                (double) work.v_mean[(size_t) id]);
+                        llama_tensor_set_f32_4d(dst, id, ih, iq, work.ib, out);
+                    }
+                }
+                if (llama_log8pv_npu_profile_enabled()) {
+                    const int64_t post_us = ggml_time_us() - npu_profile_t0;
+                    work.host_profiles[(size_t) local].dequant_store_us += post_us;
+                    work.host_profiles[(size_t) local].post_hidden_us += pipeline_enabled ? post_us : 0;
+                }
+                llama_log8pv_npu_profile_append(
+                        "text", cfg->layer, ih, work.ikh, n_q, n_k, npu_fast_q_row_start,
+                        work.npu_profiles[(size_t) local], work.host_profiles[(size_t) local]);
+            }
+        }
+        if (npu_fast_ok) {
+            return;
+        }
+        static std::atomic<bool> npu_group_fallback_logged{false};
+        if (!npu_group_fallback_logged.exchange(true)) {
+            LLAMA_LOG_WARN(
+                    "llama_compute_text_log8pv_attn: grouped Versa_P NPU text log8PV attention failed; "
+                    "falling back to per-head path\n");
+        }
+    }
+#endif
+
+    for (int64_t ib = 0; ib < n_batch; ++ib) {
+        for (int64_t ih = 0; ih < n_head; ++ih) {
+            const int64_t ikh = ih / (n_head / n_kv_head);
+            llama_log8pv_attention_host_profile npu_host_profile = {};
+            const bool npu_host_profile_enabled = llama_log8pv_npu_profile_enabled();
+            if (cfg->collect != nullptr) {
+                cfg->collect->ensure(cfg->layer, n_head, n_kv_head, d_head);
+                cfg->collect->calls += 1;
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        const float qv = llama_tensor_get_f32_4d(q, id, iq, ih, ib);
+                        cfg->collect->q_absmax_head[(size_t) ih] =
+                            std::max(cfg->collect->q_absmax_head[(size_t) ih], std::fabs(qv));
+                    }
+                }
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        const size_t offset = (size_t) (ikh * d_head + id);
+                        const float kv = llama_tensor_get_f32_4d(k, id, ik, ikh, ib);
+                        const float vv = llama_tensor_get_f32_4d(v, id, ik, ikh, ib);
+                        cfg->collect->k_absmax_head[(size_t) ikh] =
+                            std::max(cfg->collect->k_absmax_head[(size_t) ikh], std::fabs(kv));
+                        cfg->collect->v_sum[offset] += vv;
+                        cfg->collect->v_count[offset] += 1;
+                        cfg->collect->v_min[offset] = std::min(cfg->collect->v_min[offset], vv);
+                        cfg->collect->v_max[offset] = std::max(cfg->collect->v_max[offset], vv);
+                    }
+                }
+            }
+
+            int64_t npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+            float q_threshold = has_calib ? cfg->calib->q_threshold_head[(size_t) ih] : 0.0f;
+            float k_threshold = has_calib ? cfg->calib->k_threshold_head[(size_t) ikh] : 0.0f;
+            if (q_threshold <= 0.0f || !std::isfinite(q_threshold)) {
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        q_threshold = std::max(q_threshold, std::fabs(llama_tensor_get_f32_4d(q, id, iq, ih, ib)));
+                    }
+                }
+            }
+            if (k_threshold <= 0.0f || !std::isfinite(k_threshold)) {
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        k_threshold = std::max(k_threshold, std::fabs(llama_tensor_get_f32_4d(k, id, ik, ikh, ib)));
+                    }
+                }
+            }
+            if (q_threshold <= 0.0f || !std::isfinite(q_threshold)) {
+                q_threshold = 1.0f;
+            }
+            if (k_threshold <= 0.0f || !std::isfinite(k_threshold)) {
+                k_threshold = 1.0f;
+            }
+            if (dynamic_qk_head) {
+                q_threshold = 0.0f;
+                k_threshold = 0.0f;
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        q_threshold = std::max(q_threshold, std::fabs(llama_tensor_get_f32_4d(q, id, iq, ih, ib)));
+                    }
+                }
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        k_threshold = std::max(k_threshold, std::fabs(llama_tensor_get_f32_4d(k, id, ik, ikh, ib)));
+                    }
+                }
+                q_threshold = std::max(q_threshold, 1.0e-6f);
+                k_threshold = std::max(k_threshold, 1.0e-6f);
+            } else if (dynamic_qk_tile) {
+                std::fill(q_threshold_dyn_tile.begin(), q_threshold_dyn_tile.end(), 0.0f);
+                std::fill(k_threshold_dyn_tile.begin(), k_threshold_dyn_tile.end(), 0.0f);
+                for (int64_t iq = 0; iq < n_q; ++iq) {
+                    const size_t qt = (size_t) std::min<int64_t>(n_q_scale_tiles - 1, iq / dynamic_scale_tile);
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        q_threshold_dyn_tile[qt] =
+                            std::max(q_threshold_dyn_tile[qt], std::fabs(llama_tensor_get_f32_4d(q, id, iq, ih, ib)));
+                    }
+                }
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    const size_t kt = (size_t) std::min<int64_t>(n_k_scale_tiles - 1, ik / dynamic_scale_tile);
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        k_threshold_dyn_tile[kt] =
+                            std::max(k_threshold_dyn_tile[kt], std::fabs(llama_tensor_get_f32_4d(k, id, ik, ikh, ib)));
+                    }
+                }
+                for (float & threshold : q_threshold_dyn_tile) {
+                    threshold = std::max(threshold, 1.0e-6f);
+                }
+                for (float & threshold : k_threshold_dyn_tile) {
+                    threshold = std::max(threshold, 1.0e-6f);
+                }
+            }
+            const auto q_threshold_for_iq = [&](int64_t iq) -> float {
+                if (dynamic_qk_tile) {
+                    return q_threshold_dyn_tile[(size_t) std::min<int64_t>(n_q_scale_tiles - 1, iq / dynamic_scale_tile)];
+                }
+                return q_threshold;
+            };
+            const auto k_threshold_for_ik = [&](int64_t ik) -> float {
+                if (dynamic_qk_tile) {
+                    return k_threshold_dyn_tile[(size_t) std::min<int64_t>(n_k_scale_tiles - 1, ik / dynamic_scale_tile)];
+                }
+                return k_threshold;
+            };
+
+            if (has_calib && !dynamic_v_head) {
+                for (int64_t id = 0; id < d_head; ++id) {
+                    const size_t offset = (size_t) (ikh * d_head + id);
+                    if (cfg->v_centering) {
+                        v_mean[(size_t) id] = cfg->calib->v_mean[offset];
+                        v_threshold[(size_t) id] = std::max(cfg->calib->v_threshold[offset], 1.0e-6f);
+                    } else {
+                        v_mean[(size_t) id] = 0.0f;
+                        v_threshold[(size_t) id] = std::max(
+                                std::fabs(cfg->calib->v_mean[offset]) + cfg->calib->v_threshold[offset],
+                                1.0e-6f);
+                    }
+                }
+            } else {
+                std::fill(v_mean.begin(), v_mean.end(), 0.0f);
+                if (cfg->v_centering) {
+                    for (int64_t ik = 0; ik < n_k; ++ik) {
+                        for (int64_t id = 0; id < d_head; ++id) {
+                            v_mean[(size_t) id] += llama_tensor_get_f32_4d(v, id, ik, ikh, ib);
+                        }
+                    }
+                    const float inv_n_k = n_k > 0 ? 1.0f / (float) n_k : 0.0f;
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        v_mean[(size_t) id] *= inv_n_k;
+                    }
+                }
+                std::fill(v_threshold.begin(), v_threshold.end(), 0.0f);
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        const float residual = cfg->v_centering
+                            ? llama_tensor_get_f32_4d(v, id, ik, ikh, ib) - v_mean[(size_t) id]
+                            : llama_tensor_get_f32_4d(v, id, ik, ikh, ib);
+                        v_threshold[(size_t) id] = std::max(v_threshold[(size_t) id], std::fabs(residual));
+                    }
+                }
+                for (int64_t id = 0; id < d_head; ++id) {
+                    if (v_threshold[(size_t) id] <= 0.0f || !std::isfinite(v_threshold[(size_t) id])) {
+                        v_threshold[(size_t) id] = 1.0f;
+                    }
+                }
+            }
+            if (npu_host_profile_enabled) {
+                npu_host_profile.threshold_us += ggml_time_us() - npu_profile_t0;
+            }
+
+            npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+            for (int64_t iq = 0; iq < n_q; ++iq) {
+                const float q_threshold_iq = q_threshold_for_iq(iq);
+                for (int64_t id = 0; id < d_head; ++id) {
+                    const float qv = llama_tensor_get_f32_4d(q, id, iq, ih, ib);
+                    q8[(size_t) (iq * d_head + id)] = llama_attn_log8pv_quant_i8(qv, q_threshold_iq);
+                    if (diag_enabled) {
+                        const int8_t code = q8[(size_t) (iq * d_head + id)];
+                        const double qhat = (double) code * (double) q_threshold_iq / 127.0;
+                        if (code == 0 && qv != 0.0f) {
+                            ++diag_q.zero_count;
+                        }
+                        if (std::fabs(qv) > q_threshold_iq) {
+                            ++diag_q.clip_count;
+                        }
+                        diag_q.update(qv, qhat);
+                    }
+                }
+            }
+            if (npu_host_profile_enabled) {
+                npu_host_profile.q_quant_us += ggml_time_us() - npu_profile_t0;
+            }
+            npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+            for (int64_t ik = 0; ik < n_k; ++ik) {
+                const float k_threshold_ik = k_threshold_for_ik(ik);
+                for (int64_t id = 0; id < d_head; ++id) {
+                    const float kv = llama_tensor_get_f32_4d(k, id, ik, ikh, ib);
+                    k8[(size_t) (ik * d_head + id)] = llama_attn_log8pv_quant_i8(kv, k_threshold_ik);
+                    vq[(size_t) (ik * d_head + id)] = llama_attn_log8pv_quant_v(
+                            llama_tensor_get_f32_4d(v, id, ik, ikh, ib),
+                            v_mean[(size_t) id],
+                            v_threshold[(size_t) id],
+                            v_absmax);
+                    if (diag_enabled) {
+                        const int8_t kcode = k8[(size_t) (ik * d_head + id)];
+                        const double khat = (double) kcode * (double) k_threshold_ik / 127.0;
+                        if (kcode == 0 && kv != 0.0f) {
+                            ++diag_k.zero_count;
+                        }
+                        if (std::fabs(kv) > k_threshold_ik) {
+                            ++diag_k.clip_count;
+                        }
+                        diag_k.update(kv, khat);
+
+                        const float vv = llama_tensor_get_f32_4d(v, id, ik, ikh, ib);
+                        const double vref = (double) vv - (double) v_mean[(size_t) id];
+                        const int16_t vcode = vq[(size_t) (ik * d_head + id)];
+                        const double vhat = (double) vcode * (double) v_threshold[(size_t) id] / (double) v_absmax;
+                        if (vcode == 0 && vref != 0.0) {
+                            ++diag_v.zero_count;
+                        }
+                        if (std::fabs(vref) > v_threshold[(size_t) id]) {
+                            ++diag_v.clip_count;
+                        }
+                        diag_v.update(vref, vhat);
+                    }
+                }
+            }
+            if (npu_host_profile_enabled) {
+                npu_host_profile.kv_quant_us += ggml_time_us() - npu_profile_t0;
+            }
+
+            const double qk_gain = has_calib && cfg->calib->qk_gain_head.size() == (size_t) n_head &&
+                std::isfinite(cfg->calib->qk_gain_head[(size_t) ih]) &&
+                cfg->calib->qk_gain_head[(size_t) ih] > 0.0f
+                    ? (double) cfg->calib->qk_gain_head[(size_t) ih]
+                    : 1.0;
+
+#ifdef GGML_USE_NPU
+            const bool text_log8pv_npu_requested = llama_text_prefill_log8pv_npu_enabled();
+            uint32_t npu_q_row_start = 0;
+            const bool text_log8pv_npu_causal_ok =
+                llama_text_log8pv_infer_causal_q_start(mask, n_q, n_k, &npu_q_row_start);
+            const bool text_log8pv_npu_shape_ok =
+                cfg->collect == nullptr &&
+                !diag_enabled &&
+                !pv_diag_enabled &&
+                has_calib &&
+                !dynamic_qk_head &&
+                !dynamic_qk_tile &&
+                !dynamic_v_head &&
+                !cfg->p_direct_u16 &&
+                cfg->p_log2_range == 16.0f &&
+                cfg->p_bits == 15 &&
+                cfg->alpha_bits == 20 &&
+                cfg->v_bits == 8 &&
+                n_q > 0 &&
+                n_k > 0 &&
+                n_k <= 1024 &&
+                npu_q_row_start + (uint32_t) n_q <= (uint32_t) n_k &&
+                text_log8pv_npu_causal_ok &&
+                (mask != nullptr || (n_k % 32) == 0);
+            if (text_log8pv_npu_requested && !text_log8pv_npu_shape_ok &&
+                    std::getenv("AICAS_TEXT_PREFILL_LOG8PV_NPU_DEBUG") != nullptr) {
+                LLAMA_LOG_WARN(
+                        "llama_compute_text_log8pv_attn: NPU rejected layer=%d head=%" PRId64
+                        " n_q=%" PRId64 " n_k=%" PRId64 " has_calib=%d collect=%d diag=%d pv_diag=%d"
+                        " dyn_qk_head=%d dyn_qk_tile=%d dyn_v_head=%d p_direct=%d p_log2_range=%.3f"
+                        " p_bits=%d alpha_bits=%d v_bits=%d mask=%d q_start_ok=%d q_start=%u\n",
+                        cfg->layer, ih, n_q, n_k, has_calib ? 1 : 0, cfg->collect != nullptr ? 1 : 0,
+                        diag_enabled ? 1 : 0, pv_diag_enabled ? 1 : 0,
+                        dynamic_qk_head ? 1 : 0, dynamic_qk_tile ? 1 : 0, dynamic_v_head ? 1 : 0,
+                        cfg->p_direct_u16 ? 1 : 0, (double) cfg->p_log2_range,
+                        cfg->p_bits, cfg->alpha_bits, cfg->v_bits, mask != nullptr ? 1 : 0,
+                        text_log8pv_npu_causal_ok ? 1 : 0, npu_q_row_start);
+            }
+            if (text_log8pv_npu_requested && text_log8pv_npu_shape_ok) {
+                npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+                std::vector<int8_t> v8((size_t) n_k * d_head);
+                for (int64_t ik = 0; ik < n_k; ++ik) {
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        const int16_t value = vq[(size_t) ik * d_head + id];
+                        v8[(size_t) ik * d_head + id] =
+                            (int8_t) std::max<int16_t>(-128, std::min<int16_t>(127, value));
+                    }
+                }
+                if (npu_host_profile_enabled) {
+                    npu_host_profile.v8_cast_us += ggml_time_us() - npu_profile_t0;
+                }
+                npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+                const double gamma2 =
+                    (double) q_threshold / 127.0 *
+                    (double) k_threshold / 127.0 *
+                    (double) cfg->kq_scale *
+                    qk_gain / std::log(2.0);
+                const double gamma_fix_f = std::round(16.0 * gamma2 * (double) (UINT64_C(1) << 24));
+                const uint32_t gamma16_fix = gamma_fix_f > 1.0 && gamma_fix_f < (double) std::numeric_limits<uint32_t>::max()
+                    ? (uint32_t) gamma_fix_f
+                    : 0u;
+                if (npu_host_profile_enabled) {
+                    npu_host_profile.gamma_us += ggml_time_us() - npu_profile_t0;
+                }
+                if (gamma16_fix != 0) {
+                    std::vector<int32_t> npu_out((size_t) n_q * d_head);
+                    const bool causal_mask = mask != nullptr;
+                    ggml_backend_npu_log8pv_attention_profile npu_profile = {};
+                    static std::atomic<bool> npu_logged{false};
+                    if (!npu_logged.exchange(true)) {
+                        LLAMA_LOG_INFO(
+                                "llama_compute_text_log8pv_attn: trying Versa_P NPU text log8PV attention, "
+                                "n_q=%" PRId64 " n_k=%" PRId64 " q_row_start=%u causal=%d\n",
+                                n_q, n_k, npu_q_row_start, causal_mask ? 1 : 0);
+                    }
+                    npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+                    const bool npu_ok = ggml_backend_npu_log8pv_attention_ex(
+                            q8.data(),
+                            (uint32_t) n_q,
+                            k8.data(),
+                            v8.data(),
+                            (uint32_t) n_k,
+                            npu_q_row_start,
+                            causal_mask,
+                            gamma16_fix,
+                            npu_out.data(),
+                            (uint32_t) d_head,
+                            60000,
+                            &npu_profile);
+                    if (npu_host_profile_enabled) {
+                        npu_host_profile.npu_call_wall_us += ggml_time_us() - npu_profile_t0;
+                    }
+                    if (npu_ok) {
+                        npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
+                        for (int64_t iq = 0; iq < n_q; ++iq) {
+                            for (int64_t id = 0; id < d_head; ++id) {
+                                const float out = (float) (
+                                        (double) npu_out[(size_t) iq * d_head + id] *
+                                        ((double) v_threshold[(size_t) id] / (double) v_absmax) +
+                                        (double) v_mean[(size_t) id]);
+                                llama_tensor_set_f32_4d(dst, id, ih, iq, ib, out);
+                            }
+                        }
+                        if (npu_host_profile_enabled) {
+                            npu_host_profile.dequant_store_us += ggml_time_us() - npu_profile_t0;
+                        }
+                        llama_log8pv_npu_profile_append(
+                                "text", cfg->layer, ih, ikh, n_q, n_k, npu_q_row_start, npu_profile, npu_host_profile);
+                        continue;
+                    }
+                    static std::atomic<bool> npu_fallback_logged{false};
+                    if (!npu_fallback_logged.exchange(true)) {
+                        LLAMA_LOG_WARN(
+                                "llama_compute_text_log8pv_attn: Versa_P NPU text log8PV attention failed or rejected; "
+                                "falling back to CPU reference\n");
+                    }
+                }
+            }
+#endif
+
+            for (int64_t iq = 0; iq < n_q; ++iq) {
+                int32_t m_global = invalid_score;
+                double row_l_exact = 0.0;
+                double row_exact_mass = 0.0;
+                double row_zero_mass = 0.0;
+                for (int64_t ik0 = 0; ik0 < n_k; ik0 += tile) {
+                    const int64_t ik1 = std::min<int64_t>(n_k, ik0 + tile);
+                    const size_t tile_idx = (size_t) (ik0 / tile);
+                    int32_t mt = invalid_score;
+                    for (int64_t ik = ik0; ik < ik1; ++ik) {
+                        int64_t dot = 0;
+                        double ref_dot = 0.0;
+                        for (int64_t id = 0; id < d_head; ++id) {
+                            dot += (int32_t) q8[(size_t) (iq * d_head + id)] *
+                                (int32_t) k8[(size_t) (ik * d_head + id)];
+                            if (diag_enabled) {
+                                ref_dot += (double) llama_tensor_get_f32_4d(q, id, iq, ih, ib) *
+                                    (double) llama_tensor_get_f32_4d(k, id, ik, ikh, ib);
+                            }
+                        }
+                        const float mask_value = llama_attn_mask_get_f32(mask, ik, iq);
+                        if (!std::isfinite(mask_value) || mask_value < -1.0e20f) {
+                            score_s16[(size_t) ik] = invalid_score;
+                            if (diag_enabled) {
+                                ref_logits[(size_t) ik] = -std::numeric_limits<double>::infinity();
+                            }
+                            continue;
+                        }
+                        if (diag_enabled) {
+                            ref_logits[(size_t) ik] = ref_dot * (double) cfg->kq_scale;
+                        }
+                        const double gamma2 =
+                            (double) q_threshold_for_iq(iq) / 127.0 *
+                            (double) k_threshold_for_ik(ik) / 127.0 *
+                            (double) cfg->kq_scale *
+                            qk_gain / std::log(2.0);
+                        const int64_t sq = (int64_t) std::llround(16.0 * (double) dot * gamma2);
+                        score_s16[(size_t) ik] = (int32_t) std::max<int64_t>(
+                                std::numeric_limits<int32_t>::min() + 1,
+                                std::min<int64_t>(std::numeric_limits<int32_t>::max(), sq));
+                        mt = std::max(mt, score_s16[(size_t) ik]);
+                        if (diag_enabled) {
+                            diag_qk.update(ref_logits[(size_t) ik] / std::log(2.0),
+                                    (double) score_s16[(size_t) ik] / 16.0);
+                        }
+                    }
+                    m_tile[tile_idx] = mt;
+                    m_global = std::max(m_global, mt);
+                    for (int64_t ik = ik0; ik < ik1; ++ik) {
+                        if (score_s16[(size_t) ik] == invalid_score || mt == invalid_score) {
+                            q_local[(size_t) ik] = 255;
+                            continue;
+                        }
+                        const int64_t d_local = (int64_t) mt - (int64_t) score_s16[(size_t) ik];
+                        q_local[(size_t) ik] = d_local >= 255 ? 255 : (uint8_t) std::max<int64_t>(0, d_local);
+                    }
+                }
+
+                std::fill(accum.begin(), accum.end(), 0);
+                int64_t row_l = 0;
+                for (int64_t ik0 = 0; ik0 < n_k; ik0 += tile) {
+                    const int64_t ik1 = std::min<int64_t>(n_k, ik0 + tile);
+                    const int32_t mt = m_tile[(size_t) (ik0 / tile)];
+                    const int64_t delta = (m_global == invalid_score || mt == invalid_score)
+                        ? 255
+                        : (int64_t) m_global - (int64_t) mt;
+                    for (int64_t ik = ik0; ik < ik1; ++ik) {
+                        const int64_t qg = (int64_t) q_local[(size_t) ik] + delta;
+                        const uint16_t p = q_local[(size_t) ik] != 255 && qg < 255
+                            ? llama_attn_log8pv_base2_p((uint32_t) qg, cfg->p_bits)
+                            : 0;
+                        row_l += (int64_t) p;
+                        if (diag_enabled && score_s16[(size_t) ik] != invalid_score && m_global != invalid_score) {
+                            const double p_exact = std::exp2(((double) score_s16[(size_t) ik] - (double) m_global) / 16.0);
+                            const double p_hat = (double) p / (double) p_max;
+                            row_l_exact += p_exact * (double) p_max;
+                            row_exact_mass += p_exact;
+                            if (p == 0) {
+                                row_zero_mass += p_exact;
+                                ++diag_p.zero_count;
+                            }
+                            diag_p.update(p_exact, p_hat);
+                        }
+                        for (int64_t id = 0; id < d_head; ++id) {
+                            const int64_t product = (int64_t) p * (int64_t) vq[(size_t) (ik * d_head + id)];
+                            accum[(size_t) id] += product;
+                            if (pv_diag_enabled) {
+                                diag_pv_max_abs_product = std::max<int64_t>(diag_pv_max_abs_product, std::llabs(product));
+                                diag_pv_max_abs_accum = std::max<int64_t>(diag_pv_max_abs_accum, std::llabs(accum[(size_t) id]));
+                                diag_pv_accum_over_i32 += std::llabs(accum[(size_t) id]) > (int64_t) std::numeric_limits<int32_t>::max();
+                                ++diag_pv_accum_updates;
+                            }
+                        }
+                    }
+                }
+                if (pv_diag_enabled) {
+                    diag_pv_max_row_l = std::max<int64_t>(diag_pv_max_row_l, row_l);
+                    for (int64_t id = 0; id < d_head; ++id) {
+                        diag_pv_max_abs_final_accum = std::max<int64_t>(diag_pv_max_abs_final_accum, std::llabs(accum[(size_t) id]));
+                        diag_pv_final_over_i32 += std::llabs(accum[(size_t) id]) > (int64_t) std::numeric_limits<int32_t>::max();
+                    }
+                }
+                if (diag_enabled) {
+                    const double l_rel = row_l_exact > 0.0 ? std::fabs((double) row_l - row_l_exact) / row_l_exact : 0.0;
+                    const double zero_mass_frac = row_exact_mass > 0.0 ? row_zero_mass / row_exact_mass : 0.0;
+                    ++diag_rows.rows;
+                    diag_rows.sum_l_rel_err += l_rel;
+                    diag_rows.max_l_rel_err = std::max(diag_rows.max_l_rel_err, l_rel);
+                    diag_rows.sum_p_zero_mass_frac += zero_mass_frac;
+                    diag_rows.max_p_zero_mass_frac = std::max(diag_rows.max_p_zero_mass_frac, zero_mass_frac);
+
+                    double ref_m = -std::numeric_limits<double>::infinity();
+                    for (int64_t ik = 0; ik < n_k; ++ik) {
+                        ref_m = std::max(ref_m, ref_logits[(size_t) ik]);
+                    }
+                    double ref_l = 0.0;
+                    std::fill(ref_out.begin(), ref_out.end(), 0.0);
+                    if (std::isfinite(ref_m)) {
+                        for (int64_t ik = 0; ik < n_k; ++ik) {
+                            if (!std::isfinite(ref_logits[(size_t) ik])) {
+                                continue;
+                            }
+                            const double p = std::exp(ref_logits[(size_t) ik] - ref_m);
+                            ref_l += p;
+                            for (int64_t id = 0; id < d_head; ++id) {
+                                ref_out[(size_t) id] += p * (double) llama_tensor_get_f32_4d(v, id, ik, ikh, ib);
+                            }
+                        }
+                    }
+                    if (ref_l > 0.0) {
+                        for (int64_t id = 0; id < d_head; ++id) {
+                            ref_out[(size_t) id] /= ref_l;
+                        }
+                    }
+                }
+                for (int64_t id = 0; id < d_head; ++id) {
+                    const float out = row_l > 0
+                        ? (float) (((double) accum[(size_t) id] / (double) row_l) *
+                                ((double) v_threshold[(size_t) id] / (double) v_absmax) +
+                                (double) v_mean[(size_t) id])
+                        : 0.0f;
+                    llama_tensor_set_f32_4d(dst, id, ih, iq, ib, out);
+                    if (diag_enabled) {
+                        diag_o.update(ref_out[(size_t) id], out);
+                    }
+                }
+            }
+        }
+    }
+
+    if (diag_enabled) {
+        json out = {
+            {"schema", "aicas.text_prefill.log8pv_diag.v1"},
+            {"layer", cfg->layer},
+            {"n_batch", n_batch},
+            {"n_head", n_head},
+            {"n_kv_head", n_kv_head},
+            {"n_q", n_q},
+            {"n_k", n_k},
+            {"d_head", d_head},
+            {"tile", tile},
+            {"qk_scale_mode", llama_text_log8pv_qk_scale_mode_name(cfg->qk_scale_mode)},
+            {"qk_scale_tile", dynamic_scale_tile},
+            {"v_scale_mode", llama_text_log8pv_v_scale_mode_name(cfg->v_scale_mode)},
+            {"has_calib", has_calib},
+            {"q", diag_q.to_json()},
+            {"k", diag_k.to_json()},
+            {"v_centered", diag_v.to_json()},
+            {"qk_logits", diag_qk.to_json()},
+            {"p_log8", diag_p.to_json()},
+            {"rows", diag_rows.to_json()},
+            {"pv_accum", {
+                {"max_abs_product", diag_pv_max_abs_product},
+                {"max_abs_accum", diag_pv_max_abs_accum},
+                {"max_abs_final_accum", diag_pv_max_abs_final_accum},
+                {"max_row_l", diag_pv_max_row_l},
+                {"accum_over_i32_count", diag_pv_accum_over_i32},
+                {"final_over_i32_count", diag_pv_final_over_i32},
+                {"accum_update_count", diag_pv_accum_updates},
+            }},
+            {"output", diag_o.to_json()},
+        };
+        std::ofstream fout(diag_path, std::ios::app | std::ios::binary);
+        if (fout.is_open()) {
+            fout << out.dump() << "\n";
+        }
+    }
+    if (!pv_diag_path.empty()) {
+        json out = {
+            {"schema", "aicas.text_prefill.log8pv_pv_diag.v1"},
+            {"layer", cfg->layer},
+            {"n_batch", n_batch},
+            {"n_head", n_head},
+            {"n_kv_head", n_kv_head},
+            {"n_q", n_q},
+            {"n_k", n_k},
+            {"d_head", d_head},
+            {"tile", tile},
+            {"qk_scale_mode", llama_text_log8pv_qk_scale_mode_name(cfg->qk_scale_mode)},
+            {"qk_scale_tile", dynamic_scale_tile},
+            {"v_scale_mode", llama_text_log8pv_v_scale_mode_name(cfg->v_scale_mode)},
+            {"has_calib", has_calib},
+            {"pv_accum", {
+                {"max_abs_product", diag_pv_max_abs_product},
+                {"max_abs_accum", diag_pv_max_abs_accum},
+                {"max_abs_final_accum", diag_pv_max_abs_final_accum},
+                {"max_row_l", diag_pv_max_row_l},
+                {"accum_over_i32_count", diag_pv_accum_over_i32},
+                {"final_over_i32_count", diag_pv_final_over_i32},
+                {"accum_update_count", diag_pv_accum_updates},
+            }},
+        };
+        std::ofstream fout(pv_diag_path, std::ios::app | std::ios::binary);
+        if (fout.is_open()) {
+            fout << out.dump() << "\n";
+        }
+    }
+}
+
+static ggml_tensor * llama_build_text_log8pv_attn(
+        ggml_context * ctx0,
+        ggml_tensor * q,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        const ggml_tensor * mask,
+        float kq_scale,
+        int il) {
+    GGML_ASSERT(q->ne[0] == 64);
+    GGML_ASSERT(k->ne[0] == q->ne[0]);
+    GGML_ASSERT(v->ne[0] == q->ne[0]);
+    GGML_ASSERT(q->ne[2] % k->ne[2] == 0);
+
+    static std::mutex userdata_mutex;
+    static std::vector<std::unique_ptr<llama_text_log8pv_attn_userdata>> userdata_store;
+    auto node_cfg = std::make_unique<llama_text_log8pv_attn_userdata>();
+    node_cfg->mask = mask;
+    node_cfg->kq_scale = kq_scale;
+    node_cfg->layer = il;
+    node_cfg->calib = llama_text_log8pv_calib_state().get_layer(il);
+    node_cfg->collect = llama_text_log8pv_calib_state().get_collect_layer(il);
+    node_cfg->tile = llama_text_prefill_log8pv_tile();
+    node_cfg->p_log2_range = llama_text_prefill_log8pv_p_log2_range();
+    node_cfg->p_direct_u16 = llama_text_prefill_log8pv_p_direct_u16();
+    node_cfg->p_bits = llama_text_prefill_log8pv_p_bits();
+    node_cfg->alpha_bits = llama_text_prefill_log8pv_alpha_bits();
+    node_cfg->v_bits = llama_text_prefill_log8pv_v_bits();
+    node_cfg->bit_accurate = llama_text_prefill_log8pv_bit_accurate_enabled();
+    node_cfg->v_centering = llama_text_prefill_log8pv_v_centering_enabled();
+    if (const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_QK_SCALE_MODE")) {
+        if (std::strcmp(value, "dynamic_perhead") == 0 || std::strcmp(value, "dynamic-perhead") == 0 ||
+                std::strcmp(value, "dynamic_head") == 0 || std::strcmp(value, "dynamic-head") == 0) {
+            node_cfg->qk_scale_mode = 1;
+        } else if (std::strcmp(value, "dynamic_pertile") == 0 || std::strcmp(value, "dynamic-pertile") == 0 ||
+                std::strcmp(value, "dynamic_tile") == 0 || std::strcmp(value, "dynamic-tile") == 0) {
+            node_cfg->qk_scale_mode = 2;
+        } else {
+            node_cfg->qk_scale_mode = 0;
+        }
+    }
+    if (const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_QK_SCALE_TILE")) {
+        const long parsed = std::strtol(value, nullptr, 10);
+        if (parsed > 0 && parsed <= std::numeric_limits<int16_t>::max()) {
+            node_cfg->qk_scale_tile = parsed;
+        }
+    }
+    if (const char * value = std::getenv("AICAS_TEXT_PREFILL_LOG8PV_V_SCALE_MODE")) {
+        if (std::strcmp(value, "dynamic_perhead") == 0 || std::strcmp(value, "dynamic-perhead") == 0 ||
+                std::strcmp(value, "dynamic_head") == 0 || std::strcmp(value, "dynamic-head") == 0) {
+            node_cfg->v_scale_mode = 1;
+        } else {
+            node_cfg->v_scale_mode = 0;
+        }
+    }
+    llama_text_log8pv_attn_userdata * ptr = node_cfg.get();
+    {
+        std::lock_guard<std::mutex> lock(userdata_mutex);
+        userdata_store.push_back(std::move(node_cfg));
+    }
+
+    ggml_tensor * args[] = { q, k, v, const_cast<ggml_tensor *>(mask) };
+    return ggml_custom_4d(
+            ctx0,
+            GGML_TYPE_F32,
+            q->ne[0],
+            q->ne[2],
+            q->ne[1],
+            q->ne[3],
+            args,
+            mask != nullptr ? 4 : 3,
+            llama_compute_text_log8pv_attn,
+            1,
+            ptr);
+}
+
 static void llama_compute_text_w8a8_mul_mat(
         struct ggml_tensor * dst,
         const struct ggml_tensor * a,
@@ -1603,20 +3442,580 @@ static float llama_decode_awq_read_act(
     }
 }
 
-static void llama_decode_awq_write_dst(
+static int32_t llama_decode_awq_quant_int24(
+        double value,
+        int frac_bits,
+        uint64_t & clip_count) {
+    constexpr int32_t q_min = -(1 << 23);
+    constexpr int32_t q_max =  (1 << 23) - 1;
+    if (!std::isfinite(value)) {
+        ++clip_count;
+        return value < 0.0 ? q_min : q_max;
+    }
+    const double scaled = std::ldexp(value, frac_bits);
+    long long q = std::llround(scaled);
+    if (q < q_min) {
+        ++clip_count;
+        return q_min;
+    }
+    if (q > q_max) {
+        ++clip_count;
+        return q_max;
+    }
+    return (int32_t) q;
+}
+
+static void llama_decode_awq_int24_write_diag(
+        const llama_aicas_text_decode_awq_tensor * cfg,
+        int ith,
+        int frac_bits,
+        bool accum_fp16,
+        bool output_int24,
+        const llama_decode_awq_int24_thread_stats & stats) {
+    const std::string path = llama_text_decode_awq_int24_diag_path();
+    if (path.empty() || stats.count == 0) {
+        return;
+    }
+
+    static std::mutex diag_mutex;
+    static size_t sample_count = 0;
+
+    std::lock_guard<std::mutex> lock(diag_mutex);
+    std::ofstream fout(path, std::ios::app);
+    if (!fout) {
+        return;
+    }
+
+    const double rmse = std::sqrt(stats.sum_sq_err / (double) stats.count);
+    const double mae = stats.sum_abs_err / (double) stats.count;
+    const double nrmse = stats.sum_ref_sq > 0.0 ?
+        std::sqrt(stats.sum_sq_err / stats.sum_ref_sq) : 0.0;
+    json summary = {
+        {"schema", "aicas.text_decode_awq_int24_diag.v1"},
+        {"kind", "summary"},
+        {"tensor", cfg != nullptr ? cfg->quant_tensor_name : std::string{}},
+        {"quant_tensor", cfg != nullptr ? cfg->quant_tensor_name : std::string{}},
+        {"thread", ith},
+        {"frac_bits", frac_bits},
+        {"accum", accum_fp16 ? "fp16" : "fp32"},
+        {"output_int24", output_int24},
+        {"count", stats.count},
+        {"scalar_count", stats.scalar_count},
+        {"sum_abs_scaled_act", stats.sum_abs_scaled_act},
+        {"sum_sq_scaled_act", stats.sum_sq_scaled_act},
+        {"scaled_act_abs_mean", stats.scalar_count > 0 ? stats.sum_abs_scaled_act / (double) stats.scalar_count : 0.0},
+        {"scaled_act_rms", stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scaled_act / (double) stats.scalar_count) : 0.0},
+        {"scaled_act_abs_max", stats.max_abs_scaled_act},
+        {"sum_abs_scalar_err", stats.sum_abs_scalar_err},
+        {"sum_sq_scalar_err", stats.sum_sq_scalar_err},
+        {"scaled_act_q24_mae", stats.scalar_count > 0 ? stats.sum_abs_scalar_err / (double) stats.scalar_count : 0.0},
+        {"scaled_act_q24_rmse", stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scalar_err / (double) stats.scalar_count) : 0.0},
+        {"scaled_act_q24_max_abs_err", stats.max_abs_scalar_err},
+        {"sum_abs_err", stats.sum_abs_err},
+        {"sum_sq_err", stats.sum_sq_err},
+        {"sum_ref_sq", stats.sum_ref_sq},
+        {"mae", mae},
+        {"rmse", rmse},
+        {"nrmse", nrmse},
+        {"max_abs_err", stats.max_abs_err},
+        {"max_abs_ref", stats.max_abs_ref},
+        {"max_abs_int24", stats.max_abs_int24},
+        {"max_abs_q24", stats.max_abs_q24},
+        {"clip_count", stats.clip_count},
+        {"non_integer_zero_count", stats.non_integer_zero_count},
+        {"hist_log2_abs_min_exp", llama_decode_awq_int24_thread_stats::hist_log2_min_exp},
+        {"hist_log2_abs_max_exp", llama_decode_awq_int24_thread_stats::hist_log2_max_exp},
+        {"hist_log2_abs_layout", "zero,lt_min_exp,floor_log2_min_to_max,gt_max_exp"},
+        {"scaled_act_abs_hist", stats.scaled_act_abs_hist},
+        {"scalar_err_abs_hist", stats.scalar_err_abs_hist},
+        {"output_err_abs_hist", stats.output_err_abs_hist},
+        {"ref_abs_hist", stats.ref_abs_hist},
+    };
+    fout << summary.dump() << "\n";
+
+    const size_t dump_limit = llama_text_decode_awq_int24_dump_limit();
+    for (const auto & sample : stats.samples) {
+        if (sample_count >= dump_limit) {
+            break;
+        }
+        json item = {
+            {"schema", "aicas.text_decode_awq_int24_diag.v1"},
+            {"kind", "sample"},
+            {"tensor", cfg != nullptr ? cfg->quant_tensor_name : std::string{}},
+            {"thread", ith},
+            {"frac_bits", frac_bits},
+            {"col", sample.col},
+            {"row", sample.row},
+            {"ref", sample.ref},
+            {"int24", sample.int24},
+            {"err", sample.err},
+        };
+        fout << item.dump() << "\n";
+        ++sample_count;
+    }
+}
+
+static void llama_lm_head_w8a16_int24_write_diag(
+        int ith,
+        int frac_bits,
+        int64_t tile,
+        const llama_decode_awq_int24_thread_stats & stats) {
+    const std::string path = llama_text_lm_head_w8a16_int24_diag_path();
+    if (path.empty() || stats.count == 0) {
+        return;
+    }
+
+    static std::mutex diag_mutex;
+    static size_t sample_count = 0;
+
+    std::lock_guard<std::mutex> lock(diag_mutex);
+    std::ofstream fout(path, std::ios::app);
+    if (!fout) {
+        return;
+    }
+
+    const double rmse = std::sqrt(stats.sum_sq_err / (double) stats.count);
+    const double mae = stats.sum_abs_err / (double) stats.count;
+    const double nrmse = stats.sum_ref_sq > 0.0 ?
+        std::sqrt(stats.sum_sq_err / stats.sum_ref_sq) : 0.0;
+    json summary = {
+        {"schema", "aicas.text_lm_head_w8a16_int24_diag.v1"},
+        {"kind", "summary"},
+        {"tensor", "output.weight"},
+        {"thread", ith},
+        {"frac_bits", frac_bits},
+        {"tile", tile},
+        {"count", stats.count},
+        {"scalar_count", stats.scalar_count},
+        {"sum_abs_scaled_act", stats.sum_abs_scaled_act},
+        {"sum_sq_scaled_act", stats.sum_sq_scaled_act},
+        {"scaled_act_abs_mean", stats.scalar_count > 0 ? stats.sum_abs_scaled_act / (double) stats.scalar_count : 0.0},
+        {"scaled_act_rms", stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scaled_act / (double) stats.scalar_count) : 0.0},
+        {"scaled_act_abs_max", stats.max_abs_scaled_act},
+        {"sum_abs_scalar_err", stats.sum_abs_scalar_err},
+        {"sum_sq_scalar_err", stats.sum_sq_scalar_err},
+        {"scaled_act_q24_mae", stats.scalar_count > 0 ? stats.sum_abs_scalar_err / (double) stats.scalar_count : 0.0},
+        {"scaled_act_q24_rmse", stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scalar_err / (double) stats.scalar_count) : 0.0},
+        {"scaled_act_q24_max_abs_err", stats.max_abs_scalar_err},
+        {"sum_abs_err", stats.sum_abs_err},
+        {"sum_sq_err", stats.sum_sq_err},
+        {"sum_ref_sq", stats.sum_ref_sq},
+        {"mae", mae},
+        {"rmse", rmse},
+        {"nrmse", nrmse},
+        {"max_abs_err", stats.max_abs_err},
+        {"max_abs_ref", stats.max_abs_ref},
+        {"max_abs_int24", stats.max_abs_int24},
+        {"max_abs_q24", stats.max_abs_q24},
+        {"clip_count", stats.clip_count},
+        {"hist_log2_abs_min_exp", llama_decode_awq_int24_thread_stats::hist_log2_min_exp},
+        {"hist_log2_abs_max_exp", llama_decode_awq_int24_thread_stats::hist_log2_max_exp},
+        {"hist_log2_abs_layout", "zero,lt_min_exp,floor_log2_min_to_max,gt_max_exp"},
+        {"scaled_act_abs_hist", stats.scaled_act_abs_hist},
+        {"scalar_err_abs_hist", stats.scalar_err_abs_hist},
+        {"output_err_abs_hist", stats.output_err_abs_hist},
+        {"ref_abs_hist", stats.ref_abs_hist},
+    };
+    fout << summary.dump() << "\n";
+
+    const size_t dump_limit = llama_text_decode_awq_int24_dump_limit();
+    for (const auto & sample : stats.samples) {
+        if (sample_count >= dump_limit) {
+            break;
+        }
+        json item = {
+            {"schema", "aicas.text_lm_head_w8a16_int24_diag.v1"},
+            {"kind", "sample"},
+            {"thread", ith},
+            {"frac_bits", frac_bits},
+            {"col", sample.col},
+            {"row", sample.row},
+            {"ref", sample.ref},
+            {"int24", sample.int24},
+            {"err", sample.err},
+        };
+        fout << item.dump() << "\n";
+        ++sample_count;
+    }
+}
+
+struct llama_text_lm_head_w16a16_userdata {
+    int64_t tile = 128;
+};
+
+struct llama_text_lm_head_w8a16_userdata {
+    std::mutex mutex;
+    const void * weight_data = nullptr;
+    int64_t tile = 128;
+    int64_t cached_tile = 0;
+    int64_t k = 0;
+    int64_t out_channels = 0;
+    int64_t n_tiles = 0;
+    std::vector<int8_t> qweight;
+    std::vector<uint16_t> scales;
+};
+
+struct llama_text_token_embd_w8a16_userdata {
+    std::mutex mutex;
+    const void * weight_data = nullptr;
+    int64_t group = 64;
+    int64_t cached_group = 0;
+    int64_t n_embd = 0;
+    int64_t vocab = 0;
+    int64_t n_groups = 0;
+    std::vector<int8_t> qweight;
+    std::vector<uint16_t> scales;
+};
+
+static void llama_compute_text_lm_head_w16a16_dp128_mul_mat(
         struct ggml_tensor * dst,
-        char * dst_col,
-        int64_t i,
-        float value) {
-    switch (dst->type) {
-        case GGML_TYPE_F32:
-            ((float *) dst_col)[i] = value;
-            break;
-        case GGML_TYPE_F16:
-            ((ggml_fp16_t *) dst_col)[i] = ggml_fp32_to_fp16(value);
-            break;
-        default:
-            GGML_ABORT("unsupported AICAS text decode AWQ destination tensor type");
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * act,
+        const struct ggml_tensor * weight,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+
+    const auto * cfg = static_cast<const llama_text_lm_head_w16a16_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(act->type == GGML_TYPE_F16);
+    GGML_ASSERT(weight->type == GGML_TYPE_F16);
+    GGML_ASSERT(weight->ne[0] == act->ne[0]);
+    GGML_ASSERT(dst->ne[0] == weight->ne[1]);
+    GGML_ASSERT(dst->ne[1] == act->ne[1]);
+
+    const int64_t k = weight->ne[0];
+    const int64_t out_channels = weight->ne[1];
+    const int64_t n_cols = act->ne[1];
+    const int64_t tile = std::max<int64_t>(1, cfg->tile);
+    GGML_ASSERT(tile == 128);
+    const int64_t total_tasks = n_cols * out_channels;
+    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
+    const int64_t task_begin = ith * tasks_per_thread;
+    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
+    if (task_begin >= task_end) {
+        return;
+    }
+
+    for (int64_t task = task_begin; task < task_end; ++task) {
+        const int64_t col = task / out_channels;
+        const int64_t row = task % out_channels;
+        const auto * act_col = (const ggml_fp16_t *) ((const char *) act->data + col * act->nb[1]);
+        const auto * w_row = (const ggml_fp16_t *) ((const char *) weight->data + row * weight->nb[1]);
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+
+        uint16_t acc = 0;
+        bool have_acc = false;
+        for (int64_t start = 0; start < k; start += tile) {
+            const int64_t end = std::min(k, start + tile);
+            const int valid = (int) (end - start);
+            const uint16_t tile_sum = aicas_rtl_dp128_tile(
+                    [&](int lane) {
+                        return aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(w_row[start + lane]));
+                    },
+                    [&](int lane) {
+                        return aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(act_col[start + lane]));
+                    },
+                    valid);
+            acc = have_acc ? aicas_rtl_fp16_add(acc, tile_sum) : tile_sum;
+            have_acc = true;
+        }
+
+        out_col[row] = aicas_rtl_fp16_to_f32(acc);
+    }
+}
+
+static void llama_lm_head_w8a16_prepare_cache(
+        llama_text_lm_head_w8a16_userdata * cfg,
+        const struct ggml_tensor * weight) {
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(weight->type == GGML_TYPE_F16);
+
+    const int64_t tile = std::max<int64_t>(1, std::min<int64_t>(128, cfg->tile));
+    const int64_t k = weight->ne[0];
+    const int64_t out_channels = weight->ne[1];
+    const int64_t n_tiles = (k + tile - 1) / tile;
+
+    std::lock_guard<std::mutex> lock(cfg->mutex);
+    if (cfg->weight_data == weight->data &&
+        cfg->cached_tile == tile &&
+        cfg->k == k &&
+        cfg->out_channels == out_channels &&
+        cfg->n_tiles == n_tiles &&
+        !cfg->qweight.empty()) {
+        return;
+    }
+
+    cfg->weight_data = weight->data;
+    cfg->cached_tile = tile;
+    cfg->k = k;
+    cfg->out_channels = out_channels;
+    cfg->n_tiles = n_tiles;
+    cfg->qweight.assign((size_t) out_channels * (size_t) n_tiles * (size_t) tile, 0);
+    cfg->scales.assign((size_t) out_channels * (size_t) n_tiles, 0);
+
+    for (int64_t row = 0; row < out_channels; ++row) {
+        const auto * w_row = (const ggml_fp16_t *) ((const char *) weight->data + row * weight->nb[1]);
+        for (int64_t t = 0; t < n_tiles; ++t) {
+            const int64_t start = t * tile;
+            const int64_t end = std::min<int64_t>(k, start + tile);
+            float amax = 0.0f;
+            for (int64_t i = start; i < end; ++i) {
+                const uint16_t bits = aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(w_row[i]));
+                amax = std::max(amax, std::fabs(aicas_rtl_fp16_to_f32(bits)));
+            }
+
+            const float d = amax / 127.0f;
+            const float id = d != 0.0f ? 1.0f / d : 0.0f;
+            cfg->scales[(size_t) row * (size_t) n_tiles + (size_t) t] =
+                aicas_rtl_fp16_bits(ggml_fp32_to_fp16(d));
+
+            int8_t * q_tile = cfg->qweight.data() +
+                ((size_t) row * (size_t) n_tiles + (size_t) t) * (size_t) tile;
+            for (int64_t lane = 0; lane < end - start; ++lane) {
+                const uint16_t bits = aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(w_row[start + lane]));
+                const float value = aicas_rtl_fp16_to_f32(bits);
+                int q = (int) std::round(value * id);
+                q = std::max(-127, std::min(127, q));
+                q_tile[lane] = (int8_t) q;
+            }
+        }
+    }
+}
+
+static void llama_compute_text_lm_head_w8a16_dp128_mul_mat(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * act,
+        const struct ggml_tensor * weight,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+
+    auto * cfg = static_cast<llama_text_lm_head_w8a16_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(act->type == GGML_TYPE_F16);
+    GGML_ASSERT(weight->type == GGML_TYPE_F16);
+    GGML_ASSERT(weight->ne[0] == act->ne[0]);
+    GGML_ASSERT(dst->ne[0] == weight->ne[1]);
+    GGML_ASSERT(dst->ne[1] == act->ne[1]);
+
+    llama_lm_head_w8a16_prepare_cache(cfg, weight);
+
+    const int64_t k = weight->ne[0];
+    const int64_t out_channels = weight->ne[1];
+    const int64_t n_cols = act->ne[1];
+    const int64_t tile = std::max<int64_t>(1, std::min<int64_t>(128, cfg->tile));
+    const int64_t n_tiles = (k + tile - 1) / tile;
+    GGML_ASSERT(cfg->cached_tile == tile);
+    GGML_ASSERT(cfg->k == k);
+    GGML_ASSERT(cfg->out_channels == out_channels);
+    GGML_ASSERT(cfg->n_tiles == n_tiles);
+    const bool output_int24 = llama_text_lm_head_w8a16_int24_enabled();
+    const std::string int24_diag_path = llama_text_lm_head_w8a16_int24_diag_path();
+    const bool diag_int24 = !int24_diag_path.empty();
+    const bool compute_int24 = output_int24 || diag_int24;
+    const int int24_frac_bits = llama_text_lm_head_w8a16_int24_frac_bits();
+    const size_t sample_limit = llama_text_decode_awq_int24_dump_limit();
+    llama_decode_awq_int24_thread_stats int24_stats;
+
+    static bool int24_logged = false;
+    if (compute_int24 && ith == 0 && !int24_logged) {
+        LLAMA_LOG_INFO("%s: AICAS lm_head W8A16 int24 %s enabled; frac_bits=%d diag=%s\n",
+                __func__, output_int24 ? "output" : "diagnostic", int24_frac_bits,
+                int24_diag_path.empty() ? "<none>" : int24_diag_path.c_str());
+        int24_logged = true;
+    }
+
+    const int64_t total_tasks = n_cols * out_channels;
+    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
+    const int64_t task_begin = ith * tasks_per_thread;
+    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
+    if (task_begin >= task_end) {
+        return;
+    }
+
+    for (int64_t task = task_begin; task < task_end; ++task) {
+        const int64_t col = task / out_channels;
+        const int64_t row = task % out_channels;
+        const auto * act_col = (const ggml_fp16_t *) ((const char *) act->data + col * act->nb[1]);
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
+
+        uint16_t acc = 0;
+        bool have_acc = false;
+        double acc_int24 = 0.0;
+        for (int64_t t = 0; t < n_tiles; ++t) {
+            const int64_t start = t * tile;
+            const int64_t end = std::min<int64_t>(k, start + tile);
+            const int valid = (int) (end - start);
+            const int8_t * q_tile = cfg->qweight.data() +
+                ((size_t) row * (size_t) n_tiles + (size_t) t) * (size_t) tile;
+            const uint16_t scale = cfg->scales[(size_t) row * (size_t) n_tiles + (size_t) t];
+            const uint16_t tile_sum = aicas_rtl_dp128_tile(
+                    [&](int lane) {
+                        return aicas_rtl_fp16_from_int9((int) q_tile[lane]);
+                    },
+                    [&](int lane) {
+                        return aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(act_col[start + lane]));
+                    },
+                    valid);
+            const uint16_t scaled = aicas_rtl_fp16_mul(tile_sum, scale);
+            acc = have_acc ? aicas_rtl_fp16_add(acc, scaled) : scaled;
+            have_acc = true;
+            if (compute_int24) {
+                const double scale_f = (double) aicas_rtl_fp16_to_f32(scale);
+                for (int lane = 0; lane < valid; ++lane) {
+                    const uint16_t act_bits = aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(act_col[start + lane]));
+                    const double scaled_act = (double) aicas_rtl_fp16_to_f32(act_bits) * scale_f;
+                    int32_t q24 = llama_decode_awq_quant_int24(scaled_act, int24_frac_bits, int24_stats.clip_count);
+                    if (diag_int24) {
+                        int24_stats.max_abs_q24 = std::max<int32_t>(int24_stats.max_abs_q24, std::abs(q24));
+                        int24_stats.update_scalar(scaled_act, q24, int24_frac_bits);
+                    }
+                    acc_int24 += (double) q24 * (double) q_tile[lane];
+                }
+            }
+        }
+
+        const float ref_out = aicas_rtl_fp16_to_f32(acc);
+        const float int24_out = compute_int24 ? (float) std::ldexp(acc_int24, -int24_frac_bits) : 0.0f;
+        if (diag_int24) {
+            int24_stats.update(ref_out, int24_out);
+            if (int24_stats.samples.size() < sample_limit) {
+                int24_stats.samples.push_back({
+                    /*.col =*/ col,
+                    /*.row =*/ row,
+                    /*.ref =*/ ref_out,
+                    /*.int24 =*/ int24_out,
+                    /*.err =*/ int24_out - ref_out,
+                });
+            }
+        }
+        out_col[row] = output_int24 ? int24_out : ref_out;
+    }
+
+    if (diag_int24) {
+        llama_lm_head_w8a16_int24_write_diag(ith, int24_frac_bits, tile, int24_stats);
+    }
+}
+
+static void llama_token_embd_w8a16_prepare_cache(
+        llama_text_token_embd_w8a16_userdata * cfg,
+        const struct ggml_tensor * weight) {
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(weight->type == GGML_TYPE_F16);
+
+    const int64_t group = std::max<int64_t>(1, std::min<int64_t>(128, cfg->group));
+    const int64_t n_embd = weight->ne[0];
+    const int64_t vocab = weight->ne[1];
+    const int64_t n_groups = (n_embd + group - 1) / group;
+
+    std::lock_guard<std::mutex> lock(cfg->mutex);
+    if (cfg->weight_data == weight->data &&
+        cfg->cached_group == group &&
+        cfg->n_embd == n_embd &&
+        cfg->vocab == vocab &&
+        cfg->n_groups == n_groups &&
+        !cfg->qweight.empty()) {
+        return;
+    }
+
+    cfg->weight_data = weight->data;
+    cfg->cached_group = group;
+    cfg->n_embd = n_embd;
+    cfg->vocab = vocab;
+    cfg->n_groups = n_groups;
+    cfg->qweight.assign((size_t) vocab * (size_t) n_groups * (size_t) group, 0);
+    cfg->scales.assign((size_t) vocab * (size_t) n_groups, 0);
+
+    for (int64_t token = 0; token < vocab; ++token) {
+        const auto * row = (const ggml_fp16_t *) ((const char *) weight->data + token * weight->nb[1]);
+        for (int64_t g = 0; g < n_groups; ++g) {
+            const int64_t start = g * group;
+            const int64_t end = std::min<int64_t>(n_embd, start + group);
+            float amax = 0.0f;
+            for (int64_t i = start; i < end; ++i) {
+                const uint16_t bits = aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(row[i]));
+                amax = std::max(amax, std::fabs(aicas_rtl_fp16_to_f32(bits)));
+            }
+
+            const float d = amax / 127.0f;
+            const float id = d != 0.0f ? 1.0f / d : 0.0f;
+            cfg->scales[(size_t) token * (size_t) n_groups + (size_t) g] =
+                aicas_rtl_fp16_bits(ggml_fp32_to_fp16(d));
+
+            int8_t * q_group = cfg->qweight.data() +
+                ((size_t) token * (size_t) n_groups + (size_t) g) * (size_t) group;
+            for (int64_t lane = 0; lane < end - start; ++lane) {
+                const uint16_t bits = aicas_rtl_fp16_zero_if_non_normal(aicas_rtl_fp16_bits(row[start + lane]));
+                const float value = aicas_rtl_fp16_to_f32(bits);
+                int q = (int) std::round(value * id);
+                q = std::max(-127, std::min(127, q));
+                q_group[lane] = (int8_t) q;
+            }
+        }
+    }
+}
+
+static void llama_compute_text_token_embd_w8a16_get_rows(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * out_template,
+        const struct ggml_tensor * weight,
+        const struct ggml_tensor * tokens,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(out_template);
+
+    auto * cfg = static_cast<llama_text_token_embd_w8a16_userdata *>(userdata);
+    GGML_ASSERT(cfg != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(weight->type == GGML_TYPE_F16);
+    GGML_ASSERT(tokens->type == GGML_TYPE_I32);
+    GGML_ASSERT(dst->ne[0] == weight->ne[0]);
+    GGML_ASSERT(dst->ne[1] == tokens->ne[0]);
+
+    llama_token_embd_w8a16_prepare_cache(cfg, weight);
+
+    const int64_t n_embd = weight->ne[0];
+    const int64_t vocab = weight->ne[1];
+    const int64_t n_tokens = tokens->ne[0];
+    const int64_t group = std::max<int64_t>(1, std::min<int64_t>(128, cfg->group));
+    const int64_t n_groups = (n_embd + group - 1) / group;
+    GGML_ASSERT(cfg->cached_group == group);
+    GGML_ASSERT(cfg->n_embd == n_embd);
+    GGML_ASSERT(cfg->vocab == vocab);
+    GGML_ASSERT(cfg->n_groups == n_groups);
+
+    const int64_t total_tasks = n_tokens * n_embd;
+    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
+    const int64_t task_begin = ith * tasks_per_thread;
+    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
+    if (task_begin >= task_end) {
+        return;
+    }
+
+    const int32_t * token_data = (const int32_t *) tokens->data;
+    for (int64_t task = task_begin; task < task_end; ++task) {
+        const int64_t token_idx = task / n_embd;
+        const int64_t dim = task % n_embd;
+        const int64_t token = token_data[token_idx];
+        GGML_ASSERT(token >= 0 && token < vocab);
+
+        const int64_t group_idx = dim / group;
+        const int64_t lane = dim - group_idx * group;
+        const int8_t * q_group = cfg->qweight.data() +
+            ((size_t) token * (size_t) n_groups + (size_t) group_idx) * (size_t) group;
+        const uint16_t scale = cfg->scales[(size_t) token * (size_t) n_groups + (size_t) group_idx];
+        const uint16_t value = aicas_rtl_fp16_mul(
+                aicas_rtl_fp16_from_int9((int) q_group[lane]),
+                scale);
+        auto * out_col = (float *) ((char *) dst->data + token_idx * dst->nb[1]);
+        out_col[dim] = aicas_rtl_fp16_to_f32(value);
     }
 }
 
@@ -1632,7 +4031,7 @@ static void llama_compute_text_decode_awq_mul_mat(
 
     const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
     GGML_ASSERT(cfg != nullptr);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
     GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
     GGML_ASSERT(c->type == GGML_TYPE_I8);
     GGML_ASSERT(cfg->scale_tensor != nullptr);
@@ -1663,6 +4062,24 @@ static void llama_compute_text_decode_awq_mul_mat(
         return;
     }
 
+    const bool accum_fp16 = llama_text_decode_awq_accum_mode_from_env() == llama_decode_awq_accum_mode::fp16;
+    const bool output_int24 = llama_text_decode_awq_int24_enabled();
+    const std::string int24_diag_path = llama_text_decode_awq_int24_diag_path();
+    const bool diag_int24 = !int24_diag_path.empty();
+    const bool compute_int24 = output_int24 || diag_int24;
+    const bool compute_ref = !output_int24 || diag_int24;
+    const int int24_frac_bits = llama_text_decode_awq_int24_frac_bits();
+    const size_t sample_limit = llama_text_decode_awq_int24_dump_limit();
+    llama_decode_awq_int24_thread_stats int24_stats;
+
+    static bool int24_logged = false;
+    if (compute_int24 && ith == 0 && !int24_logged) {
+        LLAMA_LOG_INFO("%s: AICAS decode AWQ int24 %s enabled; frac_bits=%d diag=%s\n",
+                __func__, output_int24 ? "output" : "diagnostic", int24_frac_bits,
+                int24_diag_path.empty() ? "<none>" : int24_diag_path.c_str());
+        int24_logged = true;
+    }
+
     int64_t cached_col = -1;
     std::vector<float> act_smooth(static_cast<size_t>(k));
 
@@ -1670,7 +4087,7 @@ static void llama_compute_text_decode_awq_mul_mat(
         const int64_t col = task / out_channels;
         const int64_t j   = task % out_channels;
         const char * act_col = (const char *) b->data + col * b->nb[1];
-        char * out_col = (char *) dst->data + col * dst->nb[1];
+        float * out_col = (float *) ((char *) dst->data + col * dst->nb[1]);
 
         if (cached_col != col) {
             for (int64_t i = 0; i < k; ++i) {
@@ -1684,725 +4101,61 @@ static void llama_compute_text_decode_awq_mul_mat(
         const float * zero_row  = zero_data + j * cfg->zero_tensor->ne[0];
 
         float acc = 0.0f;
+        ggml_fp16_t acc_fp16 = ggml_fp32_to_fp16(0.0f);
+        double acc_int24 = 0.0;
         const int64_t groups = cfg->zero_tensor->ne[0];
         for (int64_t g = 0; g < groups; ++g) {
             const int64_t start = g * cfg->group_size;
             const int64_t end = std::min(k, start + cfg->group_size);
             const float group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
             const float group_zero = zero_row[g];
+            if (diag_int24 && std::fabs(group_zero - std::round(group_zero)) > 1.0e-6f) {
+                ++int24_stats.non_integer_zero_count;
+            }
             for (int64_t i = start; i < end; ++i) {
                 const uint8_t packed = w_row[i / 2];
                 const float q = (float) llama_decode_awq_q4(packed, i);
-                const float w = (q - group_zero) * group_scale;
-                acc += act_smooth[static_cast<size_t>(i)] * w;
-            }
-        }
-        llama_decode_awq_write_dst(dst, out_col, j, acc);
-    }
-}
-
-static std::vector<float> llama_compute_text_decode_awq_reference_f32(
-        const struct ggml_tensor * b,
-        const struct ggml_tensor * c,
-        const llama_aicas_text_decode_awq_tensor * cfg) {
-    const int64_t k = cfg->in_features;
-    const int64_t out_channels = c->ne[1];
-    const int64_t n_cols = b->ne[1];
-    std::vector<float> result(static_cast<size_t>(n_cols * out_channels), 0.0f);
-    std::vector<float> act_smooth(static_cast<size_t>(k));
-
-    for (int64_t col = 0; col < n_cols; ++col) {
-        const char * act_col = (const char *) b->data + col * b->nb[1];
-        for (int64_t i = 0; i < k; ++i) {
-            const float act_value = llama_decode_awq_read_act(b, act_col, i);
-            act_smooth[static_cast<size_t>(i)] = act_value / cfg->smooth_scale[static_cast<size_t>(i)];
-        }
-
-        for (int64_t j = 0; j < out_channels; ++j) {
-            const uint8_t * w_row = (const uint8_t *) ((const char *) c->data + j * c->nb[1]);
-            const float * zero_row  = (const float *) cfg->zero_tensor->data + j * cfg->zero_tensor->ne[0];
-            float acc = 0.0f;
-            const int64_t groups = cfg->zero_tensor->ne[0];
-            for (int64_t g = 0; g < groups; ++g) {
-                const int64_t start = g * cfg->group_size;
-                const int64_t end = std::min(k, start + cfg->group_size);
-                const float group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
-                const float group_zero = zero_row[g];
-                for (int64_t i = start; i < end; ++i) {
-                    const uint8_t packed = w_row[i / 2];
-                    const float q = (float) llama_decode_awq_q4(packed, i);
+                if (compute_ref) {
                     const float w = (q - group_zero) * group_scale;
-                    acc += act_smooth[static_cast<size_t>(i)] * w;
+                    const float product = act_smooth[static_cast<size_t>(i)] * w;
+                    if (accum_fp16) {
+                        acc_fp16 = ggml_fp32_to_fp16(ggml_fp16_to_fp32(acc_fp16) + product);
+                    } else {
+                        acc += product;
+                    }
                 }
-            }
-            result[static_cast<size_t>(col * out_channels + j)] = acc;
-        }
-    }
-    return result;
-}
-
-static float llama_decode_awq_read_output_f32(
-        const void * data,
-        int type,
-        int64_t dst_nb1,
-        int64_t col,
-        int64_t row) {
-    const char * col_ptr = static_cast<const char *>(data) + col * dst_nb1;
-    if (type == GGML_TYPE_F16) {
-        return ggml_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t *>(col_ptr)[row]);
-    }
-    return reinterpret_cast<const float *>(col_ptr)[row];
-}
-
-struct llama_decode_awq_compare_stats {
-    int64_t count = 0;
-    int64_t bad = 0;
-    int64_t first_bad = -1;
-    float first_ref = 0.0f;
-    float first_got = 0.0f;
-    double max_abs = 0.0;
-    double max_rel = 0.0;
-};
-
-static llama_decode_awq_compare_stats llama_decode_awq_compare_vectors(
-        const std::vector<float> & ref,
-        const std::vector<float> & got,
-        double atol,
-        double rtol) {
-    llama_decode_awq_compare_stats stats;
-    stats.count = static_cast<int64_t>(std::min(ref.size(), got.size()));
-    for (int64_t i = 0; i < stats.count; ++i) {
-        const double r = ref[static_cast<size_t>(i)];
-        const double g = got[static_cast<size_t>(i)];
-        const double abs_err = std::fabs(g - r);
-        const double rel_err = abs_err / std::max(1.0, std::fabs(r));
-        stats.max_abs = std::max(stats.max_abs, abs_err);
-        stats.max_rel = std::max(stats.max_rel, rel_err);
-        if (abs_err > atol + rtol * std::fabs(r)) {
-            ++stats.bad;
-            if (stats.first_bad < 0) {
-                stats.first_bad = i;
-                stats.first_ref = static_cast<float>(r);
-                stats.first_got = static_cast<float>(g);
-            }
-        }
-    }
-    return stats;
-}
-
-static std::string llama_decode_awq_json_escape(const char * text) {
-    std::ostringstream out;
-    if (text == nullptr) {
-        return "";
-    }
-    for (const char * p = text; *p; ++p) {
-        switch (*p) {
-            case '\\': out << "\\\\"; break;
-            case '"':  out << "\\\""; break;
-            case '\n': out << "\\n"; break;
-            case '\r': out << "\\r"; break;
-            case '\t': out << "\\t"; break;
-            default:   out << *p; break;
-        }
-    }
-    return out.str();
-}
-
-static void llama_decode_awq_write_compare_record(
-        const char * op_name,
-        int64_t out_channels,
-        int64_t k,
-        int64_t n_cols,
-        bool npu_ok,
-        bool sim_ok,
-        const llama_decode_awq_compare_stats & cpu_vs_npu,
-        const llama_decode_awq_compare_stats & cpu_vs_sim,
-        const llama_decode_awq_compare_stats & sim_vs_npu) {
-    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
-    const char * path_env = std::getenv("AICAS_TEXT_DECODE_AWQ_COMPARE_JSONL");
-    std::string path;
-    if (path_env != nullptr && path_env[0] != '\0') {
-        path = path_env;
-    } else if (dir != nullptr && dir[0] != '\0') {
-        path = dir;
-        if (path.back() != '/') {
-            path += '/';
-        }
-        path += "decode_awq_compare.jsonl";
-    } else {
-        path = "decode_awq_compare.jsonl";
-    }
-
-    static std::mutex mutex;
-    std::lock_guard<std::mutex> lock(mutex);
-    std::ofstream out(path, std::ios::app);
-    if (!out.good()) {
-        return;
-    }
-
-    auto write_stats = [&out](const char * name, const llama_decode_awq_compare_stats & s) {
-        out << ",\"" << name << "\":{"
-            << "\"count\":" << s.count
-            << ",\"bad\":" << s.bad
-            << ",\"first_bad\":" << s.first_bad
-            << ",\"first_ref\":" << s.first_ref
-            << ",\"first_got\":" << s.first_got
-            << ",\"max_abs\":" << s.max_abs
-            << ",\"max_rel\":" << s.max_rel
-            << "}";
-    };
-
-    out << "{\"profile_kind\":\"aicas_decode_awq_compare\""
-        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
-        << ",\"dims\":{\"m\":" << out_channels << ",\"k\":" << k << ",\"n_cols\":" << n_cols << "}"
-        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
-        << ",\"sim_ok\":" << (sim_ok ? "true" : "false");
-    write_stats("cpu_vs_npu", cpu_vs_npu);
-    write_stats("cpu_vs_sim", cpu_vs_sim);
-    write_stats("sim_vs_npu", sim_vs_npu);
-    out << "}\n";
-}
-
-static void llama_compute_text_lm_head_w16a16(
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * a,
-        const struct ggml_tensor * b,
-        const struct ggml_tensor * c,
-        int ith,
-        int nth,
-        void * userdata) {
-    GGML_UNUSED(a);
-    GGML_UNUSED(userdata);
-
-    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
-    GGML_ASSERT(b->type == GGML_TYPE_F32 || b->type == GGML_TYPE_F16);
-    GGML_ASSERT(c->type == GGML_TYPE_F16);
-
-    const int64_t k = c->ne[0];
-    const int64_t out_channels = c->ne[1];
-    const int64_t n_cols = b->ne[1];
-    GGML_ASSERT(b->ne[0] == k);
-
-    const int64_t total_tasks = n_cols * out_channels;
-    const int64_t tasks_per_thread = (total_tasks + nth - 1) / nth;
-    const int64_t task_begin = ith * tasks_per_thread;
-    const int64_t task_end = std::min(total_tasks, task_begin + tasks_per_thread);
-    if (task_begin >= task_end) {
-        return;
-    }
-
-    for (int64_t task = task_begin; task < task_end; ++task) {
-        const int64_t col = task / out_channels;
-        const int64_t row = task % out_channels;
-        const char * act_col = (const char *) b->data + col * b->nb[1];
-        const char * weight_row = (const char *) c->data + row * c->nb[1];
-        float acc = 0.0f;
-        for (int64_t i = 0; i < k; ++i) {
-            const float act_value = llama_decode_awq_read_act(b, act_col, i);
-            const float weight_value = ggml_fp16_to_fp32(*(const ggml_fp16_t *) (weight_row + i * c->nb[0]));
-            acc += act_value * weight_value;
-        }
-        llama_decode_awq_write_dst(dst, (char *) dst->data + col * dst->nb[1], row, acc);
-    }
-}
-
-static std::vector<float> llama_compute_text_lm_head_w16a16_reference_f32(
-        const struct ggml_tensor * b,
-        const struct ggml_tensor * c) {
-    const int64_t k = c->ne[0];
-    const int64_t out_channels = c->ne[1];
-    const int64_t n_cols = b->ne[1];
-    std::vector<float> result(static_cast<size_t>(n_cols * out_channels), 0.0f);
-    for (int64_t col = 0; col < n_cols; ++col) {
-        const char * act_col = (const char *) b->data + col * b->nb[1];
-        for (int64_t row = 0; row < out_channels; ++row) {
-            const char * weight_row = (const char *) c->data + row * c->nb[1];
-            float acc = 0.0f;
-            for (int64_t i = 0; i < k; ++i) {
-                const float act_value = llama_decode_awq_read_act(b, act_col, i);
-                const float weight_value = ggml_fp16_to_fp32(*(const ggml_fp16_t *) (weight_row + i * c->nb[0]));
-                acc += act_value * weight_value;
-            }
-            result[static_cast<size_t>(col * out_channels + row)] = acc;
-        }
-    }
-    return result;
-}
-
-static void llama_lm_head_w16a16_write_compare_record(
-        const char * op_name,
-        int64_t out_channels,
-        int64_t k,
-        int64_t n_cols,
-        bool npu_ok,
-        const llama_decode_awq_compare_stats & cpu_vs_npu) {
-    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
-    const char * path_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_JSONL");
-    std::string path;
-    if (path_env != nullptr && path_env[0] != '\0') {
-        path = path_env;
-    } else if (dir != nullptr && dir[0] != '\0') {
-        path = dir;
-        if (path.back() != '/') {
-            path += '/';
-        }
-        path += "lm_head_w16a16_compare.jsonl";
-    } else {
-        path = "lm_head_w16a16_compare.jsonl";
-    }
-
-    static std::mutex mutex;
-    std::lock_guard<std::mutex> lock(mutex);
-    std::ofstream out(path, std::ios::app);
-    if (!out.good()) {
-        return;
-    }
-    out << "{\"profile_kind\":\"aicas_lm_head_w16a16_compare\""
-        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
-        << ",\"dims\":{\"m\":" << out_channels << ",\"k\":" << k << ",\"n_cols\":" << n_cols << "}"
-        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
-        << ",\"cpu_vs_npu\":{"
-        << "\"count\":" << cpu_vs_npu.count
-        << ",\"bad\":" << cpu_vs_npu.bad
-        << ",\"first_bad\":" << cpu_vs_npu.first_bad
-        << ",\"first_ref\":" << cpu_vs_npu.first_ref
-        << ",\"first_got\":" << cpu_vs_npu.first_got
-        << ",\"max_abs\":" << cpu_vs_npu.max_abs
-        << ",\"max_rel\":" << cpu_vs_npu.max_rel
-        << "}}\n";
-}
-
-#ifdef GGML_USE_NPU
-static void llama_compute_text_lm_head_w16a16_npu(
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * a,
-        const struct ggml_tensor * b,
-        const struct ggml_tensor * c,
-        int ith,
-        int nth,
-        void * userdata) {
-    GGML_UNUSED(a);
-    GGML_UNUSED(nth);
-    GGML_UNUSED(userdata);
-
-    if (ith != 0) {
-        return;
-    }
-
-    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
-    GGML_ASSERT(b->type == GGML_TYPE_F16 || b->type == GGML_TYPE_F32);
-    GGML_ASSERT(c->type == GGML_TYPE_F16);
-    const bool compare = llama_npu_text_lm_head_w16a16_compare_take(c->name);
-    std::vector<float> cpu_ref;
-    if (compare) {
-        cpu_ref = llama_compute_text_lm_head_w16a16_reference_f32(b, c);
-    }
-
-    const bool ok = ggml_backend_npu_decode_w16a16_gemv_ex(
-            c->name,
-            c->data,
-            c->ne[0],
-            c->ne[1],
-            c->nb[0],
-            c->nb[1],
-            b->data,
-            (int) b->type,
-            b->nb[0],
-            b->nb[1],
-            b->ne[1],
-            dst->data,
-            (int) dst->type,
-            dst->nb[1]);
-
-    if (compare) {
-        std::vector<float> npu_out(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
-        if (ok) {
-            for (int64_t col = 0; col < b->ne[1]; ++col) {
-                for (int64_t row = 0; row < c->ne[1]; ++row) {
-                    npu_out[static_cast<size_t>(col * c->ne[1] + row)] =
-                        llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], col, row);
+                if (compute_int24) {
+                    const double scaled_act = (double) act_smooth[static_cast<size_t>(i)] * (double) group_scale;
+                    int32_t q24 = llama_decode_awq_quant_int24(scaled_act, int24_frac_bits, int24_stats.clip_count);
+                    if (diag_int24) {
+                        int24_stats.max_abs_q24 = std::max<int32_t>(int24_stats.max_abs_q24, std::abs(q24));
+                        int24_stats.update_scalar(scaled_act, q24, int24_frac_bits);
+                    }
+                    acc_int24 += (double) q24 * ((double) q - (double) group_zero);
                 }
             }
         }
-        const double atol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_ATOL", 8.0e-2);
-        const double rtol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_LM_HEAD_W16A16_COMPARE_RTOL", 3.0e-2);
-        const llama_decode_awq_compare_stats cpu_vs_npu =
-            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
-        llama_lm_head_w16a16_write_compare_record(c->name, c->ne[1], c->ne[0], b->ne[1], ok, cpu_vs_npu);
-    }
-
-    if (!ok) {
-        llama_compute_text_lm_head_w16a16(dst, a, b, c, 0, 1, userdata);
-    }
-}
-
-static void llama_compute_text_decode_awq_mul_mat_npu(
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * a,
-        const struct ggml_tensor * b,
-        const struct ggml_tensor * c,
-        int ith,
-        int nth,
-        void * userdata) {
-    GGML_UNUSED(a);
-    GGML_UNUSED(nth);
-
-    if (ith != 0) {
-        return;
-    }
-
-    const auto * cfg = static_cast<const llama_aicas_text_decode_awq_tensor *>(userdata);
-    GGML_ASSERT(cfg != nullptr);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
-    GGML_ASSERT(cfg->scale_tensor != nullptr);
-    GGML_ASSERT(cfg->zero_tensor != nullptr);
-
-    const bool compare = llama_npu_text_decode_awq_compare_take(c->name);
-    std::vector<float> cpu_ref;
-    std::vector<float> sim_ref;
-    bool sim_ok = false;
-    if (compare) {
-        cpu_ref = llama_compute_text_decode_awq_reference_f32(b, c, cfg);
-        sim_ref.assign(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
-        sim_ok = ggml_backend_npu_decode_w4a16_simulate_ex(
-                c->name,
-                c->data,
-                cfg->packed_in_features(),
-                c->ne[1],
-                c->nb[1],
-                cfg->scale_tensor->data,
-                (int) cfg->scale_tensor->type,
-                cfg->scale_tensor->nb[0],
-                cfg->scale_tensor->nb[1],
-                cfg->zero_tensor->data,
-                (int) cfg->zero_tensor->type,
-                cfg->zero_tensor->nb[0],
-                cfg->zero_tensor->nb[1],
-                b->data,
-                (int) b->type,
-                b->nb[0],
-                b->nb[1],
-                cfg->smooth_scale.data(),
-                cfg->in_features,
-                b->ne[1],
-                sim_ref.data(),
-                GGML_TYPE_F32,
-                c->ne[1] * (int64_t) sizeof(float));
-    }
-
-    const bool ok = ggml_backend_npu_decode_w4a16_gemv_ex(
-            c->name,
-            c->data,
-            cfg->packed_in_features(),
-            c->ne[1],
-            c->nb[1],
-            cfg->scale_tensor->data,
-            (int) cfg->scale_tensor->type,
-            cfg->scale_tensor->nb[0],
-            cfg->scale_tensor->nb[1],
-            cfg->zero_tensor->data,
-            (int) cfg->zero_tensor->type,
-            cfg->zero_tensor->nb[0],
-            cfg->zero_tensor->nb[1],
-            b->data,
-            (int) b->type,
-            b->nb[0],
-            b->nb[1],
-            cfg->smooth_scale.data(),
-            cfg->in_features,
-            b->ne[1],
-            dst->data,
-            (int) dst->type,
-            dst->nb[1]);
-
-    if (compare) {
-        std::vector<float> npu_out(static_cast<size_t>(b->ne[1] * c->ne[1]), 0.0f);
-        if (ok) {
-            for (int64_t col = 0; col < b->ne[1]; ++col) {
-                for (int64_t row = 0; row < c->ne[1]; ++row) {
-                    npu_out[static_cast<size_t>(col * c->ne[1] + row)] =
-                        llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], col, row);
-                }
+        const float ref_out = compute_ref ? (accum_fp16 ? ggml_fp16_to_fp32(acc_fp16) : acc) : 0.0f;
+        const float int24_out = compute_int24 ? (float) std::ldexp(acc_int24, -int24_frac_bits) : 0.0f;
+        if (diag_int24) {
+            int24_stats.update(ref_out, int24_out);
+            if (int24_stats.samples.size() < sample_limit) {
+                int24_stats.samples.push_back({
+                    /*.col =*/ col,
+                    /*.row =*/ j,
+                    /*.ref =*/ ref_out,
+                    /*.int24 =*/ int24_out,
+                    /*.err =*/ int24_out - ref_out,
+                });
             }
         }
-        const double atol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_DECODE_AWQ_COMPARE_ATOL", 3.0e-2);
-        const double rtol = llama_npu_text_decode_awq_compare_threshold("AICAS_TEXT_DECODE_AWQ_COMPARE_RTOL", 3.0e-2);
-        const llama_decode_awq_compare_stats cpu_vs_npu =
-            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
-        const llama_decode_awq_compare_stats cpu_vs_sim =
-            sim_ok ? llama_decode_awq_compare_vectors(cpu_ref, sim_ref, atol, rtol) : llama_decode_awq_compare_stats{};
-        const llama_decode_awq_compare_stats sim_vs_npu =
-            (ok && sim_ok) ? llama_decode_awq_compare_vectors(sim_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
-        llama_decode_awq_write_compare_record(
-                c->name,
-                c->ne[1],
-                cfg->in_features,
-                b->ne[1],
-                ok,
-                sim_ok,
-                cpu_vs_npu,
-                cpu_vs_sim,
-                sim_vs_npu);
+        out_col[j] = output_int24 ? int24_out : ref_out;
     }
 
-    if (!ok) {
-        llama_compute_text_decode_awq_mul_mat(dst, a, b, c, 0, 1, userdata);
+    if (diag_int24) {
+        llama_decode_awq_int24_write_diag(cfg, ith, int24_frac_bits, accum_fp16, output_int24, int24_stats);
     }
 }
-
-struct llama_decode_swiglu_ffn_npu_userdata {
-    const llama_aicas_text_decode_awq_tensor * gate = nullptr;
-    const llama_aicas_text_decode_awq_tensor * up = nullptr;
-    const llama_aicas_text_decode_awq_tensor * down = nullptr;
-};
-
-static ggml_npu_decode_awq_view llama_make_decode_awq_npu_view(const llama_aicas_text_decode_awq_tensor * cfg) {
-    ggml_npu_decode_awq_view view = {};
-    view.weight_name = ggml_get_name(cfg->quant_tensor);
-    view.q4_data = cfg->quant_tensor->data;
-    view.packed_k = cfg->packed_in_features();
-    view.out_channels = cfg->quant_tensor->ne[1];
-    view.q4_nb1 = cfg->quant_tensor->nb[1];
-    view.scale_data = cfg->scale_tensor->data;
-    view.scale_type = (int) cfg->scale_tensor->type;
-    view.scale_nb0 = cfg->scale_tensor->nb[0];
-    view.scale_nb1 = cfg->scale_tensor->nb[1];
-    view.zero_data = cfg->zero_tensor->data;
-    view.zero_type = (int) cfg->zero_tensor->type;
-    view.zero_nb0 = cfg->zero_tensor->nb[0];
-    view.zero_nb1 = cfg->zero_tensor->nb[1];
-    view.smooth_scale = cfg->smooth_scale.data();
-    view.smooth_scale_len = cfg->smooth_scale.size();
-    view.k = cfg->in_features;
-    return view;
-}
-
-static bool llama_decode_awq_cfg_can_use_w4a16_npu(
-        const llama_aicas_text_decode_awq_tensor * cfg,
-        int64_t in_features) {
-    return cfg != nullptr &&
-        cfg->enabled &&
-        cfg->policy == "Q4_AWQ" &&
-        cfg->group_size == 128 &&
-        cfg->quant_tensor != nullptr &&
-        cfg->scale_tensor != nullptr &&
-        cfg->zero_tensor != nullptr &&
-        cfg->quant_tensor->type == GGML_TYPE_I8 &&
-        cfg->in_features == in_features &&
-        cfg->packed_in_features() == cfg->quant_tensor->ne[0] &&
-        cfg->has_valid_smooth_config() &&
-        cfg->has_valid_group_params(cfg->quant_tensor->ne[1]);
-}
-
-static std::vector<float> llama_compute_text_decode_awq_from_f32_vector(
-        const std::vector<float> & act,
-        const llama_aicas_text_decode_awq_tensor * cfg) {
-    const int64_t k = cfg->in_features;
-    const int64_t out_channels = cfg->quant_tensor->ne[1];
-    std::vector<float> result(static_cast<size_t>(out_channels), 0.0f);
-    std::vector<float> act_smooth(static_cast<size_t>(k));
-    for (int64_t i = 0; i < k; ++i) {
-        act_smooth[static_cast<size_t>(i)] =
-            act[static_cast<size_t>(i)] / cfg->smooth_scale[static_cast<size_t>(i)];
-    }
-
-    for (int64_t j = 0; j < out_channels; ++j) {
-        const uint8_t * w_row = (const uint8_t *) ((const char *) cfg->quant_tensor->data + j * cfg->quant_tensor->nb[1]);
-        const float * zero_row = (const float *) cfg->zero_tensor->data + j * cfg->zero_tensor->ne[0];
-        float acc = 0.0f;
-        const int64_t groups = cfg->zero_tensor->ne[0];
-        for (int64_t g = 0; g < groups; ++g) {
-            const int64_t start = g * cfg->group_size;
-            const int64_t end = std::min(k, start + cfg->group_size);
-            const float group_scale = llama_decode_awq_read_scale(cfg->scale_tensor, j, g);
-            const float group_zero = zero_row[g];
-            for (int64_t i = start; i < end; ++i) {
-                const uint8_t packed = w_row[i / 2];
-                const float q = (float) llama_decode_awq_q4(packed, i);
-                const float w = (q - group_zero) * group_scale;
-                acc += act_smooth[static_cast<size_t>(i)] * w;
-            }
-        }
-        result[static_cast<size_t>(j)] = acc;
-    }
-    return result;
-}
-
-static void llama_compute_text_decode_swiglu_ffn_cpu_fallback(
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * act,
-        const llama_decode_swiglu_ffn_npu_userdata * cfg) {
-    const std::vector<float> gate = llama_compute_text_decode_awq_reference_f32(act, cfg->gate->quant_tensor, cfg->gate);
-    const std::vector<float> up = llama_compute_text_decode_awq_reference_f32(act, cfg->up->quant_tensor, cfg->up);
-    std::vector<float> swiglu(gate.size());
-    for (size_t i = 0; i < gate.size(); ++i) {
-        const float x = gate[i];
-        swiglu[i] = (x / (1.0f + std::exp(-x))) * up[i];
-    }
-    const std::vector<float> down = llama_compute_text_decode_awq_from_f32_vector(swiglu, cfg->down);
-    char * out_col = (char *) dst->data;
-    for (int64_t row = 0; row < cfg->down->quant_tensor->ne[1]; ++row) {
-        llama_decode_awq_write_dst(dst, out_col, row, down[static_cast<size_t>(row)]);
-    }
-}
-
-static std::vector<float> llama_compute_text_decode_swiglu_ffn_reference_f32(
-        const struct ggml_tensor * act,
-        const llama_decode_swiglu_ffn_npu_userdata * cfg) {
-    const std::vector<float> gate = llama_compute_text_decode_awq_reference_f32(act, cfg->gate->quant_tensor, cfg->gate);
-    const std::vector<float> up = llama_compute_text_decode_awq_reference_f32(act, cfg->up->quant_tensor, cfg->up);
-    std::vector<float> swiglu(gate.size());
-    for (size_t i = 0; i < gate.size(); ++i) {
-        const float x = gate[i];
-        swiglu[i] = (x / (1.0f + std::exp(-x))) * up[i];
-    }
-    return llama_compute_text_decode_awq_from_f32_vector(swiglu, cfg->down);
-}
-
-static void llama_decode_swiglu_ffn_write_compare_record(
-        const char * op_name,
-        int64_t out_channels,
-        int64_t k,
-        int64_t hidden,
-        bool npu_ok,
-        const llama_decode_awq_compare_stats & cpu_vs_npu) {
-    const char * dir = std::getenv("AICAS_TEXT_DECODE_AWQ_DUMP_DIR");
-    const char * path_env = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_JSONL");
-    std::string path;
-    if (path_env != nullptr && path_env[0] != '\0') {
-        path = path_env;
-    } else if (dir != nullptr && dir[0] != '\0') {
-        path = dir;
-        if (path.back() != '/') {
-            path += '/';
-        }
-        path += "decode_swiglu_ffn_compare.jsonl";
-    } else {
-        path = "decode_swiglu_ffn_compare.jsonl";
-    }
-
-    static std::mutex mutex;
-    std::lock_guard<std::mutex> lock(mutex);
-    std::ofstream out(path, std::ios::app);
-    if (!out.good()) {
-        return;
-    }
-    out << "{\"profile_kind\":\"aicas_decode_swiglu_ffn_compare\""
-        << ",\"op_name\":\"" << llama_decode_awq_json_escape(op_name).c_str() << "\""
-        << ",\"dims\":{\"m\":" << out_channels
-        << ",\"k\":" << k
-        << ",\"hidden\":" << hidden
-        << ",\"n_cols\":1}"
-        << ",\"npu_ok\":" << (npu_ok ? "true" : "false")
-        << ",\"cpu_vs_npu\":{"
-        << "\"count\":" << cpu_vs_npu.count
-        << ",\"bad\":" << cpu_vs_npu.bad
-        << ",\"first_bad\":" << cpu_vs_npu.first_bad
-        << ",\"first_ref\":" << cpu_vs_npu.first_ref
-        << ",\"first_got\":" << cpu_vs_npu.first_got
-        << ",\"max_abs\":" << cpu_vs_npu.max_abs
-        << ",\"max_rel\":" << cpu_vs_npu.max_rel
-        << "}}\n";
-}
-
-static void llama_compute_text_decode_swiglu_ffn_npu(
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * out_template,
-        const struct ggml_tensor * act,
-        const struct ggml_tensor * gate_q,
-        int ith,
-        int nth,
-        void * userdata) {
-    GGML_UNUSED(nth);
-    GGML_UNUSED(out_template);
-    GGML_UNUSED(gate_q);
-
-    if (ith != 0) {
-        return;
-    }
-
-    const auto * cfg = static_cast<const llama_decode_swiglu_ffn_npu_userdata *>(userdata);
-    GGML_ASSERT(cfg != nullptr);
-    GGML_ASSERT(cfg->gate != nullptr && cfg->up != nullptr && cfg->down != nullptr);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32 || dst->type == GGML_TYPE_F16);
-    GGML_ASSERT(act->type == GGML_TYPE_F32 || act->type == GGML_TYPE_F16);
-
-    constexpr const char * op_name = "text_decode_awq_w4a16_swiglu_ffn_npu";
-    const bool compare = llama_npu_text_decode_awq_fused_ffn_compare_take(op_name);
-    std::vector<float> cpu_ref;
-    if (compare) {
-        cpu_ref = llama_compute_text_decode_swiglu_ffn_reference_f32(act, cfg);
-    }
-
-    const ggml_npu_decode_awq_view gate_view = llama_make_decode_awq_npu_view(cfg->gate);
-    const ggml_npu_decode_awq_view up_view = llama_make_decode_awq_npu_view(cfg->up);
-    const ggml_npu_decode_awq_view down_view = llama_make_decode_awq_npu_view(cfg->down);
-    const bool ok = ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
-            op_name,
-            &gate_view,
-            &up_view,
-            &down_view,
-            act->data,
-            (int) act->type,
-            act->nb[0],
-            act->nb[1],
-            dst->data,
-            (int) dst->type,
-            dst->nb[1]);
-    if (compare) {
-        std::vector<float> npu_out(static_cast<size_t>(cfg->down->quant_tensor->ne[1]), 0.0f);
-        if (ok) {
-            for (int64_t row = 0; row < cfg->down->quant_tensor->ne[1]; ++row) {
-                npu_out[static_cast<size_t>(row)] =
-                    llama_decode_awq_read_output_f32(dst->data, (int) dst->type, dst->nb[1], 0, row);
-            }
-        }
-        const double atol = llama_npu_text_decode_awq_compare_threshold(
-                "AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_ATOL", 2.0e-1);
-        const double rtol = llama_npu_text_decode_awq_compare_threshold(
-                "AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_RTOL", 5.0e-2);
-        const llama_decode_awq_compare_stats cpu_vs_npu =
-            ok ? llama_decode_awq_compare_vectors(cpu_ref, npu_out, atol, rtol) : llama_decode_awq_compare_stats{};
-        llama_decode_swiglu_ffn_write_compare_record(
-                op_name,
-                cfg->down->quant_tensor->ne[1],
-                cfg->gate->in_features,
-                cfg->gate->quant_tensor->ne[1],
-                ok,
-                cpu_vs_npu);
-    }
-    if (!ok) {
-        llama_compute_text_decode_swiglu_ffn_cpu_fallback(dst, act, cfg);
-    }
-}
-
-static llama_decode_swiglu_ffn_npu_userdata * llama_get_decode_swiglu_ffn_userdata(
-        const llama_aicas_text_decode_awq_tensor * gate,
-        const llama_aicas_text_decode_awq_tensor * up,
-        const llama_aicas_text_decode_awq_tensor * down) {
-    static std::mutex mutex;
-    static std::unordered_map<std::string, std::unique_ptr<llama_decode_swiglu_ffn_npu_userdata>> cache;
-
-    std::ostringstream key;
-    key << reinterpret_cast<uintptr_t>(gate) << ':'
-        << reinterpret_cast<uintptr_t>(up) << ':'
-        << reinterpret_cast<uintptr_t>(down);
-
-    std::lock_guard<std::mutex> lock(mutex);
-    auto it = cache.find(key.str());
-    if (it != cache.end()) {
-        return it->second.get();
-    }
-
-    auto item = std::make_unique<llama_decode_swiglu_ffn_npu_userdata>();
-    item->gate = gate;
-    item->up = up;
-    item->down = down;
-    llama_decode_swiglu_ffn_npu_userdata * ptr = item.get();
-    cache.emplace(key.str(), std::move(item));
-    return ptr;
-}
-#endif
 
 struct llama_text_activation_registry {
     std::string output_path;
@@ -3204,7 +4957,7 @@ ggml_tensor * llm_graph_context::build_cvec(
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur,
-          llm_graph_context::decode_awq_output_type decode_awq_out) const {
+          decode_awq_output_type /*decode_awq_out*/) const {
     cur = llama_maybe_observe_text_activation(ctx0, cur, w->name, cur->ne[1] > 1);
     ggml_tensor * res = nullptr;
 
@@ -3263,7 +5016,19 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         !is_prefill_gemm &&
         llama_text_decode_awq_enabled()) {
         auto it_awq = model.aicas_text_decode_awq_tensors.find(w->name);
-        if (model.aicas_text_decode_awq_enabled &&
+        const bool is_lm_head_weight =
+            std::strcmp(w->name, "output.weight") == 0 &&
+            w->type == GGML_TYPE_F16;
+        static bool lm_head_q4_disabled_logged = false;
+        if (is_lm_head_weight &&
+            it_awq != model.aicas_text_decode_awq_tensors.end() &&
+            !lm_head_q4_disabled_logged) {
+            LLAMA_LOG_INFO("%s: Q4_AWQ lm_head metadata found for output.weight but runtime path is disabled; using FP16/default or explicit W8/W16 hook\n",
+                    __func__);
+            lm_head_q4_disabled_logged = true;
+        }
+        if (!is_lm_head_weight &&
+            model.aicas_text_decode_awq_enabled &&
             it_awq != model.aicas_text_decode_awq_tensors.end()) {
             const auto & cfg = it_awq->second;
             ggml_tensor * cur_awq = cur;
@@ -3283,67 +5048,85 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 cfg.packed_in_features() == cfg.quant_tensor->ne[0] &&
                 cfg.has_valid_smooth_config() &&
                 cfg.has_valid_group_params(cfg.quant_tensor->ne[1])) {
-                const bool use_decode_npu =
-#ifdef GGML_USE_NPU
-                    llama_npu_text_decode_awq_enabled() && cfg.group_size == 128 && cur_awq->ne[1] == 1;
-#else
-                    false;
-#endif
-                const bool use_f16_output =
-                    decode_awq_out == decode_awq_output_type::f16_if_safe &&
-                    llama_text_decode_awq_output_f16_enabled();
-                ggml_tensor * out_template = ggml_new_tensor_2d(
-                        ctx0,
-                        use_f16_output ? GGML_TYPE_F16 : GGML_TYPE_F32,
-                        cfg.quant_tensor->ne[1],
-                        cur_awq->ne[1]);
+                ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, cfg.quant_tensor->ne[1], cur_awq->ne[1]);
                 res = ggml_map_custom3(
                     ctx0,
                     out_template,
                     cur_awq,
                     cfg.quant_tensor,
-#ifdef GGML_USE_NPU
-                    use_decode_npu ? llama_compute_text_decode_awq_mul_mat_npu : llama_compute_text_decode_awq_mul_mat,
-#else
                     llama_compute_text_decode_awq_mul_mat,
-#endif
-                    use_decode_npu ? 1 : GGML_N_TASKS_MAX,
+                    GGML_N_TASKS_MAX,
                     const_cast<llama_aicas_text_decode_awq_tensor *>(&cfg));
-                if (use_decode_npu) {
-                    ggml_set_name(res, use_f16_output ? "text_decode_awq_w4a16_gemv_npu_f16" : "text_decode_awq_w4a16_gemv_npu");
-                }
             }
         }
     }
 
-#ifdef GGML_USE_NPU
     if (res == nullptr &&
-            !is_prefill_gemm &&
-            llama_npu_text_lm_head_w16a16_enabled() &&
-            std::strcmp(w->name, "output.weight") == 0 &&
-            w->type == GGML_TYPE_F16 &&
-            w->ne[0] == cur->ne[0] &&
-            ubatch.n_tokens == 1 &&
-            cur->ne[1] == 1) {
+        !is_prefill_gemm &&
+        llama_text_lm_head_w8a16_dp128_enabled() &&
+        std::strcmp(w->name, "output.weight") == 0 &&
+        w->type == GGML_TYPE_F16 &&
+        (cur->type == GGML_TYPE_F16 || cur->type == GGML_TYPE_F32) &&
+        cur->ne[0] == w->ne[0]) {
         ggml_tensor * cur_lm_head = cur;
         if (cur_lm_head->type == GGML_TYPE_F32) {
             cur_lm_head = ggml_cast(ctx0, cur_lm_head, GGML_TYPE_F16);
-            ggml_set_name(cur_lm_head, "lm_head_w16a16_act_f16");
         }
-        if (cur_lm_head->type == GGML_TYPE_F16) {
-            ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
-            res = ggml_map_custom3(
-                    ctx0,
-                    out_template,
-                    cur_lm_head,
-                    w,
-                    llama_compute_text_lm_head_w16a16_npu,
-                    1,
-                    nullptr);
-            ggml_set_name(res, "text_lm_head_w16a16_gemv_npu");
+        ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
+        static llama_text_lm_head_w8a16_userdata lm_head_w8a16_cfg;
+        lm_head_w8a16_cfg.tile = llama_text_lm_head_w8a16_group();
+        static bool lm_head_w8a16_logged = false;
+        if (!lm_head_w8a16_logged) {
+            LLAMA_LOG_INFO("%s: using AICAS lm_head W8A16 DP128 path for output.weight; group=%" PRId64 "; Q4 lm_head disabled\n",
+                    __func__, lm_head_w8a16_cfg.tile);
+            lm_head_w8a16_logged = true;
         }
+        res = ggml_map_custom3(
+            ctx0,
+            out_template,
+            cur_lm_head,
+            w,
+            llama_compute_text_lm_head_w8a16_dp128_mul_mat,
+            GGML_N_TASKS_MAX,
+            &lm_head_w8a16_cfg);
+        ggml_set_name(res, "text_lm_head_w8a16_dp128");
     }
-#endif
+
+    if (res == nullptr &&
+        !is_prefill_gemm &&
+        llama_text_lm_head_w16a16_dp128_enabled() &&
+        std::strcmp(w->name, "output.weight") == 0 &&
+        w->type == GGML_TYPE_F16 &&
+        (cur->type == GGML_TYPE_F16 || cur->type == GGML_TYPE_F32) &&
+        cur->ne[0] == w->ne[0]) {
+        ggml_tensor * cur_lm_head = cur;
+        if (cur_lm_head->type == GGML_TYPE_F32) {
+            cur_lm_head = ggml_cast(ctx0, cur_lm_head, GGML_TYPE_F16);
+        }
+        ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
+        static llama_text_lm_head_w16a16_userdata lm_head_w16a16_cfg;
+        static bool lm_head_accum_warned = false;
+        static bool lm_head_w16a16_logged = false;
+        if (!lm_head_w16a16_logged) {
+            LLAMA_LOG_INFO("%s: using AICAS lm_head W16A16 DP128 path for output.weight; Q4 lm_head disabled\n",
+                    __func__);
+            lm_head_w16a16_logged = true;
+        }
+        if (llama_text_lm_head_w16a16_accum_fp16() && !lm_head_accum_warned) {
+            LLAMA_LOG_WARN("%s: AICAS_TEXT_LM_HEAD_W16A16_ACCUM=fp16 is ignored by RTL DP128 lm_head simulation\n",
+                    __func__);
+            lm_head_accum_warned = true;
+        }
+        res = ggml_map_custom3(
+            ctx0,
+            out_template,
+            cur_lm_head,
+            w,
+            llama_compute_text_lm_head_w16a16_dp128_mul_mat,
+            GGML_N_TASKS_MAX,
+            &lm_head_w16a16_cfg);
+        ggml_set_name(res, "text_lm_head_w16a16_dp128");
+    }
 
     if (res == nullptr) {
         res = ggml_mul_mat(ctx0, w, cur);
@@ -3448,75 +5231,6 @@ ggml_tensor * llm_graph_context::build_ffn(
      llm_ffn_op_type   type_op,
    llm_ffn_gate_type   type_gate,
                  int   il) const {
-#ifdef GGML_USE_NPU
-    if (llama_text_decode_awq_enabled() &&
-            llama_npu_text_decode_awq_enabled() &&
-            llama_npu_text_decode_awq_fused_ffn_enabled() &&
-            model.aicas_text_decode_awq_enabled &&
-            cur != nullptr &&
-            up != nullptr &&
-            gate != nullptr &&
-            down != nullptr &&
-            up_b == nullptr &&
-            up_s == nullptr &&
-            gate_b == nullptr &&
-            gate_s == nullptr &&
-            down_b == nullptr &&
-            down_s == nullptr &&
-            act_scales == nullptr &&
-            type_op == LLM_FFN_SILU &&
-            type_gate == LLM_FFN_PAR &&
-            ubatch.n_tokens == 1 &&
-            cur->ne[1] == 1 &&
-            loras->empty() &&
-            arch != LLM_ARCH_GLM4 &&
-            arch != LLM_ARCH_GLM4_MOE) {
-        auto it_gate = model.aicas_text_decode_awq_tensors.find(gate->name);
-        auto it_up = model.aicas_text_decode_awq_tensors.find(up->name);
-        auto it_down = model.aicas_text_decode_awq_tensors.find(down->name);
-        if (it_gate != model.aicas_text_decode_awq_tensors.end() &&
-                it_up != model.aicas_text_decode_awq_tensors.end() &&
-                it_down != model.aicas_text_decode_awq_tensors.end()) {
-            const llama_aicas_text_decode_awq_tensor * gate_cfg = &it_gate->second;
-            const llama_aicas_text_decode_awq_tensor * up_cfg = &it_up->second;
-            const llama_aicas_text_decode_awq_tensor * down_cfg = &it_down->second;
-            const bool compatible =
-                llama_decode_awq_cfg_can_use_w4a16_npu(gate_cfg, cur->ne[0]) &&
-                llama_decode_awq_cfg_can_use_w4a16_npu(up_cfg, cur->ne[0]) &&
-                gate_cfg->quant_tensor->ne[1] == up_cfg->quant_tensor->ne[1] &&
-                gate_cfg->quant_tensor->ne[1] <= 4096 &&
-                llama_decode_awq_cfg_can_use_w4a16_npu(down_cfg, gate_cfg->quant_tensor->ne[1]);
-            if (compatible) {
-                ggml_tensor * cur_awq = cur;
-                if (cur_awq->type == GGML_TYPE_F32) {
-                    cur_awq = ggml_cast(ctx0, cur_awq, GGML_TYPE_F16);
-                }
-                if (cur_awq->type == GGML_TYPE_F16 || cur_awq->type == GGML_TYPE_F32) {
-                    const bool use_f16_output = llama_text_decode_awq_output_f16_enabled();
-                    ggml_tensor * out_template = ggml_new_tensor_2d(
-                            ctx0,
-                            use_f16_output ? GGML_TYPE_F16 : GGML_TYPE_F32,
-                            down_cfg->quant_tensor->ne[1],
-                            cur_awq->ne[1]);
-                    ggml_tensor * fused = ggml_map_custom3(
-                            ctx0,
-                            out_template,
-                            cur_awq,
-                            gate_cfg->quant_tensor,
-                            llama_compute_text_decode_swiglu_ffn_npu,
-                            1,
-                            llama_get_decode_swiglu_ffn_userdata(gate_cfg, up_cfg, down_cfg));
-                    ggml_set_name(fused, use_f16_output ?
-                            "text_decode_awq_w4a16_swiglu_ffn_npu_f16" :
-                            "text_decode_awq_w4a16_swiglu_ffn_npu");
-                    cb(fused, "ffn_down", il);
-                    return fused;
-                }
-            }
-        }
-    }
-#endif
-
     ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur;
     cb(tmp, "ffn_up", il);
 
@@ -3561,10 +5275,14 @@ ggml_tensor * llm_graph_context::build_ffn(
     switch (type_op) {
         case LLM_FFN_SILU:
             if (gate && type_gate == LLM_FFN_PAR) {
+                const std::string swiglu_input_name = "blk." + std::to_string(il) + ".ffn_swiglu_silu_input";
+                cur = llama_maybe_observe_text_activation(ctx0, cur, swiglu_input_name.c_str(), cur->ne[1] > 1);
                 cur = ggml_swiglu_split(ctx0, cur, tmp);
                 cb(cur, "ffn_swiglu", il);
                 type_gate = LLM_FFN_SEQ;
             } else {
+                const std::string silu_input_name = "blk." + std::to_string(il) + ".ffn_silu_input";
+                cur = llama_maybe_observe_text_activation(ctx0, cur, silu_input_name.c_str(), cur->ne[1] > 1);
                 cur = ggml_silu(ctx0, cur);
                 cb(cur, "ffn_silu", il);
             } break;
@@ -3623,7 +5341,7 @@ ggml_tensor * llm_graph_context::build_ffn(
     }
 
     if (down) {
-        cur = build_lora_mm(down, cur, decode_awq_output_type::f16_if_safe);
+        cur = build_lora_mm(down, cur);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
@@ -3864,9 +5582,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     switch (type_op) {
         case LLM_FFN_SILU:
             if (gate_exps) {
+                const std::string swiglu_input_name = "blk." + std::to_string(il) + ".ffn_moe_swiglu_silu_input";
+                cur = llama_maybe_observe_text_activation(ctx0, cur, swiglu_input_name.c_str(), cur->ne[1] > 1);
                 cur = ggml_swiglu_split(ctx0, cur, up);
                 cb(cur, "ffn_moe_swiglu", il);
             } else {
+                const std::string silu_input_name = "blk." + std::to_string(il) + ".ffn_moe_silu_input";
+                cur = llama_maybe_observe_text_activation(ctx0, cur, silu_input_name.c_str(), cur->ne[1] > 1);
                 cur = ggml_silu(ctx0, cur);
                 cb(cur, "ffn_moe_silu", il);
             } break;
@@ -3956,7 +5678,28 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
         ggml_set_input(inp->tokens);
         res->t_tokens = inp->tokens;
 
-        cur = ggml_get_rows(ctx0, tok_embd, inp->tokens);
+        if (llama_text_token_embd_w8a16_enabled() && tok_embd->type == GGML_TYPE_F16) {
+            ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, tok_embd->ne[0], ubatch.n_tokens);
+            static llama_text_token_embd_w8a16_userdata token_embd_w8a16_cfg;
+            token_embd_w8a16_cfg.group = llama_text_token_embd_w8a16_group();
+            static bool token_embd_w8a16_logged = false;
+            if (!token_embd_w8a16_logged) {
+                LLAMA_LOG_INFO("%s: using AICAS token embedding W8A16 path for token_embd.weight; group=%" PRId64 "\n",
+                        __func__, token_embd_w8a16_cfg.group);
+                token_embd_w8a16_logged = true;
+            }
+            cur = ggml_map_custom3(
+                ctx0,
+                out_template,
+                tok_embd,
+                inp->tokens,
+                llama_compute_text_token_embd_w8a16_get_rows,
+                GGML_N_TASKS_MAX,
+                &token_embd_w8a16_cfg);
+            ggml_set_name(cur, "text_token_embd_w8a16");
+        } else {
+            cur = ggml_get_rows(ctx0, tok_embd, inp->tokens);
+        }
 
         // apply lora for embedding tokens if needed
         for (const auto & lora : *loras) {
@@ -4154,18 +5897,42 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
     q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
 
+    ggml_tensor * cur;
+
+    const bool can_use_text_prefill_log8pv_pre_permute =
+        llama_text_prefill_attn_log8pv_enabled() &&
+        n_tokens > 1 &&
+        kq_b == nullptr &&
+        sinks == nullptr &&
+        v_mla == nullptr &&
+        !v_trans &&
+        q->ne[0] == 64 &&
+        k->ne[0] == 64 &&
+        v->ne[0] == 64 &&
+        q->ne[2] == 15 &&
+        k->ne[2] == 5 &&
+        v->ne[2] == 5 &&
+        q->ne[2] % k->ne[2] == 0 &&
+        !hparams.attn_soft_cap &&
+        hparams.f_max_alibi_bias == 0.0f &&
+        (q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16) &&
+        (k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_Q8_0) &&
+        (v->type == GGML_TYPE_F32 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_Q8_0);
+
+    if (can_use_text_prefill_log8pv_pre_permute) {
+        cur = llama_build_text_log8pv_attn(ctx0, q, k, v, kq_mask, kq_scale, il);
+        cb(cur, "fattn_log8pv", il);
+        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+        ggml_build_forward_expand(gf, cur);
+        return cur;
+    }
+
     q = ggml_permute(ctx0, q, 0, 2, 1, 3);
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
-    ggml_tensor * cur;
-
     if (cparams.flash_attn && kq_b == nullptr) {
         GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
-
-        if (v_trans) {
-            v = ggml_transpose(ctx0, v);
-        }
 
         // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
         if (k->type == GGML_TYPE_F32) {
@@ -4176,12 +5943,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             v = ggml_cast(ctx0, v, GGML_TYPE_F16);
         }
 
-        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
-                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
+        const bool want_text_prefill_log8pv =
+            llama_text_prefill_attn_log8pv_enabled() &&
+            n_tokens > 1 &&
+            sinks == nullptr &&
+            v_mla == nullptr &&
+            !v_trans &&
+            q->ne[0] == 64 &&
+            k->ne[0] == 64 &&
+            v->ne[0] == 64 &&
+            q->ne[2] == 15 &&
+            k->ne[2] == 5 &&
+            v->ne[2] == 5 &&
+            q->ne[2] % k->ne[2] == 0 &&
+            !hparams.attn_soft_cap &&
+            hparams.f_max_alibi_bias == 0.0f;
 
-        ggml_flash_attn_ext_add_sinks(cur, sinks);
-        ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+        const bool can_use_text_prefill_log8pv =
+            want_text_prefill_log8pv &&
+            (q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16) &&
+            (k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_Q8_0) &&
+            (v->type == GGML_TYPE_F32 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_Q8_0);
+
+        if (can_use_text_prefill_log8pv) {
+            cur = llama_build_text_log8pv_attn(ctx0, q, k, v, kq_mask, kq_scale, il);
+            cb(cur, "fattn_log8pv", il);
+        } else {
+            if (v_trans) {
+                v = ggml_transpose(ctx0, v);
+            }
+
+            cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
+                                      hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+            cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
+
+            ggml_flash_attn_ext_add_sinks(cur, sinks);
+            ggml_flash_attn_ext_set_prec (cur, llama_text_flash_attn_accum_fp16() ? GGML_PREC_DEFAULT : GGML_PREC_F32);
+        }
 
         if (v_mla) {
 #if 0
@@ -4359,7 +6157,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
+        cur = build_lora_mm(wo, cur);
     }
 
     if (wo_b) {
@@ -4444,11 +6242,45 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
+    bool direct_log8pv_kv_current_chunk_covers_context = ubatch.n_tokens == n_tokens;
+    for (uint32_t i = 0; i < ubatch.n_tokens && direct_log8pv_kv_current_chunk_covers_context; ++i) {
+        direct_log8pv_kv_current_chunk_covers_context = ubatch.pos[i] == (llama_pos) i;
+    }
+
+    const bool use_direct_log8pv_kv =
+        llama_text_prefill_log8pv_direct_kv_enabled() &&
+        llama_text_prefill_attn_log8pv_enabled() &&
+        cparams.flash_attn &&
+        n_tokens > 1 &&
+        direct_log8pv_kv_current_chunk_covers_context &&
+        kq_b == nullptr &&
+        sinks == nullptr &&
+        v_mla == nullptr &&
+        !hparams.attn_soft_cap &&
+        hparams.f_max_alibi_bias == 0.0f &&
+        q_cur->ne[0] == 64 &&
+        k_cur->ne[0] == 64 &&
+        v_cur->ne[0] == 64 &&
+        q_cur->ne[1] % k_cur->ne[1] == 0 &&
+        k_cur->ne[1] == v_cur->ne[1] &&
+        q_cur->ne[2] == k_cur->ne[2] &&
+        q_cur->ne[2] == v_cur->ne[2];
+    static std::atomic<bool> direct_log8pv_kv_logged{false};
+    if (use_direct_log8pv_kv) {
+        if (!direct_log8pv_kv_logged.exchange(true)) {
+            LLAMA_LOG_INFO("%s: AICAS text prefill log8PV direct-KV path enabled; "
+                    "prefill attention uses current k_cur/v_cur while cache writes still store persistent KV\n",
+                    __func__);
+        }
+        k = k_cur;
+        v = v_cur;
+    }
+
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
+        cur = build_lora_mm(wo, cur);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
             // GLM4 and GLM4_MOE seem to have numerical issues with half-precision accumulators
             ggml_mul_mat_set_prec(cur, GGML_PREC_F32);
@@ -4515,7 +6347,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
+        cur = build_lora_mm(wo, cur);
     }
 
     if (wo_b) {
@@ -4570,7 +6402,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        cur = build_lora_mm(wo, cur, decode_awq_output_type::f16_if_safe);
+        cur = build_lora_mm(wo, cur);
     }
 
     if (wo_b) {

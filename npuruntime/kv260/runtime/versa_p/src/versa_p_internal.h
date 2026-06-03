@@ -33,6 +33,7 @@ struct versa_p_device {
     uint32_t cma_dma = 0;
     uint32_t cma_size = 0;
     npu_kv260_info info = {};
+    npu_kv260_hw_state hw = {};
     std::vector<VersaPBlock> blocks;
     bool api_inflight[5] = {};
     uint8_t active_a_bank = 0;

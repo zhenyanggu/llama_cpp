@@ -2903,6 +2903,7 @@ struct ggml_cpu_profile_signature {
 
 struct ggml_cpu_profile_state {
     bool enabled;
+    bool aggregate_only;
     int64_t node_count;
     int64_t duration_us;
     int op_count;
@@ -3111,15 +3112,16 @@ static void ggml_cpu_profile_record_node(const struct ggml_tensor * node, int64_
     const char * op_name = ggml_op_desc(node);
     const char * category = ggml_cpu_profile_category(node);
 
-    char node_key[GGML_CPU_PROFILE_NAME_LEN];
-    snprintf(node_key, sizeof(node_key), "%s|%s", node->name, op_name);
-
     g_cpu_profile.node_count += 1;
     g_cpu_profile.duration_us += duration_us;
     ggml_cpu_profile_add_aggregate(g_cpu_profile.ops, &g_cpu_profile.op_count, GGML_CPU_PROFILE_MAX_OPS, op_name, duration_us, elements, bytes);
     ggml_cpu_profile_add_aggregate(g_cpu_profile.categories, &g_cpu_profile.category_count, GGML_CPU_PROFILE_MAX_CATEGORIES, category, duration_us, elements, bytes);
-    ggml_cpu_profile_add_aggregate(g_cpu_profile.node_names, &g_cpu_profile.node_name_count, GGML_CPU_PROFILE_MAX_NODES, node_key, duration_us, elements, bytes);
-    ggml_cpu_profile_add_signature(node, duration_us, elements, bytes);
+    if (!g_cpu_profile.aggregate_only) {
+        char node_key[GGML_CPU_PROFILE_NAME_LEN];
+        snprintf(node_key, sizeof(node_key), "%s|%s", node->name, op_name);
+        ggml_cpu_profile_add_aggregate(g_cpu_profile.node_names, &g_cpu_profile.node_name_count, GGML_CPU_PROFILE_MAX_NODES, node_key, duration_us, elements, bytes);
+        ggml_cpu_profile_add_signature(node, duration_us, elements, bytes);
+    }
 }
 
 static int ggml_cpu_profile_cmp_aggregate(const void * a, const void * b) {
@@ -3220,10 +3222,19 @@ static void ggml_cpu_profile_json_aggregates(
     ggml_cpu_profile_json_append("]");
 }
 
-void ggml_backend_cpu_profile_start(void) {
+static void ggml_backend_cpu_profile_start_impl(bool aggregate_only) {
     free(g_cpu_profile.json);
     memset(&g_cpu_profile, 0, sizeof(g_cpu_profile));
     g_cpu_profile.enabled = true;
+    g_cpu_profile.aggregate_only = aggregate_only;
+}
+
+void ggml_backend_cpu_profile_start(void) {
+    ggml_backend_cpu_profile_start_impl(false);
+}
+
+void ggml_backend_cpu_profile_start_aggregate(void) {
+    ggml_backend_cpu_profile_start_impl(true);
 }
 
 const char * ggml_backend_cpu_profile_stop_json(void) {
@@ -3231,8 +3242,10 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
 
     qsort(g_cpu_profile.ops, (size_t) g_cpu_profile.op_count, sizeof(g_cpu_profile.ops[0]), ggml_cpu_profile_cmp_aggregate);
     qsort(g_cpu_profile.categories, (size_t) g_cpu_profile.category_count, sizeof(g_cpu_profile.categories[0]), ggml_cpu_profile_cmp_aggregate);
-    qsort(g_cpu_profile.node_names, (size_t) g_cpu_profile.node_name_count, sizeof(g_cpu_profile.node_names[0]), ggml_cpu_profile_cmp_aggregate);
-    qsort(g_cpu_profile.signatures, (size_t) g_cpu_profile.signature_count, sizeof(g_cpu_profile.signatures[0]), ggml_cpu_profile_cmp_signature);
+    if (!g_cpu_profile.aggregate_only) {
+        qsort(g_cpu_profile.node_names, (size_t) g_cpu_profile.node_name_count, sizeof(g_cpu_profile.node_names[0]), ggml_cpu_profile_cmp_aggregate);
+        qsort(g_cpu_profile.signatures, (size_t) g_cpu_profile.signature_count, sizeof(g_cpu_profile.signatures[0]), ggml_cpu_profile_cmp_signature);
+    }
 
     free(g_cpu_profile.json);
     g_cpu_profile.json = NULL;
@@ -3240,13 +3253,15 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
     g_cpu_profile.json_cap = 0;
 
     ggml_cpu_profile_json_append(
-        "{\"profile_kind\":\"ggml_cpu_backend_operator_profile\","
+        "{\"profile_kind\":\"%s\","
         "\"timing_unit\":\"us\","
         "\"instrumentation\":\"cpu_backend_node_wall_time\","
-        "\"note\":\"Recorded inside the CPU backend on worker 0. Each node duration includes the normal inter-node threadpool barrier wait, but no ggml eval callback is installed.\","
+        "\"note\":\"Recorded inside the CPU backend on worker 0. Each node duration includes the normal inter-node threadpool barrier wait, but no ggml eval callback is installed.%s\","
         "\"node_count\":%" PRId64 ","
         "\"total_us\":%" PRId64 ","
         "\"total_ms\":%.3f,",
+        g_cpu_profile.aggregate_only ? "ggml_cpu_backend_operator_aggregate_profile" : "ggml_cpu_backend_operator_profile",
+        g_cpu_profile.aggregate_only ? " Aggregate mode records only operator/category totals." : "",
         g_cpu_profile.node_count,
         g_cpu_profile.duration_us,
         (double) g_cpu_profile.duration_us / 1000.0);
@@ -3254,6 +3269,10 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
     ggml_cpu_profile_json_aggregates("operators", g_cpu_profile.ops, g_cpu_profile.op_count, 0);
     ggml_cpu_profile_json_append(",");
     ggml_cpu_profile_json_aggregates("operator_categories", g_cpu_profile.categories, g_cpu_profile.category_count, 0);
+    if (g_cpu_profile.aggregate_only) {
+        ggml_cpu_profile_json_append(",\"top_nodes\":[],\"mul_mat_signatures\":[]}");
+        return g_cpu_profile.json;
+    }
     ggml_cpu_profile_json_append(",");
     ggml_cpu_profile_json_aggregates("top_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 32);
     ggml_cpu_profile_json_append(",\"mul_mat_signatures\":[");

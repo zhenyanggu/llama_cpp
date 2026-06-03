@@ -4283,10 +4283,10 @@ struct server_context {
 	                return;
 	            }
 
-	            const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
-	            const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
+            const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
+            const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
             if (collect_text_cpu_profile) {
-                ggml_backend_cpu_profile_start();
+                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_TEXT_CPU_PROFILE_MODE"));
             }
 
             const int ret = llama_decode(ctx, batch_view);

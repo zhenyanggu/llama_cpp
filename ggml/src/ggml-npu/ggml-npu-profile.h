@@ -49,6 +49,9 @@ struct npu_profile_tile_record {
     int64_t output_write_bytes = 0;
     double activation_pack_us = 0.0;
     double host_copy_activation_us = 0.0;
+    double act_cma_copy_cpu_us = 0.0;
+    double act_cma_copy_dma_us = 0.0;
+    double act_cma_copy_hidden_candidate_us = 0.0;
     double host_copy_weight_us = 0.0;
     double bias_prepare_us = 0.0;
     double dma_in_activation_us = 0.0;
@@ -109,6 +112,8 @@ struct npu_profile_node_record {
     int64_t activation_pack_async_jobs = 0;
     int64_t activation_pack_async_hits = 0;
     int64_t host_copy_activation_calls = 0;
+    int64_t act_cma_copy_cpu_calls = 0;
+    int64_t act_cma_copy_dma_calls = 0;
     int64_t host_copy_weight_calls = 0;
     int64_t bias_prepare_calls = 0;
     int64_t dma_in_activation_calls = 0;
@@ -146,6 +151,9 @@ struct npu_profile_node_record {
     double activation_pack_async_us_total = 0.0;
     double activation_pack_wait_us_total = 0.0;
     double host_copy_activation_us_total = 0.0;
+    double act_cma_copy_cpu_us_total = 0.0;
+    double act_cma_copy_dma_us_total = 0.0;
+    double act_cma_copy_hidden_candidate_us_total = 0.0;
     double host_copy_weight_us_total = 0.0;
     double bias_prepare_us_total = 0.0;
     double dma_in_activation_us_total = 0.0;
@@ -178,6 +186,8 @@ struct npu_profile_summary_delta {
     int64_t activation_pack_async_jobs = 0;
     int64_t activation_pack_async_hits = 0;
     int64_t host_copy_activation_calls = 0;
+    int64_t act_cma_copy_cpu_calls = 0;
+    int64_t act_cma_copy_dma_calls = 0;
     int64_t host_copy_weight_calls = 0;
     int64_t bias_prepare_calls = 0;
     int64_t dma_in_activation_calls = 0;
@@ -220,6 +230,9 @@ struct npu_profile_summary_delta {
     int64_t activation_pack_async_us_total = 0;
     int64_t activation_pack_wait_us_total = 0;
     int64_t host_copy_activation_us_total = 0;
+    int64_t act_cma_copy_cpu_us_total = 0;
+    int64_t act_cma_copy_dma_us_total = 0;
+    int64_t act_cma_copy_hidden_candidate_us_total = 0;
     int64_t host_copy_weight_us_total = 0;
     int64_t bias_prepare_us_total = 0;
     int64_t dma_in_activation_us_total = 0;
@@ -240,9 +253,16 @@ struct npu_profile_summary_delta {
 };
 
 bool npu_profile_enabled();
+bool npu_profile_aggregate_only();
 npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu_node_plan & plan);
 void npu_profile_reset();
 void npu_profile_add_node_record(npu_profile_node_record record);
+void npu_profile_add_aggregate_record(
+    int64_t layer_id,
+    const npu_node_plan & plan,
+    const npu_profile_summary_delta & delta,
+    const char * status,
+    const char * error);
 void npu_profile_flush();
 bool npu_summary_active();
 void npu_summary_session_start();

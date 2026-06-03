@@ -463,6 +463,105 @@ static size_t npu_cma_read_dma_min_bytes() {
     return min_bytes;
 }
 
+static uint32_t npu_cma_write_dma_chunk_bytes() {
+    static bool initialized = false;
+    static uint32_t chunk_bytes = 1024u * 1024u;
+    if (!initialized) {
+        initialized = true;
+        const char * value = std::getenv("GGML_NPU_CMA_WRITE_DMA_CHUNK_BYTES");
+        if (value != nullptr && value[0] != '\0') {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed > 0) {
+                chunk_bytes = static_cast<uint32_t>(parsed);
+            }
+        }
+    }
+    return chunk_bytes;
+}
+
+static size_t npu_cma_write_dma_min_bytes() {
+    static bool initialized = false;
+    static size_t min_bytes = 1024u * 1024u;
+    if (!initialized) {
+        initialized = true;
+        const char * value = std::getenv("GGML_NPU_CMA_WRITE_DMA_MIN_BYTES");
+        if (value != nullptr && value[0] != '\0') {
+            const long parsed = std::strtol(value, nullptr, 10);
+            if (parsed >= 0) {
+                min_bytes = static_cast<size_t>(parsed);
+            }
+        }
+    }
+    return min_bytes;
+}
+
+struct npu_cma_copy_to_result {
+    int64_t cpu_us = 0;
+    int64_t dma_us = 0;
+    bool used_dma = false;
+};
+
+static bool npu_cma_write_dma_requested(size_t bytes) {
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    const char * value = std::getenv("GGML_NPU_ACT_CMA_COPY_MODE");
+    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "cpu") == 0) {
+        return false;
+    }
+    if (std::strcmp(value, "dma") == 0 || std::strcmp(value, "driver_dma") == 0) {
+        return true;
+    }
+    if (std::strcmp(value, "auto") == 0) {
+        return bytes >= npu_cma_write_dma_min_bytes();
+    }
+#else
+    GGML_UNUSED(bytes);
+#endif
+    return false;
+}
+
+static npu_cma_copy_to_result npu_copy_activation_to_cma(
+        void * dst,
+        size_t dst_bytes,
+        const void * src,
+        size_t src_bytes,
+        bool zero_pad) {
+    npu_cma_copy_to_result result;
+    if (dst == nullptr || src == nullptr || src_bytes == 0) {
+        return result;
+    }
+
+    if (zero_pad && dst_bytes > src_bytes) {
+        const int64_t start_us = ggml_time_us();
+        std::memset(dst, 0, dst_bytes);
+        result.cpu_us += ggml_time_us() - start_us;
+    }
+
+#if defined(GGML_NPU_VERSA_P_RUNTIME)
+    if (npu_cma_write_dma_requested(src_bytes)) {
+        const int64_t start_us = ggml_time_us();
+        const int rc = npu_dma_copy_to_cma(dst, src, src_bytes, npu_cma_write_dma_chunk_bytes());
+        const int64_t elapsed_us = ggml_time_us() - start_us;
+        if (rc == 0) {
+            result.dma_us += elapsed_us;
+            result.used_dma = true;
+            return result;
+        }
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            std::fprintf(stderr,
+                "npu_copy_activation_to_cma: driver DMA copy failed rc=%d; falling back to CPU memcpy\n",
+                rc);
+        }
+    }
+#endif
+
+    const int64_t start_us = ggml_time_us();
+    std::memcpy(dst, src, src_bytes);
+    result.cpu_us += ggml_time_us() - start_us;
+    return result;
+}
+
 static void npu_copy_from_cma(void * dst, const void * src, size_t bytes) {
 #if defined(GGML_NPU_VERSA_P_RUNTIME)
     if (npu_cma_read_dma_enabled() && bytes >= npu_cma_read_dma_min_bytes()) {
@@ -912,9 +1011,10 @@ struct npu_output_tile_key_hash {
 };
 
 enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, std::string * error) {
-    const bool collect_detailed_profile = npu_profile_enabled();
+    const bool collect_aggregate_profile = npu_profile_aggregate_only();
+    const bool collect_detailed_profile = npu_profile_enabled() && !collect_aggregate_profile;
     const bool collect_summary = npu_summary_active();
-    const bool collect_stage_profile = collect_detailed_profile || collect_summary;
+    const bool collect_stage_profile = collect_detailed_profile || collect_aggregate_profile || collect_summary;
     const bool collect_runtime_profile = npu_runtime_profile_requested() || collect_summary;
     const char * profile_level_env = std::getenv("GGML_NPU_PROFILE_LEVEL");
     const std::string profile_level = profile_level_env ? profile_level_env : "";
@@ -1042,6 +1142,8 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.activation_pack_async_jobs = exec_summary.delta.activation_pack_async_jobs;
             profile_record.activation_pack_async_hits = exec_summary.delta.activation_pack_async_hits;
             profile_record.host_copy_activation_calls = exec_summary.delta.host_copy_activation_calls;
+            profile_record.act_cma_copy_cpu_calls = exec_summary.delta.act_cma_copy_cpu_calls;
+            profile_record.act_cma_copy_dma_calls = exec_summary.delta.act_cma_copy_dma_calls;
             profile_record.host_copy_weight_calls = exec_summary.delta.host_copy_weight_calls;
             profile_record.bias_prepare_calls = exec_summary.delta.bias_prepare_calls;
             profile_record.dma_in_activation_calls = exec_summary.delta.dma_in_activation_calls;
@@ -1078,6 +1180,9 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             profile_record.activation_pack_async_us_total = exec_summary.delta.activation_pack_async_us_total;
             profile_record.activation_pack_wait_us_total = exec_summary.delta.activation_pack_wait_us_total;
             profile_record.host_copy_activation_us_total = exec_summary.delta.host_copy_activation_us_total;
+            profile_record.act_cma_copy_cpu_us_total = exec_summary.delta.act_cma_copy_cpu_us_total;
+            profile_record.act_cma_copy_dma_us_total = exec_summary.delta.act_cma_copy_dma_us_total;
+            profile_record.act_cma_copy_hidden_candidate_us_total = exec_summary.delta.act_cma_copy_hidden_candidate_us_total;
             profile_record.host_copy_weight_us_total = exec_summary.delta.host_copy_weight_us_total;
             profile_record.bias_prepare_us_total = exec_summary.delta.bias_prepare_us_total;
             profile_record.dma_in_activation_us_total = exec_summary.delta.dma_in_activation_us_total;
@@ -1102,6 +1207,14 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                 profile_record.error = *error;
             }
             npu_profile_add_node_record(std::move(profile_record));
+        }
+        if (collect_aggregate_profile) {
+            npu_profile_add_aggregate_record(
+                layer_id,
+                plan,
+                exec_summary.delta,
+                status == GGML_STATUS_SUCCESS ? "success" : "failed",
+                error != nullptr ? error->c_str() : "");
         }
         return status;
     };
@@ -1570,22 +1683,30 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
             loaded_activation_prefetched = false;
         }
 
-        const int64_t activation_copy_start_us = collect_stage_profile ? ggml_time_us() : 0;
         if (!activation_already_in_spm) {
-            if (hw_n != exec_tile.n) {
-                std::memset(
-                    activation_buf,
-                    0,
-                    static_cast<size_t>(hw_n * exec_tile.a_stride));
-            }
-            std::memcpy(activation_buf, packed_activation_view->data(), packed_activation_view->size());
-        }
-        if (collect_stage_profile && !activation_already_in_spm) {
-            const int64_t activation_copy_us = ggml_time_us() - activation_copy_start_us;
-            exec_summary.delta.host_copy_activation_calls += 1;
-            exec_summary.delta.host_copy_activation_us_total += activation_copy_us;
-            if (collect_tile_profile) {
-                tile_record.host_copy_activation_us = static_cast<double>(activation_copy_us);
+            const npu_cma_copy_to_result copy_result = npu_copy_activation_to_cma(
+                activation_buf,
+                static_cast<size_t>(hw_n * exec_tile.a_stride),
+                packed_activation_view->data(),
+                packed_activation_view->size(),
+                hw_n != exec_tile.n);
+            if (collect_stage_profile) {
+                const int64_t activation_copy_us = copy_result.cpu_us + copy_result.dma_us;
+                exec_summary.delta.host_copy_activation_calls += 1;
+                exec_summary.delta.host_copy_activation_us_total += activation_copy_us;
+                if (copy_result.cpu_us > 0) {
+                    exec_summary.delta.act_cma_copy_cpu_calls += 1;
+                    exec_summary.delta.act_cma_copy_cpu_us_total += copy_result.cpu_us;
+                }
+                if (copy_result.dma_us > 0) {
+                    exec_summary.delta.act_cma_copy_dma_calls += 1;
+                    exec_summary.delta.act_cma_copy_dma_us_total += copy_result.dma_us;
+                }
+                if (collect_tile_profile) {
+                    tile_record.host_copy_activation_us = static_cast<double>(activation_copy_us);
+                    tile_record.act_cma_copy_cpu_us = static_cast<double>(copy_result.cpu_us);
+                    tile_record.act_cma_copy_dma_us = static_cast<double>(copy_result.dma_us);
+                }
             }
         }
 
@@ -2116,16 +2237,30 @@ enum ggml_status npu_compute_node(const npu_node_plan & plan, int64_t layer_id, 
                             &prefetch_error,
                             &next_ready_before_wait);
                     if (next_activation_entry != nullptr) {
-                        if (next_hw_n != next_tile.n) {
-                            std::memset(
-                                activation_buf,
-                                0,
-                                static_cast<size_t>(next_hw_n * next_tile.a_stride));
-                        }
-                        std::memcpy(
+                        const npu_cma_copy_to_result prefetch_copy_result = npu_copy_activation_to_cma(
                             activation_buf,
+                            static_cast<size_t>(next_hw_n * next_tile.a_stride),
                             next_activation_entry->data.data(),
-                            next_activation_entry->data.size());
+                            next_activation_entry->data.size(),
+                            next_hw_n != next_tile.n);
+                        if (collect_stage_profile) {
+                            if (prefetch_copy_result.cpu_us > 0) {
+                                exec_summary.delta.act_cma_copy_cpu_calls += 1;
+                                exec_summary.delta.act_cma_copy_cpu_us_total += prefetch_copy_result.cpu_us;
+                            }
+                            if (prefetch_copy_result.dma_us > 0) {
+                                exec_summary.delta.act_cma_copy_dma_calls += 1;
+                                exec_summary.delta.act_cma_copy_dma_us_total += prefetch_copy_result.dma_us;
+                            }
+                            exec_summary.delta.act_cma_copy_hidden_candidate_us_total +=
+                                prefetch_copy_result.cpu_us + prefetch_copy_result.dma_us;
+                        }
+                        if (collect_tile_profile) {
+                            tile_record.act_cma_copy_cpu_us += static_cast<double>(prefetch_copy_result.cpu_us);
+                            tile_record.act_cma_copy_dma_us += static_cast<double>(prefetch_copy_result.dma_us);
+                            tile_record.act_cma_copy_hidden_candidate_us +=
+                                static_cast<double>(prefetch_copy_result.cpu_us + prefetch_copy_result.dma_us);
+                        }
                         const MvinConfig prefetch_activation_mvin_cfg {
                             activation_buf,
                             plan.config.layout.activation.offset,

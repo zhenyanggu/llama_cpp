@@ -24,6 +24,8 @@ typedef struct ggml_npu_profile_summary {
     int64_t activation_pack_async_jobs;
     int64_t activation_pack_async_hits;
     int64_t host_copy_activation_calls;
+    int64_t act_cma_copy_cpu_calls;
+    int64_t act_cma_copy_dma_calls;
     int64_t host_copy_weight_calls;
     int64_t bias_prepare_calls;
     int64_t dma_in_activation_calls;
@@ -66,6 +68,9 @@ typedef struct ggml_npu_profile_summary {
     int64_t activation_pack_async_us_total;
     int64_t activation_pack_wait_us_total;
     int64_t host_copy_activation_us_total;
+    int64_t act_cma_copy_cpu_us_total;
+    int64_t act_cma_copy_dma_us_total;
+    int64_t act_cma_copy_hidden_candidate_us_total;
     int64_t host_copy_weight_us_total;
     int64_t bias_prepare_us_total;
     int64_t dma_in_activation_us_total;

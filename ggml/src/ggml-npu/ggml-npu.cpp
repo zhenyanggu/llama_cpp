@@ -118,6 +118,68 @@ extern "C" void npu_decode_matvec_decode_flow_run(
 extern "C" void * npu_decode_memory_base();
 extern "C" uint32_t npu_decode_memory_size();
 
+extern "C" bool ggml_backend_npu_text_log8pv_attention(
+        const int8_t * q,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t tokens,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms);
+
+struct ggml_backend_npu_log8pv_attention_profile {
+    uint32_t kv_tokens;
+    uint32_t q_rows;
+    uint32_t q_row_start;
+    uint32_t exec_rows;
+    uint32_t chunks;
+    uint32_t group_size;
+    uint32_t kv_reuse_hit;
+    uint32_t workspace_reuse;
+    uint64_t total_us;
+    uint64_t mvin_q_us;
+    uint64_t mvin_k_us;
+    uint64_t mvin_v_us;
+    uint64_t qk_us;
+    uint64_t logp_mvout_us;
+    uint64_t mvin_p_us;
+    uint64_t pv_us;
+    uint64_t pv_mvout_us;
+    uint64_t qk_overlap_us;
+    uint64_t pv_overlap_us;
+};
+
+extern "C" bool ggml_backend_npu_log8pv_attention_ex(
+        const int8_t * q,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile);
+
+extern "C" bool ggml_backend_npu_log8pv_attention_group(
+        const int8_t * q_group,
+        uint32_t group_size,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        const uint32_t * gamma16_fix_group,
+        int32_t * output_group,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile_group);
+
 namespace ggml_npu {
 
 static bool npu_debug_log_enabled() {
@@ -2240,6 +2302,7 @@ static const char * npu_backend_name(ggml_backend_t backend) {
 }
 
 static void npu_backend_free(ggml_backend_t backend) {
+    npu_profile_flush();
     delete static_cast<npu_backend_context *>(backend->context);
     delete backend;
 }
@@ -2386,7 +2449,9 @@ static enum ggml_status npu_backend_graph_plan_compute(
         }
     }
 
-    npu_profile_flush();
+    if (!npu_profile_aggregate_only()) {
+        npu_profile_flush();
+    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -2598,6 +2663,15 @@ static void * npu_reg_get_proc_address(ggml_backend_reg_t reg, const char * name
     if (std::strcmp(name, "ggml_backend_npu_mem_free") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_mem_free);
     }
+    if (std::strcmp(name, "ggml_backend_npu_text_log8pv_attention") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_text_log8pv_attention);
+    }
+    if (std::strcmp(name, "ggml_backend_npu_log8pv_attention_ex") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_log8pv_attention_ex);
+    }
+    if (std::strcmp(name, "ggml_backend_npu_log8pv_attention_group") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_log8pv_attention_group);
+    }
     if (std::strcmp(name, "ggml_backend_npu_runtime_shutdown") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_runtime_shutdown);
     }
@@ -2747,7 +2821,150 @@ void ggml_backend_npu_mem_free(void * ptr) {
     npu_mem_free(ptr);
 }
 
+extern "C" bool ggml_backend_npu_log8pv_attention_ex(
+        const int8_t * q,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile) {
+    if (npu_init() != 0) {
+        return false;
+    }
+
+    npu_log8pv_attention_profile runtime_profile = {};
+    const bool ok = npu_attention_log8pv_run_ex(
+            q,
+            q_rows,
+            k,
+            v,
+            kv_tokens,
+            q_row_start,
+            causal_mask,
+            gamma16_fix,
+            output,
+            output_stride_elems,
+            timeout_ms,
+            profile != nullptr ? &runtime_profile : nullptr);
+    if (ok && profile != nullptr) {
+        profile->kv_tokens = runtime_profile.kv_tokens;
+        profile->q_rows = runtime_profile.q_rows;
+        profile->q_row_start = runtime_profile.q_row_start;
+        profile->exec_rows = runtime_profile.exec_rows;
+        profile->chunks = runtime_profile.chunks;
+        profile->group_size = runtime_profile.group_size;
+        profile->kv_reuse_hit = runtime_profile.kv_reuse_hit;
+        profile->workspace_reuse = runtime_profile.workspace_reuse;
+        profile->total_us = runtime_profile.total_us;
+        profile->mvin_q_us = runtime_profile.mvin_q_us;
+        profile->mvin_k_us = runtime_profile.mvin_k_us;
+        profile->mvin_v_us = runtime_profile.mvin_v_us;
+        profile->qk_us = runtime_profile.qk_us;
+        profile->logp_mvout_us = runtime_profile.logp_mvout_us;
+        profile->mvin_p_us = runtime_profile.mvin_p_us;
+        profile->pv_us = runtime_profile.pv_us;
+        profile->pv_mvout_us = runtime_profile.pv_mvout_us;
+        profile->qk_overlap_us = runtime_profile.qk_overlap_us;
+        profile->pv_overlap_us = runtime_profile.pv_overlap_us;
+    }
+    return ok;
+}
+
+extern "C" bool ggml_backend_npu_log8pv_attention_group(
+        const int8_t * q_group,
+        uint32_t group_size,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool causal_mask,
+        const uint32_t * gamma16_fix_group,
+        int32_t * output_group,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        ggml_backend_npu_log8pv_attention_profile * profile_group) {
+    if (npu_init() != 0) {
+        return false;
+    }
+
+    std::vector<npu_log8pv_attention_profile> runtime_profiles(
+            profile_group != nullptr ? group_size : 0);
+    const bool ok = npu_attention_log8pv_run_group(
+            q_group,
+            group_size,
+            q_rows,
+            k,
+            v,
+            kv_tokens,
+            q_row_start,
+            causal_mask,
+            gamma16_fix_group,
+            output_group,
+            output_stride_elems,
+            timeout_ms,
+            profile_group != nullptr ? runtime_profiles.data() : nullptr);
+    if (ok && profile_group != nullptr) {
+        for (uint32_t i = 0; i < group_size; ++i) {
+            const auto & runtime_profile = runtime_profiles[i];
+            auto & profile = profile_group[i];
+            profile.kv_tokens = runtime_profile.kv_tokens;
+            profile.q_rows = runtime_profile.q_rows;
+            profile.q_row_start = runtime_profile.q_row_start;
+            profile.exec_rows = runtime_profile.exec_rows;
+            profile.chunks = runtime_profile.chunks;
+            profile.group_size = runtime_profile.group_size;
+            profile.kv_reuse_hit = runtime_profile.kv_reuse_hit;
+            profile.workspace_reuse = runtime_profile.workspace_reuse;
+            profile.total_us = runtime_profile.total_us;
+            profile.mvin_q_us = runtime_profile.mvin_q_us;
+            profile.mvin_k_us = runtime_profile.mvin_k_us;
+            profile.mvin_v_us = runtime_profile.mvin_v_us;
+            profile.qk_us = runtime_profile.qk_us;
+            profile.logp_mvout_us = runtime_profile.logp_mvout_us;
+            profile.mvin_p_us = runtime_profile.mvin_p_us;
+            profile.pv_us = runtime_profile.pv_us;
+            profile.pv_mvout_us = runtime_profile.pv_mvout_us;
+            profile.qk_overlap_us = runtime_profile.qk_overlap_us;
+            profile.pv_overlap_us = runtime_profile.pv_overlap_us;
+        }
+    }
+    return ok;
+}
+
+extern "C" bool ggml_backend_npu_text_log8pv_attention(
+        const int8_t * q,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t tokens,
+        bool causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms) {
+    if (npu_init() != 0) {
+        return false;
+    }
+    return npu_attention_log8pv_run(
+            q,
+            k,
+            v,
+            tokens,
+            causal_mask,
+            gamma16_fix,
+            output,
+            output_stride_elems,
+            timeout_ms);
+}
+
 void ggml_backend_npu_runtime_shutdown(void) {
+    ggml_npu::npu_profile_flush();
     ggml_npu::npu_clear_preloaded_weight_cache();
     npu_destroy();
 }

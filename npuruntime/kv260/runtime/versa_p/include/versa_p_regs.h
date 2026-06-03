@@ -22,6 +22,9 @@ extern "C" {
 #define VERSA_P_REG_MVOUT_DESC0        0x080u
 #define VERSA_P_REG_MVOUT_DESC1        0x088u
 #define VERSA_P_REG_MVOUT_STATUS       0x090u
+#define VERSA_P_REG_ATTENTION_QK_DESC0 0x0a0u
+#define VERSA_P_REG_ATTENTION_QK_DESC1 0x0a8u
+#define VERSA_P_REG_ATTENTION_QK_STATUS 0x0b0u
 #define VERSA_P_REG_IAR                0x100u
 #define VERSA_P_REG_MER                0x108u
 #define VERSA_P_REG_IER                0x110u
@@ -102,8 +105,16 @@ typedef enum versa_p_hw_error {
 typedef enum versa_p_mvout_mode {
     VERSA_P_MVOUT_RAW_I32 = 0,
     VERSA_P_MVOUT_FP32_TENSOR_Q8_24 = 1,
-    VERSA_P_MVOUT_FP32_PER_CHANNEL_Q8_24 = 2
+    VERSA_P_MVOUT_FP32_PER_CHANNEL_Q8_24 = 2,
+    VERSA_P_MVOUT_ATTENTION_QK_LOGP = 3
 } versa_p_mvout_mode;
+
+typedef enum versa_p_gemm_mode {
+    VERSA_P_GEMM_MODE_INT8 = 0,
+    VERSA_P_GEMM_MODE_BFP16M = 1,
+    VERSA_P_GEMM_MODE_PV_LOG8_U16I8 = 2,
+    VERSA_P_GEMM_MODE_ATTENTION_QK = 3
+} versa_p_gemm_mode;
 
 typedef enum versa_p_meta_type {
     VERSA_P_META_BIAS = 0,

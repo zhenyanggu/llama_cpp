@@ -185,6 +185,23 @@ static bool server_mtmd_cpu_op_profile_enabled() {
     return env != nullptr && env[0] != '\0' && std::string(env) != "0";
 }
 
+static bool server_cpu_profile_mode_aggregate(const char * env_name) {
+    const char * env = std::getenv(env_name);
+    if (env == nullptr || env[0] == '\0') {
+        return false;
+    }
+    const std::string value(env);
+    return value == "aggregate" || value == "aggregate_only" || value == "semantic";
+}
+
+static void server_backend_cpu_profile_start(bool aggregate) {
+    if (aggregate) {
+        ggml_backend_cpu_profile_start_aggregate();
+    } else {
+        ggml_backend_cpu_profile_start();
+    }
+}
+
 static std::string server_text_cpu_profile_output_path() {
     const char * path = std::getenv("LLAMA_TEXT_CPU_PROFILE_JSON");
     return path ? path : "";
@@ -291,6 +308,8 @@ struct server_mtmd_prefill_profile {
         dst.activation_pack_async_jobs += src.activation_pack_async_jobs;
         dst.activation_pack_async_hits += src.activation_pack_async_hits;
         dst.host_copy_activation_calls += src.host_copy_activation_calls;
+        dst.act_cma_copy_cpu_calls += src.act_cma_copy_cpu_calls;
+        dst.act_cma_copy_dma_calls += src.act_cma_copy_dma_calls;
         dst.host_copy_weight_calls += src.host_copy_weight_calls;
         dst.bias_prepare_calls += src.bias_prepare_calls;
         dst.dma_in_activation_calls += src.dma_in_activation_calls;
@@ -328,6 +347,9 @@ struct server_mtmd_prefill_profile {
         dst.activation_pack_async_us_total += src.activation_pack_async_us_total;
         dst.activation_pack_wait_us_total += src.activation_pack_wait_us_total;
         dst.host_copy_activation_us_total += src.host_copy_activation_us_total;
+        dst.act_cma_copy_cpu_us_total += src.act_cma_copy_cpu_us_total;
+        dst.act_cma_copy_dma_us_total += src.act_cma_copy_dma_us_total;
+        dst.act_cma_copy_hidden_candidate_us_total += src.act_cma_copy_hidden_candidate_us_total;
         dst.host_copy_weight_us_total += src.host_copy_weight_us_total;
         dst.bias_prepare_us_total += src.bias_prepare_us_total;
         dst.dma_in_activation_us_total += src.dma_in_activation_us_total;
@@ -416,6 +438,11 @@ struct server_mtmd_prefill_profile {
             {"activation_pack_async_jobs", summary.activation_pack_async_jobs},
             {"activation_pack_async_hits", summary.activation_pack_async_hits},
             {"host_copy_activation_us", summary.host_copy_activation_us_total},
+            {"act_cma_copy_cpu_us", summary.act_cma_copy_cpu_us_total},
+            {"act_cma_copy_dma_us", summary.act_cma_copy_dma_us_total},
+            {"act_cma_copy_hidden_candidate_us", summary.act_cma_copy_hidden_candidate_us_total},
+            {"act_cma_copy_cpu_calls", summary.act_cma_copy_cpu_calls},
+            {"act_cma_copy_dma_calls", summary.act_cma_copy_dma_calls},
             {"host_copy_weight_us", summary.host_copy_weight_us_total},
             {"bias_prepare_us", summary.bias_prepare_us_total},
             {"postprocess_us", summary.postprocess_us_total},
@@ -644,6 +671,11 @@ struct server_mtmd_prefill_profile {
             {"accounted_share_pct", 0.0},
             {"activation_pack_us", 0},
             {"host_copy_activation_us", 0},
+            {"act_cma_copy_cpu_us", 0},
+            {"act_cma_copy_dma_us", 0},
+            {"act_cma_copy_hidden_candidate_us", 0},
+            {"act_cma_copy_cpu_calls", 0},
+            {"act_cma_copy_dma_calls", 0},
             {"host_copy_weight_us", 0},
             {"bias_prepare_us", 0},
             {"postprocess_us", 0},
@@ -2117,7 +2149,7 @@ public:
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
             const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
             if (collect_cpu_backend_profile) {
-                ggml_backend_cpu_profile_start();
+                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_MTMD_CPU_OP_PROFILE"));
             }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
@@ -2324,7 +2356,7 @@ public:
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
             const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
             if (collect_cpu_backend_profile) {
-                ggml_backend_cpu_profile_start();
+                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_MTMD_CPU_OP_PROFILE"));
             }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
@@ -2416,7 +2448,7 @@ public:
         const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
         const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
         if (collect_text_cpu_profile) {
-            ggml_backend_cpu_profile_start();
+            server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_TEXT_CPU_PROFILE_MODE"));
         }
         result = llama_decode(ctx, batch);
         const char * text_cpu_profile_json =

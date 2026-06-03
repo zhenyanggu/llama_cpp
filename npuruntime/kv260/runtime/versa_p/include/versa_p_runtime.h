@@ -39,6 +39,15 @@ typedef struct versa_p_device_info {
     void *cma_vaddr;
 } versa_p_device_info;
 
+typedef struct versa_p_hw_state {
+    uint32_t magic;
+    uint32_t abi_version;
+    uint32_t mode_id;
+    uint32_t caps;
+    uint32_t status;
+    uint32_t error;
+} versa_p_hw_state;
+
 #define VERSA_P_INFO_FLAG_DMA_COPY         0x00000001u
 #define VERSA_P_INFO_FLAG_CACHEABLE_BUFFER 0x00000002u
 
@@ -84,6 +93,26 @@ typedef struct versa_p_gemm_i8_desc {
     uint8_t o_bank;
 } versa_p_gemm_i8_desc;
 
+typedef struct versa_p_attention_qk_desc {
+    uint16_t token_count;
+    uint16_t q_row_start;
+    uint16_t q_rows;
+    uint32_t gamma16_fix;
+    uint8_t q_bank;
+    uint8_t k_bank;
+    uint8_t o_bank;
+    uint8_t causal_mask;
+} versa_p_attention_qk_desc;
+
+typedef struct versa_p_pv_log8_desc {
+    uint16_t m;
+    uint16_t n;
+    uint16_t k;
+    uint8_t p_bank;
+    uint8_t v_bank;
+    uint8_t o_bank;
+} versa_p_pv_log8_desc;
+
 typedef struct versa_p_mvout_desc {
     uint32_t dram_base;
     uint32_t scale_param;
@@ -93,6 +122,16 @@ typedef struct versa_p_mvout_desc {
     uint8_t mode;
     uint8_t o_bank;
 } versa_p_mvout_desc;
+
+typedef struct versa_p_attention_logp_mvout_desc {
+    uint32_t dram_base;
+    uint16_t token_count;
+    uint16_t q_row_start;
+    uint16_t q_rows;
+    uint16_t output_stride_bytes;
+    uint8_t o_bank;
+    uint8_t causal_mask;
+} versa_p_attention_logp_mvout_desc;
 
 typedef struct versa_p_gemm_plan {
     const int8_t *a;
@@ -131,7 +170,9 @@ typedef struct versa_p_profile_counters {
 int versa_p_init(versa_p_device **out_dev, const versa_p_options *options);
 void versa_p_destroy(versa_p_device *dev);
 int versa_p_reset(versa_p_device *dev);
+int versa_p_reinit(versa_p_device *dev);
 int versa_p_get_info(versa_p_device *dev, versa_p_device_info *out_info);
+int versa_p_get_hw_state(versa_p_device *dev, versa_p_hw_state *out_state);
 
 int versa_p_mem_alloc(versa_p_device *dev, uint32_t size, uint32_t alignment,
                       versa_p_buffer *out_buffer);
@@ -140,6 +181,9 @@ uint32_t versa_p_dma_addr(versa_p_device *dev, const void *ptr);
 int versa_p_dma_copy_from_cma(versa_p_device *dev, const void *cma_ptr,
                               void *dst, size_t bytes,
                               uint32_t chunk_bytes);
+int versa_p_dma_copy_to_cma(versa_p_device *dev, void *cma_ptr,
+                            const void *src, size_t bytes,
+                            uint32_t chunk_bytes);
 int versa_p_sync_for_cpu(versa_p_device *dev, const void *cma_ptr,
                          size_t bytes);
 int versa_p_sync_for_device(versa_p_device *dev, const void *cma_ptr,
@@ -159,7 +203,13 @@ int versa_p_start_mvin_w(versa_p_device *dev, const versa_p_mvin_w_desc *desc);
 int versa_p_start_mvin_meta(versa_p_device *dev,
                             const versa_p_mvin_meta_desc *desc);
 int versa_p_start_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc);
+int versa_p_start_attention_qk_logp(versa_p_device *dev,
+                                    const versa_p_attention_qk_desc *desc);
+int versa_p_start_gemm_pv_log8(versa_p_device *dev,
+                               const versa_p_pv_log8_desc *desc);
 int versa_p_start_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc);
+int versa_p_start_mvout_attention_logp(
+    versa_p_device *dev, const versa_p_attention_logp_mvout_desc *desc);
 
 int versa_p_wait(versa_p_device *dev, versa_p_api api, uint32_t timeout_ms);
 
@@ -171,8 +221,17 @@ int versa_p_mvin_meta(versa_p_device *dev, const versa_p_mvin_meta_desc *desc,
                       uint32_t timeout_ms);
 int versa_p_gemm_i8(versa_p_device *dev, const versa_p_gemm_i8_desc *desc,
                     uint32_t timeout_ms);
+int versa_p_attention_qk_logp(versa_p_device *dev,
+                              const versa_p_attention_qk_desc *desc,
+                              uint32_t timeout_ms);
+int versa_p_gemm_pv_log8(versa_p_device *dev,
+                         const versa_p_pv_log8_desc *desc,
+                         uint32_t timeout_ms);
 int versa_p_mvout(versa_p_device *dev, const versa_p_mvout_desc *desc,
                   uint32_t timeout_ms);
+int versa_p_mvout_attention_logp(
+    versa_p_device *dev, const versa_p_attention_logp_mvout_desc *desc,
+    uint32_t timeout_ms);
 
 int versa_p_gemm_plan_run(versa_p_device *dev, const versa_p_gemm_plan *plan);
 

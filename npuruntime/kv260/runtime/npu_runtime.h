@@ -319,6 +319,7 @@ public:
     void* alloc(size_t size);
     void free(void* ptr);
     int dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes);
+    int dma_copy_to_cma(void* cma_ptr, const void* src, size_t bytes, uint32_t chunk_bytes);
 
 private:
     static constexpr uint32_t DMA_CHANNEL_COUNT = 3;
@@ -459,6 +460,10 @@ extern "C" {
     // 使用 driver DMAengine ioctl 将 Runtime CMA 内存复制到普通用户态内存。
     // 返回 0 表示成功；失败返回负 errno 风格错误码。
     int npu_dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t chunk_bytes);
+
+    // 使用 driver DMAengine ioctl 将普通用户态内存复制到 Runtime CMA 内存。
+    // 返回 0 表示成功；失败返回负 errno 风格错误码。
+    int npu_dma_copy_to_cma(void* cma_ptr, const void* src, size_t bytes, uint32_t chunk_bytes);
 
     // ---------------------------------------------------------------------
     // DMA Operations
@@ -896,6 +901,71 @@ extern "C" {
         bool     have_bias,
         bool     is_accumulate,
         bool     asymmetric_activations
+    );
+
+    struct npu_log8pv_attention_profile {
+        uint32_t kv_tokens;
+        uint32_t q_rows;
+        uint32_t q_row_start;
+        uint32_t exec_rows;
+        uint32_t chunks;
+        uint32_t group_size;
+        uint32_t kv_reuse_hit;
+        uint32_t workspace_reuse;
+        uint64_t total_us;
+        uint64_t mvin_q_us;
+        uint64_t mvin_k_us;
+        uint64_t mvin_v_us;
+        uint64_t qk_us;
+        uint64_t logp_mvout_us;
+        uint64_t mvin_p_us;
+        uint64_t pv_us;
+        uint64_t pv_mvout_us;
+        uint64_t qk_overlap_us;
+        uint64_t pv_overlap_us;
+    };
+
+    bool npu_attention_log8pv_run_group(
+        const int8_t * q_group,
+        uint32_t group_size,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool     causal_mask,
+        const uint32_t * gamma16_fix_group,
+        int32_t * output_group,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        npu_log8pv_attention_profile * profile_group
+    );
+
+    bool npu_attention_log8pv_run_ex(
+        const int8_t * q,
+        uint32_t q_rows,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t kv_tokens,
+        uint32_t q_row_start,
+        bool     causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms,
+        npu_log8pv_attention_profile * profile
+    );
+
+    bool npu_attention_log8pv_run(
+        const int8_t * q,
+        const int8_t * k,
+        const int8_t * v,
+        uint32_t tokens,
+        bool     causal_mask,
+        uint32_t gamma16_fix,
+        int32_t * output,
+        uint32_t output_stride_elems,
+        uint32_t timeout_ms
     );
 
     // ---------------------------------------------------------------------

@@ -1497,6 +1497,37 @@ int NpuRuntime::dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, 
     return 0;
 }
 
+int NpuRuntime::dma_copy_to_cma(void* cma_ptr, const void* src, size_t bytes, uint32_t chunk_bytes) {
+    if (!cma_ptr || !src || bytes == 0) {
+        return -EINVAL;
+    }
+    if (fd < 0 || !data_virt_base || data_map_size == 0) {
+        return -ENODEV;
+    }
+
+    auto * base = static_cast<uint8_t *>(data_virt_base);
+    auto * ptr = static_cast<uint8_t *>(cma_ptr);
+    if (ptr < base) {
+        return -EINVAL;
+    }
+
+    const uint64_t offset = static_cast<uint64_t>(ptr - base);
+    if (offset > data_map_size || bytes > static_cast<size_t>(data_map_size - offset)) {
+        return -EINVAL;
+    }
+
+    npu_kv260_dma_copy copy = {};
+    copy.cma_offset = offset;
+    copy.user_addr = reinterpret_cast<uint64_t>(src);
+    copy.size = bytes;
+    copy.direction = NPU_KV260_DMA_COPY_USER_TO_CMA;
+    copy.chunk_bytes = chunk_bytes;
+    if (ioctl(fd, NPU_KV260_IOC_DMA_COPY, &copy) != 0) {
+        return -errno;
+    }
+    return 0;
+}
+
 // ==========================================
 // Register Operations & Shadow Logic
 // ==========================================
@@ -3208,6 +3239,17 @@ int npu_dma_copy_from_cma(const void* cma_ptr, void* dst, size_t bytes, uint32_t
         chunk_bytes);
     if (!g_npu_runtime && npu_init() < 0) return -ENODEV;
     return g_npu_runtime->dma_copy_from_cma(cma_ptr, dst, bytes, chunk_bytes);
+}
+
+int npu_dma_copy_to_cma(void* cma_ptr, const void* src, size_t bytes, uint32_t chunk_bytes) {
+    NPU_CAPI_LOG(
+        "npu_dma_copy_to_cma(cma_ptr=%p, src=%p, bytes=%zu, chunk=%u)",
+        cma_ptr,
+        src,
+        bytes,
+        chunk_bytes);
+    if (!g_npu_runtime && npu_init() < 0) return -ENODEV;
+    return g_npu_runtime->dma_copy_to_cma(cma_ptr, src, bytes, chunk_bytes);
 }
 
 void npu_dma_mvin(

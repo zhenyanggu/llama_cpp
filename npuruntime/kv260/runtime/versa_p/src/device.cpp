@@ -133,6 +133,21 @@ void reset_software_state(versa_p_device *dev)
     dev->pending_mvout_bytes = 0;
 }
 
+int copy_hw_state_to_public(const npu_kv260_hw_state &state,
+                            versa_p_hw_state *out_state)
+{
+    if (!out_state) {
+        return VERSA_P_ERR_INVAL;
+    }
+    out_state->magic = state.magic;
+    out_state->abi_version = state.abi_version;
+    out_state->mode_id = state.mode_id;
+    out_state->caps = state.caps;
+    out_state->status = state.status;
+    out_state->error = state.error;
+    return VERSA_P_OK;
+}
+
 } // namespace
 
 const char *versa_p_status_string(int status)
@@ -232,6 +247,11 @@ int versa_p_init(versa_p_device **out_dev, const versa_p_options *options)
     }
 
     (void)ioctl(dev->fd, NPU_KV260_IOC_GET_INFO, &dev->info);
+    int hw_rc = versa_p_reinit(dev);
+    if (hw_rc != VERSA_P_OK) {
+        versa_p_destroy(dev);
+        return hw_rc;
+    }
     const uint32_t heap_offset = resolve_heap_offset();
     const uint32_t heap_size = resolve_heap_size(dev->cma_size, heap_offset);
     if (heap_size == 0 || heap_size > dev->cma_size - heap_offset) {
@@ -280,8 +300,31 @@ int versa_p_reset(versa_p_device *dev)
     if (ioctl(dev->fd, NPU_KV260_IOC_RESET_DEV) < 0) {
         return VERSA_P_ERR_IO;
     }
+    int rc = versa_p_reinit(dev);
+    if (rc != VERSA_P_OK) {
+        return rc;
+    }
     reset_software_state(dev);
     versa_p_write64(dev, VERSA_P_REG_GLOBAL_CLEAR, 1ull);
+    return VERSA_P_OK;
+}
+
+int versa_p_reinit(versa_p_device *dev)
+{
+    if (!dev || dev->fd < 0) {
+        return VERSA_P_ERR_INVAL;
+    }
+    npu_kv260_hw_state state = {};
+    if (ioctl(dev->fd, NPU_KV260_IOC_REINIT, &state) < 0) {
+        return VERSA_P_ERR_IO;
+    }
+    if (state.magic != NPU_KV260_HW_MAGIC ||
+        state.abi_version != NPU_KV260_HW_ABI_VERSION ||
+        state.mode_id != NPU_KV260_MODE_PREFILL) {
+        return VERSA_P_ERR_HARDWARE;
+    }
+    dev->hw = state;
+    reset_software_state(dev);
     return VERSA_P_OK;
 }
 
@@ -303,6 +346,18 @@ int versa_p_get_info(versa_p_device *dev, versa_p_device_info *out_info)
     out_info->cma_size = dev->cma_size;
     out_info->cma_vaddr = dev->cma;
     return VERSA_P_OK;
+}
+
+int versa_p_get_hw_state(versa_p_device *dev, versa_p_hw_state *out_state)
+{
+    if (!dev || !out_state) {
+        return VERSA_P_ERR_INVAL;
+    }
+    npu_kv260_hw_state state = {};
+    if (ioctl(dev->fd, NPU_KV260_IOC_GET_HW_STATE, &state) == 0) {
+        dev->hw = state;
+    }
+    return copy_hw_state_to_public(dev->hw, out_state);
 }
 
 int versa_p_mem_alloc(versa_p_device *dev, uint32_t size, uint32_t alignment,
@@ -476,4 +531,40 @@ int versa_p_dma_copy_from_cma(versa_p_device *dev, const void *cma_ptr,
         return VERSA_P_ERR_IO;
     }
     return VERSA_P_OK;
+}
+
+int versa_p_dma_copy_to_cma(versa_p_device *dev, void *cma_ptr,
+                            const void *src, size_t bytes,
+                            uint32_t chunk_bytes)
+{
+    if (!dev || !cma_ptr || !src || bytes == 0 || !dev->cma) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    uint8_t *base = (uint8_t *)dev->cma;
+    uint8_t *p = (uint8_t *)cma_ptr;
+    if (p < base || p > base + dev->cma_size) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    const uint64_t offset = (uint64_t)(p - base);
+    if (offset > dev->cma_size || bytes > (size_t)(dev->cma_size - offset)) {
+        return VERSA_P_ERR_INVAL;
+    }
+
+    npu_kv260_dma_copy copy = {};
+    copy.cma_offset = offset;
+    copy.user_addr = (uint64_t)(uintptr_t)src;
+    copy.size = bytes;
+    copy.direction = NPU_KV260_DMA_COPY_USER_TO_CMA;
+    copy.chunk_bytes = chunk_bytes;
+    if (ioctl(dev->fd, NPU_KV260_IOC_DMA_COPY, &copy) != 0) {
+        if (errno == EOPNOTSUPP || errno == ENOTTY || errno == EINVAL) {
+            return VERSA_P_ERR_UNSUPPORTED_MODE;
+        }
+        return VERSA_P_ERR_IO;
+    }
+
+    const int rc = versa_p_sync_for_device(dev, cma_ptr, bytes);
+    return rc == VERSA_P_OK ? VERSA_P_OK : rc;
 }

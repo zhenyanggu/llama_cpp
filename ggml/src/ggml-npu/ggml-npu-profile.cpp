@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <unordered_set>
+#include <unordered_map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -26,6 +28,12 @@ struct npu_profile_state {
     std::string output_path;
     std::string manifest_path;
     std::vector<npu_profile_node_record> nodes;
+    std::unordered_map<std::string, npu_profile_summary_delta> aggregate_by_key;
+    std::unordered_map<std::string, std::string> aggregate_domain;
+    std::unordered_map<std::string, std::string> aggregate_semantic_op;
+    std::unordered_map<std::string, std::string> aggregate_compute_op;
+    std::unordered_map<std::string, std::string> aggregate_example_weight;
+    std::unordered_map<std::string, std::string> aggregate_example_root;
 };
 
 struct npu_summary_state {
@@ -113,6 +121,16 @@ static std::string resolve_profile_level() {
     return level.empty() ? "diagnostic" : level;
 }
 
+static bool profile_level_aggregate_only() {
+    const std::string level = resolve_profile_level();
+    return level == "aggregate" || level == "aggregate_only" || level == "semantic";
+}
+
+static bool starts_with(const std::string & value, const std::string & prefix) {
+    return value.size() >= prefix.size() &&
+        value.compare(0, prefix.size(), prefix) == 0;
+}
+
 static bool contains_any(const std::string & haystack, const std::vector<std::string> & needles) {
     for (const std::string & needle : needles) {
         if (haystack.find(needle) != std::string::npos) {
@@ -190,7 +208,7 @@ static std::string semantic_op_from_plan(const npu_node_plan & plan) {
     if (contains_any(joined, {"attn_v", "v_proj", "mm_model_attn_v", ".v.weight", ".v_w"})) {
         return "attn_v";
     }
-    if (contains_any(joined, {"attn_out_proj", "o_proj", "out_proj", ".o.weight", ".o_w"})) {
+    if (contains_any(joined, {"attn_out", "attn_output", "attn_out_proj", "o_proj", "out_proj", ".o.weight", ".o_w"})) {
         return "attn_out_proj";
     }
     if (contains_any(joined, {"ffn_up", "up_proj", "fc1", "gate_up_proj"})) {
@@ -207,6 +225,192 @@ static std::string semantic_op_from_plan(const npu_node_plan & plan) {
     }
 
     return "unclassified";
+}
+
+static std::string profile_domain_from_plan(const npu_node_plan & plan) {
+    const std::string weight = plan.src0 && plan.src0->name[0] ? plan.src0->name : "";
+    const std::string root = plan.root && plan.root->name[0] ? plan.root->name : "";
+    const std::string dst = plan.dst && plan.dst->name[0] ? plan.dst->name : "";
+
+    if (starts_with(weight, "v.") || starts_with(weight, "mm.")) {
+        return "mmproj";
+    }
+    if (starts_with(weight, "blk.") ||
+        starts_with(weight, "token_embd") ||
+        starts_with(weight, "output.") ||
+        starts_with(root, "Qcur") ||
+        starts_with(root, "Kcur") ||
+        starts_with(root, "Vcur") ||
+        starts_with(root, "attn_out") ||
+        starts_with(root, "ffn_") ||
+        starts_with(dst, "Qcur") ||
+        starts_with(dst, "Kcur") ||
+        starts_with(dst, "Vcur") ||
+        starts_with(dst, "attn_out") ||
+        starts_with(dst, "ffn_")) {
+        return "text";
+    }
+
+    return "other";
+}
+
+static std::string normalize_semantic_op(const std::string & domain, const npu_node_plan & plan) {
+    const std::string raw = semantic_op_from_plan(plan);
+    if (raw == "attn_out_proj") {
+        return "attn_out";
+    }
+    if (raw != "unclassified") {
+        return raw;
+    }
+
+    const std::string weight = plan.src0 && plan.src0->name[0] ? plan.src0->name : "";
+    const std::string root = plan.root && plan.root->name[0] ? plan.root->name : "";
+    if (contains_any(to_lower(weight + " " + root), {"attn_output", "attn_out"})) {
+        return "attn_out";
+    }
+    if (domain == "mmproj" && weight == "mm.model.fc.weight") {
+        return "mmproj_fc";
+    }
+
+    return raw;
+}
+
+static std::string aggregate_key(const std::string & domain, const std::string & semantic_op) {
+    return domain + "|" + semantic_op;
+}
+
+static void add_delta(npu_profile_summary_delta & dst, const npu_profile_summary_delta & src) {
+    dst.node_count += src.node_count;
+    dst.exec_tile_count += src.exec_tile_count;
+    dst.weight_pack_count += src.weight_pack_count;
+    dst.bias_pack_count += src.bias_pack_count;
+    dst.activation_pack_calls += src.activation_pack_calls;
+    dst.activation_pack_async_jobs += src.activation_pack_async_jobs;
+    dst.activation_pack_async_hits += src.activation_pack_async_hits;
+    dst.host_copy_activation_calls += src.host_copy_activation_calls;
+    dst.act_cma_copy_cpu_calls += src.act_cma_copy_cpu_calls;
+    dst.act_cma_copy_dma_calls += src.act_cma_copy_dma_calls;
+    dst.host_copy_weight_calls += src.host_copy_weight_calls;
+    dst.bias_prepare_calls += src.bias_prepare_calls;
+    dst.dma_in_activation_calls += src.dma_in_activation_calls;
+    dst.dma_in_weight_calls += src.dma_in_weight_calls;
+    dst.dma_in_bias_calls += src.dma_in_bias_calls;
+    dst.dma_in_pair_calls += src.dma_in_pair_calls;
+    dst.spm_activation_reuse_hits += src.spm_activation_reuse_hits;
+    dst.spm_weight_reuse_hits += src.spm_weight_reuse_hits;
+    dst.gemm_calls += src.gemm_calls;
+    dst.gemm_plan_calls += src.gemm_plan_calls;
+    dst.dma_out_calls += src.dma_out_calls;
+    dst.postprocess_calls += src.postprocess_calls;
+    dst.raw_acc_mvout_nodes += src.raw_acc_mvout_nodes;
+    dst.raw_acc_mvout_tiles += src.raw_acc_mvout_tiles;
+    dst.w_prefetch_calls += src.w_prefetch_calls;
+    dst.w_prefetch_hits += src.w_prefetch_hits;
+    dst.w_prefetch_conflicts += src.w_prefetch_conflicts;
+    dst.full_pingpong_nodes += src.full_pingpong_nodes;
+    dst.a_prefetch_enabled_nodes += src.a_prefetch_enabled_nodes;
+    dst.o_overlap_enabled_nodes += src.o_overlap_enabled_nodes;
+    dst.full_output_cma_nodes += src.full_output_cma_nodes;
+    dst.a_prefetch_calls += src.a_prefetch_calls;
+    dst.a_prefetch_hits += src.a_prefetch_hits;
+    dst.a_prefetch_conflicts += src.a_prefetch_conflicts;
+    dst.o_mvout_async_calls += src.o_mvout_async_calls;
+    dst.packed_activation_bytes_total += src.packed_activation_bytes_total;
+    dst.copied_weight_bytes_total += src.copied_weight_bytes_total;
+    dst.dma_in_activation_bytes_total += src.dma_in_activation_bytes_total;
+    dst.dma_in_weight_bytes_total += src.dma_in_weight_bytes_total;
+    dst.bias_bytes_total += src.bias_bytes_total;
+    dst.acc_readback_bytes_total += src.acc_readback_bytes_total;
+    dst.output_write_bytes_total += src.output_write_bytes_total;
+    dst.total_node_us += src.total_node_us;
+    dst.setup_runtime_us_total += src.setup_runtime_us_total;
+    dst.setup_validate_us_total += src.setup_validate_us_total;
+    dst.setup_buffer_alloc_us_total += src.setup_buffer_alloc_us_total;
+    dst.setup_cache_alloc_us_total += src.setup_cache_alloc_us_total;
+    dst.setup_profile_begin_us_total += src.setup_profile_begin_us_total;
+    dst.activation_pack_us_total += src.activation_pack_us_total;
+    dst.activation_pack_async_us_total += src.activation_pack_async_us_total;
+    dst.activation_pack_wait_us_total += src.activation_pack_wait_us_total;
+    dst.host_copy_activation_us_total += src.host_copy_activation_us_total;
+    dst.act_cma_copy_cpu_us_total += src.act_cma_copy_cpu_us_total;
+    dst.act_cma_copy_dma_us_total += src.act_cma_copy_dma_us_total;
+    dst.act_cma_copy_hidden_candidate_us_total += src.act_cma_copy_hidden_candidate_us_total;
+    dst.host_copy_weight_us_total += src.host_copy_weight_us_total;
+    dst.bias_prepare_us_total += src.bias_prepare_us_total;
+    dst.dma_in_activation_us_total += src.dma_in_activation_us_total;
+    dst.dma_in_weight_us_total += src.dma_in_weight_us_total;
+    dst.dma_in_bias_us_total += src.dma_in_bias_us_total;
+    dst.dma_in_pair_us_total += src.dma_in_pair_us_total;
+    dst.w_prefetch_wait_us_total += src.w_prefetch_wait_us_total;
+    dst.w_prefetch_hidden_candidate_us_total += src.w_prefetch_hidden_candidate_us_total;
+    dst.a_prefetch_wait_us_total += src.a_prefetch_wait_us_total;
+    dst.a_prefetch_hidden_candidate_us_total += src.a_prefetch_hidden_candidate_us_total;
+    dst.o_mvout_wait_us_total += src.o_mvout_wait_us_total;
+    dst.o_mvout_hidden_candidate_us_total += src.o_mvout_hidden_candidate_us_total;
+    dst.gemm_us_total += src.gemm_us_total;
+    dst.dma_out_us_total += src.dma_out_us_total;
+    dst.postprocess_us_total += src.postprocess_us_total;
+    dst.accounted_us_total += src.accounted_us_total;
+    dst.unaccounted_us_total += src.unaccounted_us_total;
+}
+
+static json aggregate_delta_json(const npu_profile_summary_delta & d, double total_us) {
+    return {
+        {"node_count", d.node_count},
+        {"exec_tile_count", d.exec_tile_count},
+        {"weight_pack_count", d.weight_pack_count},
+        {"bias_pack_count", d.bias_pack_count},
+        {"total_node_us", d.total_node_us},
+        {"share_of_profile_time_pct", pct((double) d.total_node_us, total_us)},
+        {"accounted_us_total", d.accounted_us_total},
+        {"unaccounted_us_total", d.unaccounted_us_total},
+        {"setup_runtime_us_total", d.setup_runtime_us_total},
+        {"setup_validate_us_total", d.setup_validate_us_total},
+        {"setup_buffer_alloc_us_total", d.setup_buffer_alloc_us_total},
+        {"setup_cache_alloc_us_total", d.setup_cache_alloc_us_total},
+        {"setup_profile_begin_us_total", d.setup_profile_begin_us_total},
+        {"activation_pack_us_total", d.activation_pack_us_total},
+        {"activation_pack_async_us_total", d.activation_pack_async_us_total},
+        {"activation_pack_wait_us_total", d.activation_pack_wait_us_total},
+        {"host_copy_activation_us_total", d.host_copy_activation_us_total},
+        {"act_cma_copy_cpu_us_total", d.act_cma_copy_cpu_us_total},
+        {"act_cma_copy_dma_us_total", d.act_cma_copy_dma_us_total},
+        {"act_cma_copy_hidden_candidate_us_total", d.act_cma_copy_hidden_candidate_us_total},
+        {"host_copy_weight_us_total", d.host_copy_weight_us_total},
+        {"bias_prepare_us_total", d.bias_prepare_us_total},
+        {"dma_in_pair_us_total", d.dma_in_pair_us_total},
+        {"dma_in_bias_us_total", d.dma_in_bias_us_total},
+        {"dma_in_total_us", d.dma_in_pair_us_total + d.dma_in_bias_us_total},
+        {"gemm_us_total", d.gemm_us_total},
+        {"dma_out_us_total", d.dma_out_us_total},
+        {"postprocess_us_total", d.postprocess_us_total},
+        {"activation_pack_async_jobs", d.activation_pack_async_jobs},
+        {"activation_pack_async_hits", d.activation_pack_async_hits},
+        {"act_cma_copy_cpu_calls", d.act_cma_copy_cpu_calls},
+        {"act_cma_copy_dma_calls", d.act_cma_copy_dma_calls},
+        {"dma_in_activation_calls", d.dma_in_activation_calls},
+        {"dma_in_weight_calls", d.dma_in_weight_calls},
+        {"dma_in_bias_calls", d.dma_in_bias_calls},
+        {"dma_in_pair_calls", d.dma_in_pair_calls},
+        {"spm_activation_reuse_hits", d.spm_activation_reuse_hits},
+        {"spm_weight_reuse_hits", d.spm_weight_reuse_hits},
+        {"gemm_calls", d.gemm_calls},
+        {"gemm_plan_calls", d.gemm_plan_calls},
+        {"dma_out_calls", d.dma_out_calls},
+        {"postprocess_calls", d.postprocess_calls},
+        {"full_pingpong_nodes", d.full_pingpong_nodes},
+        {"a_prefetch_enabled_nodes", d.a_prefetch_enabled_nodes},
+        {"o_overlap_enabled_nodes", d.o_overlap_enabled_nodes},
+        {"full_output_cma_nodes", d.full_output_cma_nodes},
+        {"a_prefetch_calls", d.a_prefetch_calls},
+        {"a_prefetch_hits", d.a_prefetch_hits},
+        {"a_prefetch_conflicts", d.a_prefetch_conflicts},
+        {"o_mvout_async_calls", d.o_mvout_async_calls},
+        {"dma_in_activation_bytes_total", d.dma_in_activation_bytes_total},
+        {"dma_in_weight_bytes_total", d.dma_in_weight_bytes_total},
+        {"acc_readback_bytes_total", d.acc_readback_bytes_total},
+        {"output_write_bytes_total", d.output_write_bytes_total},
+    };
 }
 
 static json tile_json(const npu_profile_tile_record & tile) {
@@ -241,6 +445,9 @@ static json tile_json(const npu_profile_tile_record & tile) {
         {"output_write_bytes", tile.output_write_bytes},
         {"activation_pack_us", tile.activation_pack_us},
         {"host_copy_activation_us", tile.host_copy_activation_us},
+        {"act_cma_copy_cpu_us", tile.act_cma_copy_cpu_us},
+        {"act_cma_copy_dma_us", tile.act_cma_copy_dma_us},
+        {"act_cma_copy_hidden_candidate_us", tile.act_cma_copy_hidden_candidate_us},
         {"host_copy_weight_us", tile.host_copy_weight_us},
         {"bias_prepare_us", tile.bias_prepare_us},
         {"dma_in_activation_us", tile.dma_in_activation_us},
@@ -310,6 +517,8 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"activation_pack_async_jobs", node.activation_pack_async_jobs},
         {"activation_pack_async_hits", node.activation_pack_async_hits},
         {"host_copy_activation_calls", node.host_copy_activation_calls},
+        {"act_cma_copy_cpu_calls", node.act_cma_copy_cpu_calls},
+        {"act_cma_copy_dma_calls", node.act_cma_copy_dma_calls},
         {"host_copy_weight_calls", node.host_copy_weight_calls},
         {"bias_prepare_calls", node.bias_prepare_calls},
         {"dma_in_activation_calls", node.dma_in_activation_calls},
@@ -347,6 +556,9 @@ static json node_json(const npu_profile_node_record & node, double total_us) {
         {"activation_pack_async_us_total", node.activation_pack_async_us_total},
         {"activation_pack_wait_us_total", node.activation_pack_wait_us_total},
         {"host_copy_activation_us_total", node.host_copy_activation_us_total},
+        {"act_cma_copy_cpu_us_total", node.act_cma_copy_cpu_us_total},
+        {"act_cma_copy_dma_us_total", node.act_cma_copy_dma_us_total},
+        {"act_cma_copy_hidden_candidate_us_total", node.act_cma_copy_hidden_candidate_us_total},
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
         {"bias_prepare_us_total", node.bias_prepare_us_total},
         {"dma_in_activation_us_total", node.dma_in_activation_us_total},
@@ -407,6 +619,9 @@ static json node_json_compact(const npu_profile_node_record & node, double total
         {"activation_pack_async_jobs", node.activation_pack_async_jobs},
         {"activation_pack_async_hits", node.activation_pack_async_hits},
         {"host_copy_activation_us_total", node.host_copy_activation_us_total},
+        {"act_cma_copy_cpu_us_total", node.act_cma_copy_cpu_us_total},
+        {"act_cma_copy_dma_us_total", node.act_cma_copy_dma_us_total},
+        {"act_cma_copy_hidden_candidate_us_total", node.act_cma_copy_hidden_candidate_us_total},
         {"host_copy_weight_us_total", node.host_copy_weight_us_total},
         {"bias_prepare_us_total", node.bias_prepare_us_total},
         {"dma_in_pair_us_total", node.dma_in_pair_us_total},
@@ -530,6 +745,10 @@ bool npu_profile_enabled() {
     return !resolve_output_path().empty();
 }
 
+bool npu_profile_aggregate_only() {
+    return npu_profile_enabled() && profile_level_aggregate_only();
+}
+
 npu_profile_node_record npu_profile_init_node_record(int64_t layer_id, const npu_node_plan & plan) {
     npu_profile_node_record record;
     record.layer_id = layer_id;
@@ -578,6 +797,12 @@ void npu_profile_reset() {
     state.output_path = resolve_output_path();
     state.manifest_path = derive_manifest_path(state.output_path);
     state.nodes.clear();
+    state.aggregate_by_key.clear();
+    state.aggregate_domain.clear();
+    state.aggregate_semantic_op.clear();
+    state.aggregate_compute_op.clear();
+    state.aggregate_example_weight.clear();
+    state.aggregate_example_root.clear();
 }
 
 void npu_profile_add_node_record(npu_profile_node_record record) {
@@ -592,6 +817,48 @@ void npu_profile_add_node_record(npu_profile_node_record record) {
     state.nodes.push_back(std::move(record));
 }
 
+void npu_profile_add_aggregate_record(
+        int64_t layer_id,
+        const npu_node_plan & plan,
+        const npu_profile_summary_delta & delta,
+        const char * status,
+        const char * error) {
+    GGML_UNUSED(layer_id);
+    if (!npu_profile_aggregate_only()) {
+        return;
+    }
+
+    npu_profile_state & state = npu_get_profile_state();
+    const std::string domain = profile_domain_from_plan(plan);
+    const std::string semantic_op = normalize_semantic_op(domain, plan);
+    const std::string key = aggregate_key(domain, semantic_op);
+    const std::string compute_op = plan.op ? ggml_op_name(plan.op->op) : "MUL_MAT";
+    const std::string weight = plan.src0 && plan.src0->name[0] ? plan.src0->name : "";
+    const std::string root = plan.root && plan.root->name[0] ? plan.root->name : "";
+    npu_profile_summary_delta add = delta;
+    if (status != nullptr && std::strcmp(status, "success") != 0) {
+        // Keep failed nodes counted; the aggregate JSON exposes only the
+        // accumulated failing-node time and not individual error strings.
+        GGML_UNUSED(error);
+    } else {
+        GGML_UNUSED(error);
+    }
+
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.output_path = resolve_output_path();
+    state.manifest_path = derive_manifest_path(state.output_path);
+    add_delta(state.aggregate_by_key[key], add);
+    state.aggregate_domain[key] = domain;
+    state.aggregate_semantic_op[key] = semantic_op;
+    state.aggregate_compute_op[key] = compute_op;
+    if (state.aggregate_example_weight[key].empty()) {
+        state.aggregate_example_weight[key] = weight;
+    }
+    if (state.aggregate_example_root[key].empty()) {
+        state.aggregate_example_root[key] = root;
+    }
+}
+
 void npu_profile_flush() {
     if (!npu_profile_enabled()) {
         return;
@@ -602,6 +869,12 @@ void npu_profile_flush() {
     std::string output_path;
     std::string manifest_path;
     std::string profile_level;
+    std::unordered_map<std::string, npu_profile_summary_delta> aggregate_snapshot;
+    std::unordered_map<std::string, std::string> aggregate_domain;
+    std::unordered_map<std::string, std::string> aggregate_semantic_op;
+    std::unordered_map<std::string, std::string> aggregate_compute_op;
+    std::unordered_map<std::string, std::string> aggregate_example_weight;
+    std::unordered_map<std::string, std::string> aggregate_example_root;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
         output_path = resolve_output_path();
@@ -610,9 +883,98 @@ void npu_profile_flush() {
         state.output_path = output_path;
         state.manifest_path = manifest_path;
         snapshot = state.nodes;
+        aggregate_snapshot = state.aggregate_by_key;
+        aggregate_domain = state.aggregate_domain;
+        aggregate_semantic_op = state.aggregate_semantic_op;
+        aggregate_compute_op = state.aggregate_compute_op;
+        aggregate_example_weight = state.aggregate_example_weight;
+        aggregate_example_root = state.aggregate_example_root;
     }
 
     if (output_path.empty()) {
+        return;
+    }
+
+    if (profile_level_aggregate_only()) {
+        npu_profile_summary_delta total = {};
+        for (const auto & kv : aggregate_snapshot) {
+            add_delta(total, kv.second);
+        }
+        const double total_us = (double) total.total_node_us;
+
+        std::vector<std::pair<std::string, npu_profile_summary_delta>> sorted(aggregate_snapshot.begin(), aggregate_snapshot.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto & lhs, const auto & rhs) {
+            if (lhs.second.total_node_us != rhs.second.total_node_us) {
+                return lhs.second.total_node_us > rhs.second.total_node_us;
+            }
+            return lhs.first < rhs.first;
+        });
+
+        std::unordered_map<std::string, npu_profile_summary_delta> by_semantic;
+        std::unordered_map<std::string, npu_profile_summary_delta> by_domain;
+        for (const auto & kv : aggregate_snapshot) {
+            const std::string semantic = aggregate_semantic_op[kv.first];
+            const std::string domain = aggregate_domain[kv.first];
+            add_delta(by_semantic[semantic], kv.second);
+            add_delta(by_domain[domain], kv.second);
+        }
+
+        auto sorted_delta_json = [&](const std::unordered_map<std::string, npu_profile_summary_delta> & values, const char * name_key) {
+            std::vector<std::pair<std::string, npu_profile_summary_delta>> items(values.begin(), values.end());
+            std::sort(items.begin(), items.end(), [](const auto & lhs, const auto & rhs) {
+                if (lhs.second.total_node_us != rhs.second.total_node_us) {
+                    return lhs.second.total_node_us > rhs.second.total_node_us;
+                }
+                return lhs.first < rhs.first;
+            });
+            json out = json::array();
+            for (const auto & item : items) {
+                json row = aggregate_delta_json(item.second, total_us);
+                row[name_key] = item.first;
+                out.push_back(std::move(row));
+            }
+            return out;
+        };
+
+        json by_domain_semantic = json::array();
+        for (const auto & item : sorted) {
+            json row = aggregate_delta_json(item.second, total_us);
+            row["domain"] = aggregate_domain[item.first];
+            row["semantic_op"] = aggregate_semantic_op[item.first];
+            row["compute_op_name"] = aggregate_compute_op[item.first];
+            row["example_weight_name"] = aggregate_example_weight[item.first];
+            row["example_root_name"] = aggregate_example_root[item.first];
+            by_domain_semantic.push_back(std::move(row));
+        }
+
+        json out = {
+            {"profile_kind", "ggml_npu_aggregate_profile"},
+            {"profile_level", profile_level},
+            {"timing_unit", "us"},
+            {"note", "Aggregate profile keeps only domain/semantic-op counters and stage sums; no per-node records or tile records are retained."},
+            {"summary", aggregate_delta_json(total, total_us)},
+            {"by_domain", sorted_delta_json(by_domain, "domain")},
+            {"by_semantic_op", sorted_delta_json(by_semantic, "semantic_op")},
+            {"by_domain_semantic", by_domain_semantic},
+            {"nodes", json::array()},
+        };
+
+        std::ofstream out_stream(output_path);
+        if (out_stream.is_open()) {
+            out_stream << out.dump(2) << '\n';
+        }
+
+        if (!manifest_path.empty()) {
+            json manifest = {
+                {"profile_kind", "ggml_npu_aggregate_manifest"},
+                {"profile_level", profile_level},
+                {"by_domain_semantic", by_domain_semantic},
+            };
+            std::ofstream manifest_stream(manifest_path);
+            if (manifest_stream.is_open()) {
+                manifest_stream << manifest.dump(2) << '\n';
+            }
+        }
         return;
     }
 
@@ -626,6 +988,9 @@ void npu_profile_flush() {
     double total_activation_pack_async_us = 0.0;
     double total_activation_pack_wait_us = 0.0;
     double total_host_copy_activation_us = 0.0;
+    double total_act_cma_copy_cpu_us = 0.0;
+    double total_act_cma_copy_dma_us = 0.0;
+    double total_act_cma_copy_hidden_candidate_us = 0.0;
     double total_host_copy_weight_us = 0.0;
     double total_bias_prepare_us = 0.0;
     double total_dma_in_pair_us = 0.0;
@@ -642,6 +1007,8 @@ void npu_profile_flush() {
     int64_t total_bias_prepare_calls = 0;
     int64_t total_activation_pack_async_jobs = 0;
     int64_t total_activation_pack_async_hits = 0;
+    int64_t total_act_cma_copy_cpu_calls = 0;
+    int64_t total_act_cma_copy_dma_calls = 0;
     int64_t total_dma_in_activation_calls = 0;
     int64_t total_dma_in_weight_calls = 0;
     int64_t total_dma_in_pair_calls = 0;
@@ -689,6 +1056,9 @@ void npu_profile_flush() {
         total_activation_pack_async_us += node.activation_pack_async_us_total;
         total_activation_pack_wait_us += node.activation_pack_wait_us_total;
         total_host_copy_activation_us += node.host_copy_activation_us_total;
+        total_act_cma_copy_cpu_us += node.act_cma_copy_cpu_us_total;
+        total_act_cma_copy_dma_us += node.act_cma_copy_dma_us_total;
+        total_act_cma_copy_hidden_candidate_us += node.act_cma_copy_hidden_candidate_us_total;
         total_host_copy_weight_us += node.host_copy_weight_us_total;
         total_bias_prepare_us += node.bias_prepare_us_total;
         total_dma_in_pair_us += node.dma_in_pair_us_total;
@@ -706,6 +1076,8 @@ void npu_profile_flush() {
         total_unaccounted_us += node.unaccounted_us_total;
         total_activation_pack_async_jobs += node.activation_pack_async_jobs;
         total_activation_pack_async_hits += node.activation_pack_async_hits;
+        total_act_cma_copy_cpu_calls += node.act_cma_copy_cpu_calls;
+        total_act_cma_copy_dma_calls += node.act_cma_copy_dma_calls;
         total_bias_prepare_calls += node.bias_prepare_calls;
         total_dma_in_activation_calls += node.dma_in_activation_calls;
         total_dma_in_weight_calls += node.dma_in_weight_calls;
@@ -794,6 +1166,11 @@ void npu_profile_flush() {
             {"total_activation_pack_async_jobs", total_activation_pack_async_jobs},
             {"total_activation_pack_async_hits", total_activation_pack_async_hits},
             {"total_host_copy_activation_us", total_host_copy_activation_us},
+            {"total_act_cma_copy_cpu_us", total_act_cma_copy_cpu_us},
+            {"total_act_cma_copy_dma_us", total_act_cma_copy_dma_us},
+            {"total_act_cma_copy_hidden_candidate_us", total_act_cma_copy_hidden_candidate_us},
+            {"total_act_cma_copy_cpu_calls", total_act_cma_copy_cpu_calls},
+            {"total_act_cma_copy_dma_calls", total_act_cma_copy_dma_calls},
             {"total_host_copy_weight_us", total_host_copy_weight_us},
             {"total_bias_prepare_us", total_bias_prepare_us},
             {"total_bias_prepare_calls", total_bias_prepare_calls},
@@ -932,6 +1309,8 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.activation_pack_async_jobs += delta.activation_pack_async_jobs;
     summary.activation_pack_async_hits += delta.activation_pack_async_hits;
     summary.host_copy_activation_calls += delta.host_copy_activation_calls;
+    summary.act_cma_copy_cpu_calls += delta.act_cma_copy_cpu_calls;
+    summary.act_cma_copy_dma_calls += delta.act_cma_copy_dma_calls;
     summary.host_copy_weight_calls += delta.host_copy_weight_calls;
     summary.bias_prepare_calls += delta.bias_prepare_calls;
     summary.dma_in_activation_calls += delta.dma_in_activation_calls;
@@ -974,6 +1353,9 @@ void npu_summary_add_delta(const npu_profile_summary_delta & delta) {
     summary.activation_pack_async_us_total += delta.activation_pack_async_us_total;
     summary.activation_pack_wait_us_total += delta.activation_pack_wait_us_total;
     summary.host_copy_activation_us_total += delta.host_copy_activation_us_total;
+    summary.act_cma_copy_cpu_us_total += delta.act_cma_copy_cpu_us_total;
+    summary.act_cma_copy_dma_us_total += delta.act_cma_copy_dma_us_total;
+    summary.act_cma_copy_hidden_candidate_us_total += delta.act_cma_copy_hidden_candidate_us_total;
     summary.host_copy_weight_us_total += delta.host_copy_weight_us_total;
     summary.bias_prepare_us_total += delta.bias_prepare_us_total;
     summary.dma_in_activation_us_total += delta.dma_in_activation_us_total;
