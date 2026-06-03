@@ -24,6 +24,7 @@
 #include <cstring>
 #include <cinttypes>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <future>
 #include <iomanip>
@@ -761,6 +762,23 @@ static bool llama_text_log8pv_cpu_npu_pipeline_enabled() {
         return std::strcmp(value, "0") != 0;
     }();
     return enabled;
+}
+
+static int64_t llama_text_log8pv_cpu_npu_pipeline_workers() {
+    static const int64_t workers = []() {
+        constexpr int64_t default_workers = 4;
+        const char * value = std::getenv("AICAS_TEXT_LOG8PV_CPU_PREP_WORKERS");
+        if (value == nullptr || value[0] == '\0') {
+            return default_workers;
+        }
+        char * end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed > 0 && parsed <= 4) {
+            return (int64_t) parsed;
+        }
+        return default_workers;
+    }();
+    return workers;
 }
 
 static bool llama_text_prefill_log8pv_direct_kv_enabled() {
@@ -1826,6 +1844,7 @@ struct llama_log8pv_attention_host_profile {
     int64_t post_hidden_us = 0;
     int64_t pipeline_group = -1;
     int64_t pipeline_enabled = 0;
+    int64_t pipeline_workers = 0;
 };
 
 static bool llama_log8pv_npu_profile_enabled() {
@@ -1934,6 +1953,7 @@ static void llama_log8pv_npu_profile_append(
         {"post_hidden_us", host_profile.post_hidden_us},
         {"pipeline_group", host_profile.pipeline_group},
         {"pipeline_enabled", host_profile.pipeline_enabled},
+        {"pipeline_workers", host_profile.pipeline_workers},
     };
     std::ofstream fout(path, std::ios::app | std::ios::binary);
     if (fout.is_open()) {
@@ -2616,20 +2636,35 @@ static void llama_compute_text_log8pv_attn(
         };
 
         const int64_t group_count = n_batch * n_kv_head;
-        std::future<prepared_group> pending;
+        const int64_t pipeline_workers = pipeline_enabled
+            ? std::min<int64_t>(llama_text_log8pv_cpu_npu_pipeline_workers(), group_count)
+            : 0;
+        std::deque<std::pair<int64_t, std::future<prepared_group>>> pending;
+        int64_t next_prepare_group = 0;
+        auto fill_prepare_queue = [&]() {
+            while (pipeline_workers > 0 &&
+                    (int64_t) pending.size() < pipeline_workers &&
+                    next_prepare_group < group_count) {
+                pending.emplace_back(next_prepare_group, launch_prepare(next_prepare_group));
+                ++next_prepare_group;
+            }
+        };
         if (pipeline_enabled) {
-            pending = launch_prepare(0);
+            fill_prepare_queue();
         }
         for (int64_t group_index = 0; group_index < group_count && npu_fast_ok; ++group_index) {
             int64_t prepare_wait_us = 0;
             prepared_group work;
             if (pipeline_enabled) {
-                const int64_t wait_start_us = ggml_time_us();
-                work = pending.get();
-                prepare_wait_us = ggml_time_us() - wait_start_us;
-                if (group_index + 1 < group_count) {
-                    pending = launch_prepare(group_index + 1);
+                if (pending.empty() || pending.front().first != group_index) {
+                    npu_fast_ok = false;
+                    break;
                 }
+                const int64_t wait_start_us = ggml_time_us();
+                work = pending.front().second.get();
+                pending.pop_front();
+                prepare_wait_us = ggml_time_us() - wait_start_us;
+                fill_prepare_queue();
             } else {
                 work = prepare_group(group_index);
             }
@@ -2641,6 +2676,7 @@ static void llama_compute_text_log8pv_attn(
                 llama_log8pv_attention_host_profile & hp = work.host_profiles[(size_t) local];
                 hp.pipeline_enabled = pipeline_enabled ? 1 : 0;
                 hp.pipeline_group = work.group_index;
+                hp.pipeline_workers = pipeline_workers;
                 hp.cpu_quant_overlap_us += prepare_hidden_us / std::max<int64_t>(1, gqa_ratio);
                 hp.npu_wait_after_quant_us += prepare_wait_us / std::max<int64_t>(1, gqa_ratio);
                 hp.q_quant_hidden_us += std::min<int64_t>(hp.q_quant_us, prepare_hidden_us);
