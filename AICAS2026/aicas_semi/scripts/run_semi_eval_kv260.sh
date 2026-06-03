@@ -29,6 +29,7 @@ Options:
   --remote-npu-driver-ko <path> Use an existing board-side npu_kv260.ko instead of staging local driver
   --prefill-bitstream-fw <path> FPGA manager firmware path for generic prefill
   --decode-bitstream-fw <path>  FPGA manager firmware path for generic decode
+  --decode-npu                  Enable decode AWQ W4A16 NPU offload and overlay switching
   --no-decode-npu               Disable decode AWQ W4A16 NPU offload and overlay switching
   --sudo-password <password>    Board sudo password (default: 123456)
   --port <port>                 llama-server port (default: 8080)
@@ -206,6 +207,7 @@ while [ $# -gt 0 ]; do
     --remote-npu-driver-ko) REMOTE_NPU_DRIVER_KO_OVERRIDE="$2"; shift 2 ;;
     --prefill-bitstream-fw) GENERIC_PREFILL_FW="$2"; GENERIC_PREFILL_FW_EXPLICIT=1; shift 2 ;;
     --decode-bitstream-fw) GENERIC_DECODE_FW="$2"; GENERIC_DECODE_FW_EXPLICIT=1; shift 2 ;;
+    --decode-npu) DECODE_NPU=1; shift ;;
     --no-decode-npu) DECODE_NPU=0; shift ;;
     --sudo-password) SUDO_PASSWORD="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;

@@ -25,10 +25,10 @@ Improve 501 prompt prefill performance without changing correctness or precision
 
 ## Current State
 
-- State: STOPPED
-- Candidate: A1 retry after driver ABI fix: bounded parallel CPU prepare workers for grouped text log8PV attention.
-- Rationale: current single pending prepare group leaves about 1071 ms of NPU wait-after-quant in the 501 text attention profile. K/V cannot be merged across KV heads because the runtime group API shares one K/V buffer across the group, so the low-risk path is to prepare several future groups concurrently while preserving ordered NPU execution.
-- Expected effect: reduce text attention `npu_wait_after_quant_us` and total text prefill wall time without changing quantization formulas, calibration, V centering, or log8 P format.
+- State: PROFILE_TRIAGE
+- Candidate: normalize and decompose CPU-backend custom wrapper nodes before choosing the next optimization.
+- Rationale: aggregate profile showed large `MAP_CUSTOM3` and `CUSTOM` buckets, but these are CPU-backend entry points for NPU-related custom paths rather than ordinary CPU operators. They must be reclassified as NPU wrapper wall time, then split into NPU hardware/runtime stages and wrapper CPU overhead before optimizing.
+- Expected effect: expose whether the next code candidate should target text/mmproj custom GEMM wrapper overhead, log8PV attention wrapper overhead, or lower-level NPU GEMM/MVOUT/postprocess stages.
 
 ## Transition Log
 
@@ -53,3 +53,4 @@ Improve 501 prompt prefill performance without changing correctness or precision
 - LOCAL_VERIFY: `git diff --check` and `cmake --build build-kv260-semi --config Release -j8` passed after setting default workers to 4.
 - BOARD_501_SMOKE: final default worker=4 run completed 501 smoke: 19994.848 ms, 25.056 tok/s. mmproj encode 6880.239 ms, text prefill 13104.937 ms. Text attention pipeline rows 480 with workers [4], q_quant 2175.706 ms, kv_quant 1916.260 ms, cpu_quant_overlap 3248.490 ms, npu_wait_after_quant 893.046 ms, npu_call_wall 1345.574 ms.
 - STOP_OR_NEXT: stopped this iteration because the validated worker=4 change clears the 2% gate versus the repaired baseline, while further immediate candidates are either invalidated (direct F32 gate disabled grouped path) or require deeper dtype/layout investigation. Next state should investigate text attention K mvin variance and possible dtype-specialized quant loops before another code candidate.
+- PROFILE_TRIAGE: added normalized profile fields that keep raw CPU backend data but reclassify `CUSTOM` as `NPU_ATTENTION_WRAPPER` and `MAP_CUSTOM3` as `NPU_CUSTOM_GEMM_WRAPPER`. Board 501 aggregate run `20260603T-normalized-profile-501` completed at 19952.025 ms. Normalized wall: text NPU-related 10584.637 ms, mmproj NPU-related 5437.070 ms, text residual CPU/other 2459.842 ms, mmproj residual CPU 1459.949 ms. Next gate is targeted diagnostic to identify exact `MAP_CUSTOM3` node names.

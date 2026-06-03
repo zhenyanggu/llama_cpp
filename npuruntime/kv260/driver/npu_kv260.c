@@ -317,7 +317,7 @@ static void npu_apply_irq_mode(struct npu_dev *npu)
 
     if (atomic_read(&npu->irq_mode) == NPU_KV260_IRQ_MODE_KERNEL &&
         npu->has_irq) {
-        npu_write(npu, npu->reg_ier, 0x3F);
+        npu_write(npu, npu->reg_ier, 0xFF);
     } else {
         npu_write(npu, npu->reg_ier, 0x00);
     }

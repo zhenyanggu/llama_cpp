@@ -202,6 +202,130 @@ static void server_backend_cpu_profile_start(bool aggregate) {
     }
 }
 
+struct server_operator_profile_aggregate {
+    int64_t node_count = 0;
+    int64_t duration_us = 0;
+    int64_t elements = 0;
+    int64_t bytes = 0;
+    std::vector<std::string> original_names;
+};
+
+static std::string server_profile_strip_cpu_suffix(const std::string & name) {
+    static const std::string suffix = "_CPU";
+    if (name.size() > suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        return name.substr(0, name.size() - suffix.size());
+    }
+    return name;
+}
+
+static std::string server_profile_normalized_operator_kind(const std::string & name) {
+    const std::string op = server_profile_strip_cpu_suffix(name);
+    if (op == "CUSTOM") {
+        return "NPU_ATTENTION_WRAPPER";
+    }
+    if (op == "MAP_CUSTOM3") {
+        return "NPU_CUSTOM_GEMM_WRAPPER";
+    }
+    return "CPU_BACKEND";
+}
+
+static void server_profile_append_original_name(
+        std::vector<std::string> & names,
+        const std::string & name) {
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+        names.push_back(name);
+    }
+}
+
+static int64_t server_profile_item_i64(const json & item, const char * key) {
+    if (!item.contains(key) || !item[key].is_number()) {
+        return 0;
+    }
+    return item[key].get<int64_t>();
+}
+
+static json server_profile_normalized_operator_profile_from_categories(
+        const json & categories,
+        int64_t raw_total_us) {
+    std::map<std::string, server_operator_profile_aggregate> by_kind;
+    int64_t observed_total_us = 0;
+    int64_t npu_wrapped_node_wall_us = 0;
+
+    if (categories.is_array()) {
+        for (const json & item : categories) {
+            if (!item.contains("name") || !item["name"].is_string()) {
+                continue;
+            }
+            const std::string name = item["name"].get<std::string>();
+            const std::string kind = server_profile_normalized_operator_kind(name);
+            const int64_t duration_us = server_profile_item_i64(item, "duration_us");
+            auto & dst = by_kind[kind];
+            dst.node_count += server_profile_item_i64(item, "node_count");
+            dst.duration_us += duration_us;
+            dst.elements += server_profile_item_i64(item, "elements");
+            dst.bytes += server_profile_item_i64(item, "bytes");
+            server_profile_append_original_name(dst.original_names, name);
+            observed_total_us += duration_us;
+            if (kind != "CPU_BACKEND") {
+                npu_wrapped_node_wall_us += duration_us;
+            }
+        }
+    }
+
+    if (raw_total_us <= 0) {
+        raw_total_us = observed_total_us;
+    }
+
+    std::vector<std::pair<std::string, server_operator_profile_aggregate>> sorted(by_kind.begin(), by_kind.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+        if (a.second.duration_us != b.second.duration_us) {
+            return a.second.duration_us > b.second.duration_us;
+        }
+        return a.first < b.first;
+    });
+
+    json by_kind_json = json::array();
+    for (const auto & kv : sorted) {
+        json original_names = json::array();
+        for (const std::string & name : kv.second.original_names) {
+            original_names.push_back(name);
+        }
+        by_kind_json.push_back({
+            {"kind", kv.first},
+            {"node_count", kv.second.node_count},
+            {"duration_us", kv.second.duration_us},
+            {"duration_ms", static_cast<double>(kv.second.duration_us) / 1000.0},
+            {"elements", kv.second.elements},
+            {"bytes", kv.second.bytes},
+            {"original_names", std::move(original_names)},
+        });
+    }
+
+    return {
+        {"profile_kind", "llama_server_normalized_operator_profile"},
+        {"timing_unit", "us"},
+        {"classification", "custom_cpu_backend_wrappers_as_npu_related_ops"},
+        {"note", "Raw CPU backend profile is preserved separately. CUSTOM is reported as an NPU attention wrapper; MAP_CUSTOM3 is reported as an NPU custom GEMM wrapper because these nodes are CPU-backend entry points for NPU-related custom paths."},
+        {"raw_cpu_backend_total_us", raw_total_us},
+        {"npu_wrapped_node_wall_us", npu_wrapped_node_wall_us},
+        {"cpu_backend_non_npu_us", std::max<int64_t>(0, raw_total_us - npu_wrapped_node_wall_us)},
+        {"by_kind", std::move(by_kind_json)},
+    };
+}
+
+static json server_profile_normalized_operator_profile(const json & profile) {
+    const json * categories = nullptr;
+    if (profile.contains("operator_categories") && profile["operator_categories"].is_array()) {
+        categories = &profile["operator_categories"];
+    } else if (profile.contains("operators") && profile["operators"].is_array()) {
+        categories = &profile["operators"];
+    }
+    return server_profile_normalized_operator_profile_from_categories(
+            categories != nullptr ? *categories : json::array(),
+            profile.value("total_us", 0));
+}
+
 static std::string server_text_cpu_profile_output_path() {
     const char * path = std::getenv("LLAMA_TEXT_CPU_PROFILE_JSON");
     return path ? path : "";
@@ -235,6 +359,7 @@ static void server_text_cpu_profile_write(
         {"n_tokens", n_tokens},
         {"seq_id", seq_id},
         {"wall_us", wall_us},
+        {"normalized_operator_profile", server_profile_normalized_operator_profile(profile)},
         {"cpu_backend_profile", std::move(profile)},
     };
 
@@ -269,6 +394,7 @@ struct server_mtmd_prefill_profile {
     int64_t merged_decode_us = 0;
     std::vector<json> mmproj_encode_details;
     std::vector<json> cpu_backend_profile_details;
+    json text_cpu_backend_profile;
 #ifdef GGML_USE_NPU
     ggml_npu_profile_summary npu = {};
     ggml_npu_profile_summary text_prefill_npu = {};
@@ -291,6 +417,7 @@ struct server_mtmd_prefill_profile {
         merged_decode_us = 0;
         mmproj_encode_details.clear();
         cpu_backend_profile_details.clear();
+        text_cpu_backend_profile = nullptr;
 #ifdef GGML_USE_NPU
         npu = {};
         text_prefill_npu = {};
@@ -517,7 +644,8 @@ struct server_mtmd_prefill_profile {
     void set_merged_prefill(
             int64_t n_merged_tokens,
             int64_t n_text_tokens,
-            int64_t decode_us
+            int64_t decode_us,
+            const char * cpu_backend_profile_json = nullptr
 #ifdef GGML_USE_NPU
             , const ggml_npu_profile_summary * npu_summary = nullptr
 #endif
@@ -530,6 +658,13 @@ struct server_mtmd_prefill_profile {
         merged_tokens = n_merged_tokens;
         text_tokens = n_text_tokens;
         merged_decode_us = decode_us;
+        text_cpu_backend_profile = nullptr;
+        if (cpu_backend_profile_json != nullptr && cpu_backend_profile_json[0] != '\0') {
+            json detail = json::parse(cpu_backend_profile_json, nullptr, false);
+            if (!detail.is_discarded()) {
+                text_cpu_backend_profile = std::move(detail);
+            }
+        }
 #ifdef GGML_USE_NPU
         if (npu_summary != nullptr) {
             add_npu_summary(text_prefill_npu, *npu_summary);
@@ -612,6 +747,14 @@ struct server_mtmd_prefill_profile {
         return out;
     }
 
+    int64_t aggregate_cpu_backend_profile_total_us() const {
+        int64_t total_us = 0;
+        for (const json & detail : cpu_backend_profile_details) {
+            total_us += detail.value("total_us", 0);
+        }
+        return total_us;
+    }
+
     json aggregate_cpu_backend_operator_categories() const {
         std::map<std::string, mmproj_category_aggregate> categories;
         for (const json & detail : cpu_backend_profile_details) {
@@ -652,6 +795,19 @@ struct server_mtmd_prefill_profile {
             });
         }
         return out;
+    }
+
+    json aggregate_cpu_backend_normalized_operator_profile() const {
+        return server_profile_normalized_operator_profile_from_categories(
+                aggregate_cpu_backend_operator_categories(),
+                aggregate_cpu_backend_profile_total_us());
+    }
+
+    json text_cpu_backend_normalized_operator_profile() const {
+        if (text_cpu_backend_profile.is_null() || text_cpu_backend_profile.is_discarded()) {
+            return server_profile_normalized_operator_profile_from_categories(json::array(), 0);
+        }
+        return server_profile_normalized_operator_profile(text_cpu_backend_profile);
     }
 
     json to_json(
@@ -715,8 +871,16 @@ struct server_mtmd_prefill_profile {
         text_npu_json = npu_summary_to_json(text_prefill_npu);
 #endif
 
-        const double residual_cpu_us = std::max(0.0, static_cast<double>(mmproj_encode_us) - npu_total_node_us);
-        const double text_residual_us = std::max(0.0, static_cast<double>(merged_decode_us) - text_npu_total_node_us);
+        json mmproj_normalized_ops = aggregate_cpu_backend_normalized_operator_profile();
+        json text_normalized_ops = text_cpu_backend_normalized_operator_profile();
+        const double mmproj_npu_wrapper_cpu_us =
+            static_cast<double>(mmproj_normalized_ops.value("npu_wrapped_node_wall_us", 0));
+        const double text_npu_wrapper_cpu_us =
+            static_cast<double>(text_normalized_ops.value("npu_wrapped_node_wall_us", 0));
+        const double raw_residual_cpu_us = std::max(0.0, static_cast<double>(mmproj_encode_us) - npu_total_node_us);
+        const double raw_text_residual_us = std::max(0.0, static_cast<double>(merged_decode_us) - text_npu_total_node_us);
+        const double residual_cpu_us = std::max(0.0, raw_residual_cpu_us - mmproj_npu_wrapper_cpu_us);
+        const double text_residual_us = std::max(0.0, raw_text_residual_us - text_npu_wrapper_cpu_us);
 
         return {
             {"profile_kind", "llama_server_mtmd_prefill_summary"},
@@ -741,6 +905,7 @@ struct server_mtmd_prefill_profile {
                 {"total_chunk_us", media_process_us},
                 {"encode_details", mmproj_encode_details},
                 {"cpu_backend_profile_details", cpu_backend_profile_details},
+                {"normalized_operator_profile", mmproj_normalized_ops},
             }},
             {"npu", npu_json},
             {"text_prefill", {
@@ -749,23 +914,31 @@ struct server_mtmd_prefill_profile {
                 {"text_tokens", text_tokens},
                 {"media_tokens", media_tokens},
                 {"npu", text_npu_json},
+                {"normalized_operator_profile", text_normalized_ops},
                 {"derived", {
                     {"npu_host_us", static_cast<int64_t>(text_npu_host_us)},
                     {"npu_total_node_us", static_cast<int64_t>(text_npu_total_node_us)},
+                    {"npu_wrapper_cpu_wall_us", static_cast<int64_t>(text_npu_wrapper_cpu_us)},
+                    {"npu_related_wall_us", static_cast<int64_t>(text_npu_total_node_us + text_npu_wrapper_cpu_us)},
+                    {"raw_residual_cpu_or_other_us", static_cast<int64_t>(raw_text_residual_us)},
                     {"residual_cpu_or_other_us", static_cast<int64_t>(text_residual_us)},
                 }},
             }},
             {"derived", {
                 {"npu_host_us", static_cast<int64_t>(npu_host_us)},
                 {"npu_total_node_us", static_cast<int64_t>(npu_total_node_us)},
+                {"npu_wrapper_cpu_wall_us", static_cast<int64_t>(mmproj_npu_wrapper_cpu_us)},
+                {"npu_related_wall_us", static_cast<int64_t>(npu_total_node_us + mmproj_npu_wrapper_cpu_us)},
+                {"mmproj_raw_residual_cpu_us", static_cast<int64_t>(raw_residual_cpu_us)},
                 {"mmproj_residual_cpu_us", static_cast<int64_t>(residual_cpu_us)},
                 {"mmproj_residual_cpu_detail", {
                     {"kind", "non_intrusive_phase_timing_and_graph_categories"},
-                    {"note", "This splits the residual by coarse mmproj phases and scheduled CPU graph categories. CPU operator categories are node/byte counts, not exact per-operator runtime."},
+                    {"note", "This splits the residual by coarse mmproj phases and CPU backend categories. CUSTOM/MAP_CUSTOM3 wrapper nodes are also reported in normalized_operator_profile as NPU-related wrappers, so mmproj_residual_cpu_us excludes them while mmproj_raw_residual_cpu_us keeps the old raw residual."},
                     {"known_profile_overhead_us", aggregate_mmproj_known_profile_overhead_us()},
                     {"phase_wall_time_us", aggregate_mmproj_phase_us()},
                     {"cpu_operator_categories", aggregate_mmproj_cpu_operator_categories()},
                     {"cpu_backend_operator_categories", aggregate_cpu_backend_operator_categories()},
+                    {"normalized_operator_profile", mmproj_normalized_ops},
                 }},
                 {"prefill_minus_mmproj_us", static_cast<int64_t>(std::max(0.0, prefill_total_us - static_cast<double>(mmproj_encode_us)))},
             }},
@@ -2495,7 +2668,8 @@ public:
             profile->set_merged_prefill(
                     (int64_t) n_suffix,
                     text_token_count,
-                    decode_us
+                    decode_us,
+                    text_cpu_profile_json
 #ifdef GGML_USE_NPU
                     , &text_npu_summary
 #endif
