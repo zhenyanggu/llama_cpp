@@ -31,6 +31,8 @@ enum llm_graph_type {
     LLM_GRAPH_TYPE_DECODER,
 };
 
+bool llama_text_token_embd_w8a16_preload(const ggml_tensor * tok_embd, int64_t group);
+
 enum llm_ffn_op_type {
     LLM_FFN_SILU,
     LLM_FFN_GELU,
@@ -728,6 +730,21 @@ struct llm_graph_context {
                     int   il) const;
 
     llm_graph_input_attn_kv * build_attn_inp_kv() const;
+
+    ggml_tensor * build_attn_decode_npu(
+            llm_graph_input_attn_kv * inp,
+            ggml_tensor * inp_pos,
+            ggml_tensor * cur,
+            ggml_tensor * wq,
+            ggml_tensor * bq,
+            ggml_tensor * wk,
+            ggml_tensor * bk,
+            ggml_tensor * wv,
+            ggml_tensor * bv,
+            ggml_tensor * wo,
+            ggml_tensor * bo,
+                  float   kq_scale,
+                    int   il) const;
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_kv * inp,

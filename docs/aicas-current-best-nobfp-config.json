@@ -1,8 +1,8 @@
 {
-  "schema": "aicas.current_best_config.v7",
+  "schema": "aicas.current_best_nobfp_config.v6",
   "updated_at_local": "2026-06-01T22:20:00+08:00",
   "name": "group128_sym_mmproj_a07_textprefill_static_log8pv_p15_v8_mmproj_log8pv_p15_v2_decode_kv64_lmhead_w8a16_g64_tokenembd_w8a16_g64",
-  "scope": "default hardware-oriented no-BFP config; uses decode-attention KV64 and output.weight W8A16 group64 NPU lm_head",
+  "scope": "default best no-BFP hardware-oriented config; official FP16 model remains the accuracy baseline",
   "text_model": "AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf",
   "mmproj": "AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf",
   "image_root": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/data",
@@ -43,7 +43,7 @@
       "token_embedding": "token_embd.weight uses explicit W8A16 CPU simulation hook with group=64; per token row and per 64 embedding dims share one fp16 scale; dequant uses RTL fp16 multiply and returns F32 container for RMSNorm compatibility",
       "decode_attention": "W8A16 RTL simulation enabled; K/V cache q8_0 with 64-value scale group; PV uses each token's own V scale",
       "gemv_coverage": "blk.* attention Q/K/V/output and FFN gate/up/down; output.weight Q4_AWQ lm_head path is now disabled",
-      "lm_head": "output.weight uses W8A16 group64 NPU path; Q4_AWQ lm_head metadata remains disabled"
+      "lm_head": "output.weight uses the explicit W8A16 DP128 CPU simulation hook with group=64; Q4_AWQ lm_head metadata is ignored at runtime"
     },
     "kv_cache": {
       "k": "q8_0",
@@ -70,26 +70,11 @@
     }
   },
   "env": {
-    "GGML_NPU_FORCE_FP32_MVOUT": "1",
-    "GGML_NPU_MAX_U": "512",
-    "GGML_NPU_MAX_V": "256",
-    "GGML_NPU_W_PINGPONG": "1",
-    "GGML_NPU_FULL_PINGPONG": "1",
-    "GGML_NPU_O_OVERLAP": "1",
-    "GGML_NPU_A_PREFETCH": "1",
-    "GGML_NPU_FULL_OUTPUT_CMA": "1",
-    "GGML_NPU_STRIDED_MVOUT": "1",
-    "GGML_NPU_CMA_READ_DMA": "1",
-    "GGML_NPU_CMA_READ_DMA_MIN_BYTES": "0",
-    "GGML_NPU_BIAS_CACHE": "1",
-    "GGML_NPU_ACT_PACK_ASYNC": "1",
-    "GGML_NPU_ACT_PACK_ASYNC_WINDOW": "8",
     "AICAS_TEXT_TOKEN_EMBD_W8A16": "1",
     "AICAS_TEXT_TOKEN_EMBD_W8A16_GROUP": "64",
     "AICAS_TEXT_DECODE_AWQ": "1",
     "AICAS_TEXT_DECODE_AWQ_ACCUM": "fp16",
     "AICAS_TEXT_LM_HEAD_W8A16_DP128": "1",
-    "AICAS_TEXT_LM_HEAD_W8A16_NPU": "1",
     "AICAS_TEXT_LM_HEAD_W8A16_GROUP": "64",
     "AICAS_TEXT_LM_HEAD_W16A16_DP128": "0",
     "AICAS_TEXT_DECODE_ATTN_W8A16_RTL": "1",
@@ -133,7 +118,7 @@
       "restore_score": "49/100"
     }
   },
-  "validation_note": "Default retained hardware-oriented no-BFP best now uses P15 log8PV decode for both text prefill attention and mmproj attention, token_embd.weight W8A16 group64, output.weight W8A16 group64 NPU lm_head, and decode-attention KV64. P15 matched the official FP16 baseline on the semi stratified seed12345 30case sample at 13/30 before the 2026-06-04 lm_head NPU switch; rerun accuracy after this switch before treating the score as final. The prior P16 restored local AICAS/sampled.json run scored 49/100 versus official FP16 baseline 53/100. Prior recorded cross-sample scores remain 48/100 on seed20260531 and 45/100 on seed20260517 versus official FP16 baselines 49/100 and 44/100.",
+  "validation_note": "Default retained hardware-oriented no-BFP best now uses P15 log8PV decode for both text prefill attention and mmproj attention, plus token_embd.weight W8A16 group64, W8A16 lm_head group64, and decode-attention KV64. P15 matched the official FP16 baseline on the semi stratified seed12345 30case sample at 13/30. The prior P16 restored local AICAS/sampled.json run scored 49/100 versus official FP16 baseline 53/100. Prior recorded cross-sample scores remain 48/100 on seed20260531 and 45/100 on seed20260517 versus official FP16 baselines 49/100 and 44/100.",
   "validation": {
     "semi30_seed12345_p15_current_best": {
       "sample_json": "AICAS/output/group128-hparam-search/log8pv_p15_eval/semi30-seed12345-20260601T214007/sample_30.json",
@@ -590,7 +575,7 @@
   "comparison": {
     "current_bfp8_record": {
       "config_json": "docs/aicas-current-best-bfp8-config.json",
-      "note": "kept as a separate historical BFP8 candidate; the current preferred config is the no-BFP log8PV path recorded here"
+      "note": "kept separate because no-BFP log8PV and BFP8 attention are different hardware targets"
     },
     "previous_no_bfp_no_text_prefill_log8pv": {
       "result_json": "AICAS/output/group128-hparam-search/mmproj_attn_corrected_stack_eval/g128sym-mm05-seed20260517-log8pv-q8kv/SmolVLM2.json",

@@ -6,9 +6,679 @@
 #include "ggml.h"
 #include "unary-ops.h"
 #include "vec.h"
+#include "aicas-rtl-fp16.h"
 
 #include <float.h>
 #include <algorithm>
+#include <vector>
+#include <mutex>
+#include <fstream>
+#include <cstdlib>
+#include <cstdio>
+#include <cmath>
+#include <array>
+#include <atomic>
+
+struct aicas_block_q8_0 {
+    ggml_fp16_t d;
+    int8_t qs[32];
+};
+static_assert(sizeof(aicas_block_q8_0) == sizeof(ggml_fp16_t) + 32, "unexpected q8_0 block layout");
+
+struct aicas_int24_diag_stats {
+    static constexpr int hist_log2_min_exp = -32;
+    static constexpr int hist_log2_max_exp = 16;
+    static constexpr size_t hist_log2_bins = 2 + (hist_log2_max_exp - hist_log2_min_exp + 1) + 1;
+
+    uint64_t count = 0;
+    uint64_t scalar_count = 0;
+    uint64_t clip_count = 0;
+    double sum_abs_scaled = 0.0;
+    double sum_sq_scaled = 0.0;
+    double max_abs_scaled = 0.0;
+    double sum_abs_scalar_err = 0.0;
+    double sum_sq_scalar_err = 0.0;
+    double max_abs_scalar_err = 0.0;
+    double sum_abs_err = 0.0;
+    double sum_sq_err = 0.0;
+    double sum_ref_sq = 0.0;
+    double max_abs_err = 0.0;
+    double max_abs_ref = 0.0;
+    double max_abs_int24 = 0.0;
+    int32_t max_abs_q24 = 0;
+    std::array<uint64_t, hist_log2_bins> scaled_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> scalar_err_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> output_err_abs_hist = {};
+    std::array<uint64_t, hist_log2_bins> ref_abs_hist = {};
+
+    static void update_log2_abs_hist(std::array<uint64_t, hist_log2_bins> & hist, double value) {
+        const double abs_value = std::fabs(value);
+        if (abs_value == 0.0) {
+            ++hist[0];
+            return;
+        }
+        const int exp = (int) std::floor(std::log2(abs_value));
+        if (exp < hist_log2_min_exp) {
+            ++hist[1];
+            return;
+        }
+        if (exp > hist_log2_max_exp) {
+            ++hist[hist_log2_bins - 1];
+            return;
+        }
+        ++hist[2 + (size_t) (exp - hist_log2_min_exp)];
+    }
+
+    void update_scalar(double scaled, int32_t q24, int frac_bits) {
+        const double deq = std::ldexp((double) q24, -frac_bits);
+        const double err = deq - scaled;
+        const double abs_scaled = std::fabs(scaled);
+        const double abs_err = std::fabs(err);
+        ++scalar_count;
+        sum_abs_scaled += abs_scaled;
+        sum_sq_scaled += scaled * scaled;
+        max_abs_scaled = std::max(max_abs_scaled, abs_scaled);
+        sum_abs_scalar_err += abs_err;
+        sum_sq_scalar_err += err * err;
+        max_abs_scalar_err = std::max(max_abs_scalar_err, abs_err);
+        update_log2_abs_hist(scaled_abs_hist, scaled);
+        update_log2_abs_hist(scalar_err_abs_hist, err);
+    }
+
+    void update_output(double ref, double int24) {
+        const double err = int24 - ref;
+        const double abs_err = std::fabs(err);
+        ++count;
+        sum_abs_err += abs_err;
+        sum_sq_err += err * err;
+        sum_ref_sq += ref * ref;
+        max_abs_err = std::max(max_abs_err, abs_err);
+        max_abs_ref = std::max(max_abs_ref, std::fabs(ref));
+        max_abs_int24 = std::max(max_abs_int24, std::fabs(int24));
+        update_log2_abs_hist(output_err_abs_hist, err);
+        update_log2_abs_hist(ref_abs_hist, ref);
+    }
+};
+
+static const char * aicas_decode_attn_int24_diag_path();
+
+static void aicas_int24_diag_write_hist(std::ofstream & fout, const std::array<uint64_t, aicas_int24_diag_stats::hist_log2_bins> & hist) {
+    fout << '[';
+    for (size_t i = 0; i < hist.size(); ++i) {
+        if (i != 0) {
+            fout << ',';
+        }
+        fout << hist[i];
+    }
+    fout << ']';
+}
+
+static void aicas_decode_attn_int24_write_diag(
+        const char * component,
+        int ith,
+        int frac_bits,
+        const aicas_int24_diag_stats & stats) {
+    const char * path = aicas_decode_attn_int24_diag_path();
+    if (path[0] == '\0' || stats.count == 0) {
+        return;
+    }
+
+    static std::mutex diag_mutex;
+    std::lock_guard<std::mutex> lock(diag_mutex);
+    std::ofstream fout(path, std::ios::app);
+    if (!fout) {
+        return;
+    }
+
+    const double mae = stats.sum_abs_err / (double) stats.count;
+    const double rmse = std::sqrt(stats.sum_sq_err / (double) stats.count);
+    const double nrmse = stats.sum_ref_sq > 0.0 ? std::sqrt(stats.sum_sq_err / stats.sum_ref_sq) : 0.0;
+    const double scalar_mae = stats.scalar_count > 0 ? stats.sum_abs_scalar_err / (double) stats.scalar_count : 0.0;
+    const double scalar_rmse = stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scalar_err / (double) stats.scalar_count) : 0.0;
+    const double scaled_mean = stats.scalar_count > 0 ? stats.sum_abs_scaled / (double) stats.scalar_count : 0.0;
+    const double scaled_rms = stats.scalar_count > 0 ? std::sqrt(stats.sum_sq_scaled / (double) stats.scalar_count) : 0.0;
+
+    fout << "{\"schema\":\"aicas.text_decode_attn_int24_diag.v1\""
+         << ",\"kind\":\"summary\""
+         << ",\"component\":\"" << component << "\""
+         << ",\"thread\":" << ith
+         << ",\"frac_bits\":" << frac_bits
+         << ",\"count\":" << stats.count
+         << ",\"scalar_count\":" << stats.scalar_count
+         << ",\"clip_count\":" << stats.clip_count
+         << ",\"sum_abs_scaled\":" << stats.sum_abs_scaled
+         << ",\"sum_sq_scaled\":" << stats.sum_sq_scaled
+         << ",\"scaled_abs_mean\":" << scaled_mean
+         << ",\"scaled_rms\":" << scaled_rms
+         << ",\"scaled_abs_max\":" << stats.max_abs_scaled
+         << ",\"sum_abs_scalar_err\":" << stats.sum_abs_scalar_err
+         << ",\"sum_sq_scalar_err\":" << stats.sum_sq_scalar_err
+         << ",\"scalar_mae\":" << scalar_mae
+         << ",\"scalar_rmse\":" << scalar_rmse
+         << ",\"scalar_max_abs_err\":" << stats.max_abs_scalar_err
+         << ",\"sum_abs_err\":" << stats.sum_abs_err
+         << ",\"sum_sq_err\":" << stats.sum_sq_err
+         << ",\"sum_ref_sq\":" << stats.sum_ref_sq
+         << ",\"mae\":" << mae
+         << ",\"rmse\":" << rmse
+         << ",\"nrmse\":" << nrmse
+         << ",\"max_abs_err\":" << stats.max_abs_err
+         << ",\"max_abs_ref\":" << stats.max_abs_ref
+         << ",\"max_abs_int24\":" << stats.max_abs_int24
+         << ",\"max_abs_q24\":" << stats.max_abs_q24
+         << ",\"hist_log2_abs_min_exp\":" << aicas_int24_diag_stats::hist_log2_min_exp
+         << ",\"hist_log2_abs_max_exp\":" << aicas_int24_diag_stats::hist_log2_max_exp
+         << ",\"hist_log2_abs_layout\":\"zero,lt_min_exp,floor_log2_min_to_max,gt_max_exp\"";
+    fout << ",\"scaled_abs_hist\":";
+    aicas_int24_diag_write_hist(fout, stats.scaled_abs_hist);
+    fout << ",\"scalar_err_abs_hist\":";
+    aicas_int24_diag_write_hist(fout, stats.scalar_err_abs_hist);
+    fout << ",\"output_err_abs_hist\":";
+    aicas_int24_diag_write_hist(fout, stats.output_err_abs_hist);
+    fout << ",\"ref_abs_hist\":";
+    aicas_int24_diag_write_hist(fout, stats.ref_abs_hist);
+    fout << "}\n";
+}
+
+static int64_t aicas_kvcache_q8_0_group() {
+    static const int64_t group = []() {
+        const char * value = getenv("AICAS_KVCACHE_Q8_0_GROUP");
+        if (value == nullptr || value[0] == '\0') {
+            return (int64_t) 0;
+        }
+        char * end = nullptr;
+        const long parsed = strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed >= 0 && parsed <= 4096 && parsed % 32 == 0) {
+            return (int64_t) parsed;
+        }
+        return (int64_t) 0;
+    }();
+    return group;
+}
+
+static bool aicas_is_kvcache_tensor(const ggml_tensor * tensor) {
+    return tensor != nullptr &&
+        (strncmp(tensor->name, "cache_k_l", 9) == 0 ||
+         strncmp(tensor->name, "cache_v_l", 9) == 0);
+}
+
+static bool aicas_flash_attn_accum_fp16() {
+    static const bool enabled = []() {
+        const char * value = getenv("AICAS_TEXT_FLASH_ATTN_ACCUM");
+        return value != nullptr && strcmp(value, "fp16") == 0;
+    }();
+    return enabled;
+}
+
+static bool aicas_flash_attn_fp16_io() {
+    static const bool enabled = []() {
+        const char * value = getenv("AICAS_TEXT_FLASH_ATTN_FP16_IO");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool aicas_decode_attn_w8a16_rtl() {
+    static const bool enabled = []() {
+        const char * value = getenv("AICAS_TEXT_DECODE_ATTN_W8A16_RTL");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool aicas_decode_attn_w8a16_pv_token_scale() {
+    static const bool enabled = []() {
+        const char * value = getenv("AICAS_TEXT_DECODE_ATTN_W8A16_PV_SCALE");
+        if (value != nullptr && strcmp(value, "token") == 0) {
+            return true;
+        }
+        return aicas_kvcache_q8_0_group() == 64;
+    }();
+    return enabled;
+}
+
+static const char * aicas_decode_attn_int24_diag_path() {
+    const char * value = getenv("AICAS_TEXT_DECODE_ATTN_INT24_DIAG_FILE");
+    return value != nullptr ? value : "";
+}
+
+static bool aicas_decode_attn_int24_enabled() {
+    static const bool enabled = []() {
+        const char * value = getenv("AICAS_TEXT_DECODE_ATTN_INT24");
+        if (value == nullptr || value[0] == '\0') {
+            return false;
+        }
+        return strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static int aicas_decode_attn_int24_qk_frac() {
+    static const int bits = []() {
+        const char * value = getenv("AICAS_TEXT_DECODE_ATTN_INT24_QK_FRAC");
+        if (value == nullptr || value[0] == '\0') {
+            return 16;
+        }
+        const long parsed = strtol(value, nullptr, 10);
+        return parsed >= 0 && parsed <= 30 ? (int) parsed : 16;
+    }();
+    return bits;
+}
+
+static int aicas_decode_attn_int24_pv_frac() {
+    static const int bits = []() {
+        const char * value = getenv("AICAS_TEXT_DECODE_ATTN_INT24_PV_FRAC");
+        if (value == nullptr || value[0] == '\0') {
+            return 16;
+        }
+        const long parsed = strtol(value, nullptr, 10);
+        return parsed >= 0 && parsed <= 30 ? (int) parsed : 16;
+    }();
+    return bits;
+}
+
+static int32_t aicas_quant_int24(double value, int frac_bits, uint64_t & clip_count) {
+    constexpr int32_t q_min = -(1 << 23);
+    constexpr int32_t q_max =  (1 << 23) - 1;
+    if (!std::isfinite(value)) {
+        ++clip_count;
+        return value < 0.0 ? q_min : q_max;
+    }
+    const double scaled = std::ldexp(value, frac_bits);
+    long long q = std::llround(scaled);
+    if (q < q_min) {
+        ++clip_count;
+        return q_min;
+    }
+    if (q > q_max) {
+        ++clip_count;
+        return q_max;
+    }
+    return (int32_t) q;
+}
+
+static inline float aicas_row_get_f32(const char * row, ggml_type type, int64_t i) {
+    switch (type) {
+        case GGML_TYPE_F32:
+            return ((const float *) row)[i];
+        case GGML_TYPE_F16:
+            return GGML_CPU_FP16_TO_FP32(((const ggml_fp16_t *) row)[i]);
+        case GGML_TYPE_BF16:
+            return GGML_BF16_TO_FP32(((const ggml_bf16_t *) row)[i]);
+        case GGML_TYPE_Q8_0:
+            {
+                const auto * blocks = (const aicas_block_q8_0 *) row;
+                const int64_t block = i / 32;
+                const int64_t offset = i % 32;
+                return GGML_CPU_FP16_TO_FP32(blocks[block].d) * (float) blocks[block].qs[offset];
+            }
+        default:
+            GGML_ABORT("unsupported AICAS row scalar type");
+    }
+    return 0.0f;
+}
+
+static inline uint16_t aicas_row_get_fp16_bits(const char * row, ggml_type type, int64_t i) {
+    switch (type) {
+        case GGML_TYPE_F32:
+            return aicas_rtl_fp16_bits(ggml_fp32_to_fp16(((const float *) row)[i]));
+        case GGML_TYPE_F16:
+            return aicas_rtl_fp16_bits(((const ggml_fp16_t *) row)[i]);
+        case GGML_TYPE_BF16:
+            return aicas_rtl_fp16_bits(ggml_fp32_to_fp16(GGML_BF16_TO_FP32(((const ggml_bf16_t *) row)[i])));
+        case GGML_TYPE_Q8_0:
+            return aicas_rtl_fp16_bits(ggml_fp32_to_fp16(aicas_row_get_f32(row, type, i)));
+        default:
+            GGML_ABORT("unsupported AICAS row scalar type");
+    }
+    return 0;
+}
+
+static inline int8_t aicas_row_get_q8_0_code(const char * row, int64_t i) {
+    const auto * blocks = (const aicas_block_q8_0 *) row;
+    return blocks[i / 32].qs[i % 32];
+}
+
+static inline uint16_t aicas_row_get_q8_0_scale(const char * row, int64_t i) {
+    const auto * blocks = (const aicas_block_q8_0 *) row;
+    return aicas_rtl_fp16_bits(blocks[i / 32].d);
+}
+
+static inline float aicas_row_get_f16_rounded_f32(const char * row, ggml_type type, int64_t i) {
+    return GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(aicas_row_get_f32(row, type, i)));
+}
+
+static float aicas_vec_dot_accum_f16(
+        int64_t         n,
+        const char *    x,
+        ggml_type       x_type,
+        const char *    y,
+        ggml_type       y_type) {
+    ggml_fp16_t acc = GGML_CPU_FP32_TO_FP16(0.0f);
+    for (int64_t i = 0; i < n; ++i) {
+        const float product = aicas_row_get_f32(x, x_type, i) * aicas_row_get_f32(y, y_type, i);
+        acc = GGML_CPU_FP32_TO_FP16(GGML_CPU_FP16_TO_FP32(acc) + product);
+    }
+    return GGML_CPU_FP16_TO_FP32(acc);
+}
+
+static float aicas_vec_dot_fp16_io(
+        int64_t         n,
+        const char *    x,
+        ggml_type       x_type,
+        const char *    y,
+        ggml_type       y_type) {
+    float acc = 0.0f;
+    for (int64_t i = 0; i < n; ++i) {
+        const float product = aicas_row_get_f16_rounded_f32(x, x_type, i) * aicas_row_get_f16_rounded_f32(y, y_type, i);
+        acc += product;
+    }
+    return GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(acc));
+}
+
+static void aicas_vec_mad_accum_f16(
+        int64_t            n,
+        ggml_fp16_t *      y,
+        const char *       x,
+        ggml_type          x_type,
+        float              v) {
+    for (int64_t i = 0; i < n; ++i) {
+        const float product = aicas_row_get_f32(x, x_type, i) * v;
+        y[i] = GGML_CPU_FP32_TO_FP16(GGML_CPU_FP16_TO_FP32(y[i]) + product);
+    }
+}
+
+static void aicas_vec_mad_fp16_io(
+        int64_t            n,
+        ggml_fp16_t *      y,
+        const char *       x,
+        ggml_type          x_type,
+        float              p) {
+    const float p16 = GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(p));
+    for (int64_t i = 0; i < n; ++i) {
+        const float product = p16 * aicas_row_get_f16_rounded_f32(x, x_type, i);
+        y[i] = GGML_CPU_FP32_TO_FP16(GGML_CPU_FP16_TO_FP32(y[i]) + product);
+    }
+}
+
+static uint32_t aicas_decode_softmax_exp2_frac_lut_q16(uint8_t frac_idx) {
+    static const uint32_t coarse[16] = {
+        65536, 62757, 60097, 57549, 55109, 52773, 50535, 48393,
+        46341, 44376, 42495, 40693, 38968, 37316, 35734, 34219,
+    };
+    static const uint32_t fine[16] = {
+        65536, 65359, 65182, 65006, 64830, 64655, 64480, 64306,
+        64132, 63958, 63785, 63613, 63441, 63269, 63098, 62928,
+    };
+    const uint64_t product = (uint64_t) coarse[frac_idx >> 4] * (uint64_t) fine[frac_idx & 0x0f];
+    return (uint32_t) ((product + 32768u) >> 16);
+}
+
+static int16_t aicas_decode_softmax_fp16_to_q8_8(uint16_t fp16) {
+    const bool sign = (fp16 & 0x8000) != 0;
+    const int exp = (fp16 >> 10) & 0x1f;
+    const int mant = 0x400 | (fp16 & 0x03ff);
+    int value = 0;
+
+    if (exp == 0x1f) {
+        value = sign ? -32768 : 32767;
+    } else if (exp != 0) {
+        const int shift = exp - 17;
+        value = shift >= 0 ? (mant << shift) : (mant >> (-shift));
+        if (sign) {
+            value = -value;
+        }
+    }
+
+    value = std::max(-32768, std::min(32767, value));
+    return (int16_t) value;
+}
+
+static uint32_t aicas_decode_softmax_exp_neg_q8_8_to_q16(int16_t value) {
+    if (value >= 0) {
+        return 65536u;
+    }
+    const uint32_t local_abs = (uint16_t) -value;
+    const uint32_t local_log2 = (local_abs * 369u) >> 8;
+    const uint32_t local_int = (local_log2 >> 8) & 0xffu;
+    const uint32_t local_frac = local_log2 & 0xffu;
+    const uint32_t base = local_int >= 16 ? 0 : (65536u >> local_int);
+    const uint32_t frac_lut = aicas_decode_softmax_exp2_frac_lut_q16((uint8_t) local_frac);
+    const uint64_t product = (uint64_t) base * frac_lut;
+    const uint64_t rounded = product + 32768u;
+    const uint64_t q16 = rounded >> 16;
+    return (uint32_t) std::min<uint64_t>(65536u, q16);
+}
+
+static uint16_t aicas_decode_softmax_q0_24_to_fp16(uint32_t q) {
+    constexpr int prob_frac_bits = 24;
+    if (q == 0) {
+        return 0;
+    }
+
+    int p = 0;
+    for (int i = 0; i <= prob_frac_bits; ++i) {
+        if (q & (1u << i)) {
+            p = i;
+        }
+    }
+
+    if (p <= prob_frac_bits - 15) {
+        return (uint16_t) (q & 0x03ffu);
+    }
+
+    int exp16 = p + 15 - prob_frac_bits;
+    const uint32_t leading = 1u << p;
+    const uint64_t frac_calc = (uint64_t) (q - leading) << 10;
+    const uint32_t mant_round = (uint32_t) ((frac_calc + (UINT64_C(1) << (p - 1))) >> p);
+    if (mant_round & 0x400u) {
+        ++exp16;
+        return (uint16_t) (exp16 << 10);
+    }
+    return (uint16_t) ((exp16 << 10) | (mant_round & 0x03ffu));
+}
+
+static void aicas_decode_softmax_rtl(const std::vector<uint16_t> & score_fp16, std::vector<uint16_t> & prob_fp16) {
+    constexpr uint32_t q_one_prob = 16777216u;
+    prob_fp16.assign(score_fp16.size(), 0);
+    if (score_fp16.empty()) {
+        return;
+    }
+
+    std::vector<int16_t> scores_q8_8(score_fp16.size());
+    int16_t max_q = INT16_MIN;
+    for (size_t i = 0; i < score_fp16.size(); ++i) {
+        scores_q8_8[i] = aicas_decode_softmax_fp16_to_q8_8(score_fp16[i]);
+        max_q = std::max(max_q, scores_q8_8[i]);
+    }
+
+    uint32_t sum_q16 = 0;
+    std::vector<uint32_t> exp_q16(score_fp16.size());
+    for (size_t i = 0; i < score_fp16.size(); ++i) {
+        const int16_t delta = (int16_t) (scores_q8_8[i] - max_q);
+        exp_q16[i] = aicas_decode_softmax_exp_neg_q8_8_to_q16(delta);
+        sum_q16 += exp_q16[i];
+    }
+    if (sum_q16 == 0) {
+        return;
+    }
+
+    uint64_t inv_sum = ((UINT64_C(1) << 40) + (sum_q16 / 2u)) / sum_q16;
+    inv_sum = std::min<uint64_t>(q_one_prob, inv_sum);
+    for (size_t i = 0; i < score_fp16.size(); ++i) {
+        const uint64_t product = (uint64_t) exp_q16[i] * inv_sum;
+        uint64_t prob = (product + (UINT64_C(1) << 15)) >> 16;
+        prob = std::min<uint64_t>(q_one_prob, prob);
+        prob_fp16[i] = aicas_decode_softmax_q0_24_to_fp16((uint32_t) prob);
+    }
+}
+
+static float aicas_decode_qk_w8a16_rtl(
+        int64_t      n,
+        const char * k_row,
+        const char * q_row,
+        ggml_type    q_type,
+        float        score_scale) {
+    uint16_t acc = 0;
+    bool have_acc = false;
+    const uint16_t score_scale_bits = aicas_rtl_fp16_bits(ggml_fp32_to_fp16(score_scale));
+    for (int64_t start = 0; start < n; start += 128) {
+        const int valid = (int) std::min<int64_t>(128, n - start);
+        const uint16_t tile = aicas_rtl_dp128_tile(
+                [&](int lane) {
+                    return aicas_rtl_fp16_from_int9((int) aicas_row_get_q8_0_code(k_row, start + lane));
+                },
+                [&](int lane) {
+                    return aicas_rtl_fp16_zero_if_non_normal(aicas_row_get_fp16_bits(q_row, q_type, start + lane));
+                },
+                valid);
+        const uint16_t scale_bits = aicas_rtl_fp16_mul(aicas_row_get_q8_0_scale(k_row, start), score_scale_bits);
+        const uint16_t scaled = aicas_rtl_fp16_mul(tile, scale_bits);
+        acc = have_acc ? aicas_rtl_fp16_add(acc, scaled) : scaled;
+        have_acc = true;
+    }
+    return aicas_rtl_fp16_to_f32(acc);
+}
+
+static float aicas_decode_qk_w8a16_int24_diag(
+        int64_t      n,
+        const char * k_row,
+        const char * q_row,
+        ggml_type    q_type,
+        float        score_scale,
+        int          frac_bits,
+        bool         collect_stats,
+        aicas_int24_diag_stats & stats) {
+    double acc = 0.0;
+    uint64_t dummy_clip_count = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        const double qv = (double) aicas_rtl_fp16_to_f32(aicas_row_get_fp16_bits(q_row, q_type, i));
+        const double scale = (double) aicas_rtl_fp16_to_f32(aicas_row_get_q8_0_scale(k_row, i)) * (double) score_scale;
+        const double scaled_q = qv * scale;
+        const int32_t q24 = aicas_quant_int24(scaled_q, frac_bits, collect_stats ? stats.clip_count : dummy_clip_count);
+        if (collect_stats) {
+            stats.max_abs_q24 = std::max<int32_t>(stats.max_abs_q24, std::abs(q24));
+            stats.update_scalar(scaled_q, q24, frac_bits);
+        }
+        acc += (double) q24 * (double) aicas_row_get_q8_0_code(k_row, i);
+    }
+    return (float) std::ldexp(acc, -frac_bits);
+}
+
+static uint16_t aicas_decode_pv_w8a16_rtl(
+        int64_t                       n,
+        int64_t                       dim,
+        const std::vector<const char *> & v_rows,
+        const std::vector<uint16_t> & prob_fp16) {
+    uint16_t acc = 0;
+    bool have_acc = false;
+    if (aicas_decode_attn_w8a16_pv_token_scale()) {
+        for (int64_t i = 0; i < n; ++i) {
+            const uint16_t value = aicas_rtl_fp16_mul(
+                    aicas_rtl_fp16_from_int9((int) aicas_row_get_q8_0_code(v_rows[(size_t) i], dim)),
+                    aicas_row_get_q8_0_scale(v_rows[(size_t) i], dim));
+            const uint16_t product = aicas_rtl_fp16_mul(value, prob_fp16[(size_t) i]);
+            acc = have_acc ? aicas_rtl_fp16_add(acc, product) : product;
+            have_acc = true;
+        }
+        return acc;
+    }
+
+    for (int64_t start = 0; start < n; start += 128) {
+        const int valid = (int) std::min<int64_t>(128, n - start);
+        const char * scale_row = v_rows[(size_t) start];
+        const uint16_t tile = aicas_rtl_dp128_tile(
+                [&](int lane) {
+                    return aicas_rtl_fp16_from_int9((int) aicas_row_get_q8_0_code(v_rows[(size_t) (start + lane)], dim));
+                },
+                [&](int lane) {
+                    return prob_fp16[(size_t) (start + lane)];
+                },
+                valid);
+        const uint16_t scaled = aicas_rtl_fp16_mul(tile, aicas_row_get_q8_0_scale(scale_row, dim));
+        acc = have_acc ? aicas_rtl_fp16_add(acc, scaled) : scaled;
+        have_acc = true;
+    }
+    return acc;
+}
+
+static float aicas_decode_pv_w8a16_int24_diag(
+        int64_t                         n,
+        int64_t                         dim,
+        const std::vector<const char *> & v_rows,
+        const std::vector<uint16_t> &    prob_fp16,
+        int                             frac_bits,
+        bool                            collect_stats,
+        aicas_int24_diag_stats &        stats) {
+    double acc = 0.0;
+    uint64_t dummy_clip_count = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        const double p = (double) aicas_rtl_fp16_to_f32(prob_fp16[(size_t) i]);
+        const double scale = (double) aicas_rtl_fp16_to_f32(aicas_row_get_q8_0_scale(v_rows[(size_t) i], dim));
+        const double scaled_p = p * scale;
+        const int32_t q24 = aicas_quant_int24(scaled_p, frac_bits, collect_stats ? stats.clip_count : dummy_clip_count);
+        if (collect_stats) {
+            stats.max_abs_q24 = std::max<int32_t>(stats.max_abs_q24, std::abs(q24));
+            stats.update_scalar(scaled_p, q24, frac_bits);
+        }
+        acc += (double) q24 * (double) aicas_row_get_q8_0_code(v_rows[(size_t) i], dim);
+    }
+    return (float) std::ldexp(acc, -frac_bits);
+}
+
+static void aicas_quantize_row_q8_0_group(
+        const float * GGML_RESTRICT x,
+        void * GGML_RESTRICT vy,
+        int64_t k,
+        int64_t group) {
+    GGML_ASSERT(k % 32 == 0);
+    GGML_ASSERT(group > 0 && group % 32 == 0);
+
+    auto * y = (aicas_block_q8_0 *) vy;
+    const bool rtl = aicas_decode_attn_w8a16_rtl();
+    for (int64_t g0 = 0; g0 < k; g0 += group) {
+        const int64_t g1 = std::min<int64_t>(k, g0 + group);
+        float amax = 0.0f;
+        for (int64_t i = g0; i < g1; ++i) {
+            if (rtl) {
+                const uint16_t bits = aicas_rtl_fp16_zero_if_non_normal(
+                        aicas_rtl_fp16_bits(ggml_fp32_to_fp16(x[i])));
+                amax = std::max(amax, fabsf(aicas_rtl_fp16_to_f32(bits)));
+            } else {
+                amax = std::max(amax, fabsf(x[i]));
+            }
+        }
+
+        const float denom = rtl ? 128.0f : 127.0f;
+        const float d = amax / denom;
+        const float id = d ? 1.0f / d : 0.0f;
+        const ggml_fp16_t d16 = ggml_fp32_to_fp16(d);
+
+        for (int64_t block = g0 / 32; block < (g1 + 31) / 32; ++block) {
+            y[block].d = d16;
+            const int64_t b0 = block * 32;
+            for (int64_t j = 0; j < 32; ++j) {
+                const int64_t i = b0 + j;
+                int q = 0;
+                if (i < g1) {
+                    const float value = rtl
+                        ? aicas_rtl_fp16_to_f32(aicas_rtl_fp16_zero_if_non_normal(
+                                aicas_rtl_fp16_bits(ggml_fp32_to_fp16(x[i]))))
+                        : x[i];
+                    q = (int) roundf(value * id);
+                    q = std::max(-127, std::min(127, q));
+                }
+                y[block].qs[j] = (int8_t) q;
+            }
+        }
+    }
+}
 
 // ggml_compute_forward_dup
 
@@ -4816,6 +5486,12 @@ static void ggml_compute_forward_set_rows_f32(
     const int64_t ir1 = std::min(ir0 + dr, nr);
 
     ggml_from_float_t const from_float = ggml_get_type_traits_cpu(dst->type)->from_float;
+    const int64_t aicas_q8_0_group =
+        dst->type == GGML_TYPE_Q8_0 && aicas_is_kvcache_tensor(dst) ? aicas_kvcache_q8_0_group() : 0;
+    static std::atomic<bool> aicas_q8_0_group_logged{false};
+    if (aicas_q8_0_group > 0 && !aicas_q8_0_group_logged.exchange(true)) {
+        std::fprintf(stderr, "aicas_kvcache_q8_0: enabled group=%lld tensor=%s\n", (long long) aicas_q8_0_group, dst->name);
+    }
 
     for (int64_t i03 = 0; i03 < ne03; ++i03) {
         for (int64_t i02 = 0; i02 < ne02; ++i02) {
@@ -4828,9 +5504,13 @@ static void ggml_compute_forward_set_rows_f32(
 
                 GGML_ASSERT(i1 >= 0 && i1 < ne1);
 
-                from_float(
-                        (const float *) ((char *) src0->data +  i*nb01 + i02*nb02 + i03*nb03),
-                                        ((char *)  dst->data + i1*nb1  + i02*nb2  + i03*nb3), nc);
+                const float * src_row = (const float *) ((char *) src0->data +  i*nb01 + i02*nb02 + i03*nb03);
+                void * dst_row = (void *) ((char *)  dst->data + i1*nb1  + i02*nb2  + i03*nb3);
+                if (aicas_q8_0_group > 0) {
+                    aicas_quantize_row_q8_0_group(src_row, dst_row, nc, aicas_q8_0_group);
+                } else {
+                    from_float(src_row, dst_row, nc);
+                }
             }
         }
     }
@@ -8046,6 +8726,33 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
     ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
     ggml_to_float_t   const v_to_float     = ggml_get_type_traits(v->type)->to_float;
+    const bool accum_fp16 = dst->op_params[3] == GGML_PREC_DEFAULT && aicas_flash_attn_accum_fp16();
+    const bool fp16_io = accum_fp16 && aicas_flash_attn_fp16_io();
+    const bool rtl_w8a16_requested = aicas_decode_attn_w8a16_rtl();
+    const int64_t q8_group = aicas_kvcache_q8_0_group();
+    const bool rtl_w8a16 = rtl_w8a16_requested &&
+        k->type == GGML_TYPE_Q8_0 &&
+        v->type == GGML_TYPE_Q8_0 &&
+        (q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16) &&
+        logit_softcap == 0.0f &&
+        max_bias == 0.0f &&
+        (q8_group == 64 || q8_group == 128);
+    const bool int24_output = aicas_decode_attn_int24_enabled();
+    const bool int24_diag = aicas_decode_attn_int24_diag_path()[0] != '\0';
+    const bool int24_compute = int24_output || int24_diag;
+    const int int24_qk_frac = aicas_decode_attn_int24_qk_frac();
+    const int int24_pv_frac = aicas_decode_attn_int24_pv_frac();
+    aicas_int24_diag_stats int24_qk_stats;
+    aicas_int24_diag_stats int24_pv_stats;
+    static std::atomic<bool> rtl_w8a16_warned{false};
+    if (rtl_w8a16_requested && !rtl_w8a16 && !rtl_w8a16_warned.exchange(true)) {
+        std::fprintf(stderr,
+                "aicas_decode_attn_w8a16_rtl: disabled for this graph "
+                "(k_type=%d v_type=%d q_type=%d logit_softcap=%g max_bias=%g q8_group=%lld)\n",
+                (int) k->type, (int) v->type, (int) q->type,
+                (double) logit_softcap, (double) max_bias,
+                (long long) q8_group);
+    }
 
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
@@ -8068,7 +8775,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
 
-        if (v->type == GGML_TYPE_F16) {
+        if (accum_fp16 || v->type == GGML_TYPE_F16) {
             memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
         } else {
             memset(VKQ32, 0, DV*sizeof(float));
@@ -8084,8 +8791,137 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const int iv3 = iq3 / rv3;
         const int iv2 = iq2 / rv2;
 
-        const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
-        q_to_vec_dot(pq, Q_q, DK);
+        const char * q_row_data = (const char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3);
+        const float * pq = (const float *) q_row_data;
+
+        if (rtl_w8a16) {
+            bool row_supported = true;
+            std::vector<int64_t> valid_indices;
+            std::vector<uint16_t> score_fp16;
+            valid_indices.reserve((size_t) nek1);
+            score_fp16.reserve((size_t) nek1);
+
+            for (int64_t ic = 0; ic < nek1; ++ic) {
+                const float mv = mp ? slope*GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f;
+                if (mv == -INFINITY) {
+                    continue;
+                }
+                if (mv != 0.0f) {
+                    row_supported = false;
+                    break;
+                }
+
+                const char * k_data = (const char *) k->data + (ic*nbk1 + ik2*nbk2 + ik3*nbk3);
+                const float s = aicas_decode_qk_w8a16_rtl(DK, k_data, q_row_data, q->type, scale);
+                float s_for_softmax = s;
+                if (int24_compute) {
+                    const float s_int24 = aicas_decode_qk_w8a16_int24_diag(
+                            DK, k_data, q_row_data, q->type, scale, int24_qk_frac, int24_diag, int24_qk_stats);
+                    if (int24_diag) {
+                        int24_qk_stats.update_output(s, s_int24);
+                    }
+                    if (int24_output) {
+                        s_for_softmax = s_int24;
+                    }
+                }
+                score_fp16.push_back(aicas_rtl_fp16_bits(ggml_fp32_to_fp16(s_for_softmax)));
+                valid_indices.push_back(ic);
+            }
+
+            if (row_supported) {
+                if (sinks) {
+                    const float sink = ((float *) ((char *) sinks->data))[h];
+                    score_fp16.push_back(aicas_rtl_fp16_bits(ggml_fp32_to_fp16(sink)));
+                }
+
+                std::vector<uint16_t> prob_fp16;
+                aicas_decode_softmax_rtl(score_fp16, prob_fp16);
+
+                std::vector<const char *> v_rows(valid_indices.size());
+                for (size_t vi = 0; vi < valid_indices.size(); ++vi) {
+                    const int64_t ic = valid_indices[vi];
+                    v_rows[vi] = (const char *) v->data + (ic*nbv1 + iv2*nbv2 + iv3*nbv3);
+                }
+
+                for (int64_t d = 0; d < DV; ++d) {
+                    const uint16_t out = aicas_decode_pv_w8a16_rtl((int64_t) valid_indices.size(), d, v_rows, prob_fp16);
+                    float out_value = aicas_rtl_fp16_to_f32(out);
+                    if (int24_compute) {
+                        const float out_int24 = aicas_decode_pv_w8a16_int24_diag(
+                                (int64_t) valid_indices.size(), d, v_rows, prob_fp16, int24_pv_frac, int24_diag, int24_pv_stats);
+                        if (int24_diag) {
+                            int24_pv_stats.update_output(aicas_rtl_fp16_to_f32(out), out_int24);
+                        }
+                        if (int24_output) {
+                            out_value = out_int24;
+                        }
+                    }
+                    VKQ32[d] = out_value;
+                }
+
+                const int i1 = iq1;
+                const int i2 = iq2;
+                const int i3 = iq3;
+                memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+                continue;
+            }
+        }
+
+        if (!accum_fp16) {
+            q_to_vec_dot(pq, Q_q, DK);
+        }
+
+        if (fp16_io) {
+            std::vector<float> logits((size_t) nek1, -INFINITY);
+            for (int64_t ic = 0; ic < nek1; ++ic) {
+                const float mv = mp ? slope*GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f;
+                if (mv == -INFINITY) {
+                    continue;
+                }
+
+                const char * k_data = (const char *) k->data + (ic*nbk1 + ik2*nbk2 + ik3*nbk3);
+                float s = aicas_vec_dot_fp16_io(DK, k_data, k->type, (const char *) pq, q->type);
+                s = s*scale;
+                if (logit_softcap != 0.0f) {
+                    s = logit_softcap*tanhf(s);
+                }
+                s += mv;
+                s = GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(s));
+                logits[(size_t) ic] = s;
+                M = MAX(M, s);
+            }
+
+            for (int64_t ic = 0; ic < nek1; ++ic) {
+                const float s = logits[(size_t) ic];
+                if (s == -INFINITY) {
+                    continue;
+                }
+                S += expf(s - M);
+            }
+
+            if (S != 0.0f) {
+                const float S_inv = 1.0f/S;
+                for (int64_t ic = 0; ic < nek1; ++ic) {
+                    const float s = logits[(size_t) ic];
+                    if (s == -INFINITY) {
+                        continue;
+                    }
+                    const float p = expf(s - M)*S_inv;
+                    const char * v_data = ((const char *) v->data + (ic*nbv1 + iv2*nbv2 + iv3*nbv3));
+                    aicas_vec_mad_fp16_io(DV, VKQ16, v_data, v->type, p);
+                }
+            }
+
+            for (int64_t d = 0; d < DV; ++d) {
+                VKQ32[d] = GGML_CPU_FP16_TO_FP32(VKQ16[d]);
+            }
+
+            const int i1 = iq1;
+            const int i2 = iq2;
+            const int i3 = iq3;
+            memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+            continue;
+        }
 
         // online softmax / attention
         // loop over n_kv and n_head_kv
@@ -8099,7 +8935,12 @@ static void ggml_compute_forward_flash_attn_ext_f16(
             float s; // KQ value
 
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
-            kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+            if (accum_fp16) {
+                const char * q_data = (const char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3);
+                s = aicas_vec_dot_accum_f16(DK, k_data, k->type, q_data, q->type);
+            } else {
+                kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+            }
 
             s = s*scale; // scale KQ value
 
@@ -8116,7 +8957,22 @@ static void ggml_compute_forward_flash_attn_ext_f16(
 
             const char * v_data = ((const char *) v->data + (ic*nbv1 + iv2*nbv2 + iv3*nbv3));
 
-            if (v->type == GGML_TYPE_F16) {
+            if (accum_fp16) {
+                if (s > M) {
+                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                    M = s;
+                    ms = expf(Mold - M);
+
+                    // V = V*expf(Mold - M)
+                    ggml_vec_scale_f16(DV, VKQ16, ms);
+                } else {
+                    // no new maximum, ms == 1.0f, vs != 1.0f
+                    vs = expf(s - M);
+                }
+
+                // V += v*expf(s - M)
+                aicas_vec_mad_accum_f16(DV, VKQ16, v_data, v->type, vs);
+            } else if (v->type == GGML_TYPE_F16) {
                 if (s > M) {
                     // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
                     M = s;
@@ -8157,7 +9013,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
             S = S*ms + vs; // scale and increment sum with partial sum
         }
 
-        if (v->type == GGML_TYPE_F16) {
+        if (accum_fp16 || v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
                 VKQ32[d] = GGML_CPU_FP16_TO_FP32(VKQ16[d]);
             }
@@ -8195,6 +9051,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // permute(0, 2, 1, 3)
         memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
+
+    if (int24_diag && rtl_w8a16) {
+        aicas_decode_attn_int24_write_diag("qk", ith, int24_qk_frac, int24_qk_stats);
+        aicas_decode_attn_int24_write_diag("pv", ith, int24_pv_frac, int24_pv_stats);
+    }
 }
 
 void ggml_compute_forward_flash_attn_ext(
@@ -8202,6 +9063,10 @@ void ggml_compute_forward_flash_attn_ext(
         ggml_tensor * dst) {
     switch (dst->op_params[3]) {
         case GGML_PREC_DEFAULT:
+            {
+                // AICAS: can use FP16 accumulators for decode-attention QK and PV GEMV-style inner loops.
+                ggml_compute_forward_flash_attn_ext_f16(params, dst);
+            } break;
         case GGML_PREC_F32:
             {
                 // uses F32 accumulators

@@ -152,56 +152,7 @@ GGML_BACKEND_API bool ggml_backend_npu_i8_gemm_raw_cma(
         int32_t * out_nxm,
         int64_t out_stride_m);
 
-GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_gemv(
-        const char * op_name,
-        const void * q4_data,
-        int64_t packed_k,
-        int64_t out_channels,
-        int64_t q4_nb1,
-        const void * scale_data,
-        int scale_type,
-        int64_t scale_nb0,
-        int64_t scale_nb1,
-        const void * zero_data,
-        int zero_type,
-        int64_t zero_nb0,
-        int64_t zero_nb1,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        const float * smooth_scale,
-        int64_t k,
-        int64_t n_cols,
-        float * dst_data,
-        int64_t dst_nb1);
-
 GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_gemv_ex(
-        const char * op_name,
-        const void * q4_data,
-        int64_t packed_k,
-        int64_t out_channels,
-        int64_t q4_nb1,
-        const void * scale_data,
-        int scale_type,
-        int64_t scale_nb0,
-        int64_t scale_nb1,
-        const void * zero_data,
-        int zero_type,
-        int64_t zero_nb0,
-        int64_t zero_nb1,
-        const void * act_data,
-        int act_type,
-        int64_t act_nb0,
-        int64_t act_nb1,
-        const float * smooth_scale,
-        int64_t k,
-        int64_t n_cols,
-        void * dst_data,
-        int dst_type,
-        int64_t dst_nb1);
-
-GGML_BACKEND_API bool ggml_backend_npu_decode_w4a16_simulate_ex(
         const char * op_name,
         const void * q4_data,
         int64_t packed_k,
@@ -252,6 +203,15 @@ GGML_BACKEND_API bool ggml_backend_npu_decode_w16a16_preload(
         int64_t weight_nb0,
         int64_t weight_nb1);
 
+GGML_BACKEND_API bool ggml_backend_npu_decode_w8a16_preload(
+        const char * weight_name,
+        const void * weight_data,
+        int64_t k,
+        int64_t out_channels,
+        int64_t weight_nb0,
+        int64_t weight_nb1,
+        int64_t group);
+
 struct ggml_npu_decode_awq_view {
         const char * weight_name;
         const void * q4_data;
@@ -284,6 +244,27 @@ GGML_BACKEND_API bool ggml_backend_npu_decode_swiglu_ffn_w4a16_ex(
         int dst_type,
         int64_t dst_nb1);
 
+GGML_BACKEND_API bool ggml_backend_npu_decode_attention_w4a16_ex(
+        const char * op_name,
+        const struct ggml_npu_decode_awq_view * q,
+        const struct ggml_npu_decode_awq_view * k,
+        const struct ggml_npu_decode_awq_view * v,
+        const struct ggml_npu_decode_awq_view * o,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const struct ggml_tensor * llama_k_cache,
+        const struct ggml_tensor * llama_v_cache,
+        int32_t position,
+        float kq_scale,
+        float rope_freq_base,
+        float rope_freq_scale,
+        int32_t layer_id,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
+
 GGML_BACKEND_API bool ggml_backend_npu_decode_w16a16_gemv_ex(
         const char * op_name,
         const void * weight_data,
@@ -291,6 +272,23 @@ GGML_BACKEND_API bool ggml_backend_npu_decode_w16a16_gemv_ex(
         int64_t out_channels,
         int64_t weight_nb0,
         int64_t weight_nb1,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        int64_t n_cols,
+        void * dst_data,
+        int dst_type,
+        int64_t dst_nb1);
+
+GGML_BACKEND_API bool ggml_backend_npu_decode_w8a16_gemv_ex(
+        const char * op_name,
+        const void * weight_data,
+        int64_t k,
+        int64_t out_channels,
+        int64_t weight_nb0,
+        int64_t weight_nb1,
+        int64_t group,
         const void * act_data,
         int act_type,
         int64_t act_nb0,

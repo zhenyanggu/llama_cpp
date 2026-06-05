@@ -3998,8 +3998,7 @@ struct server_context {
                         const llama_pos merged_start_pos = slot.n_past;
                         const int32_t merged_effective_n_predict =
                                 slot.task->params.n_predict != -1 ? slot.task->params.n_predict : params_base.n_predict;
-                        const bool merged_switch_decode_after =
-                                merged_effective_n_predict < 0 || merged_effective_n_predict > 1;
+                        const bool merged_switch_decode_after = false;
                         if (server_mtmd_merge_prefill_trace_enabled()) {
                             SLT_INF(slot,
                                     "merged prefill overlay policy: n_predict=%d switch_decode_after=%d\n",

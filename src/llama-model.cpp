@@ -4,6 +4,7 @@
 #include "llama-mmap.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
+#include "llama-graph.h"
 #include "llama-model-loader.h"
 
 #include "llama-kv-cache.h"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cinttypes>
 #include <cmath>
 #include <cfloat>
 #include <cstring>
@@ -62,6 +64,14 @@ extern "C" bool ggml_backend_npu_decode_w16a16_preload(
         int64_t out_channels,
         int64_t weight_nb0,
         int64_t weight_nb1);
+extern "C" bool ggml_backend_npu_decode_w8a16_preload(
+        const char * weight_name,
+        const void * weight_data,
+        int64_t k,
+        int64_t out_channels,
+        int64_t weight_nb0,
+        int64_t weight_nb1,
+        int64_t group);
 #endif
 
 const char * llm_type_name(llm_type type) {
@@ -6458,6 +6468,39 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    {
+        const char * token_embd_env = std::getenv("AICAS_TEXT_TOKEN_EMBD_W8A16");
+        const bool token_embd_enabled =
+            token_embd_env != nullptr && token_embd_env[0] != '\0' && std::strcmp(token_embd_env, "0") != 0;
+        const char * token_embd_preload_env = std::getenv("AICAS_TEXT_TOKEN_EMBD_W8A16_PRELOAD");
+        const bool token_embd_preload =
+            token_embd_preload_env == nullptr ||
+            token_embd_preload_env[0] == '\0' ||
+            std::strcmp(token_embd_preload_env, "0") != 0;
+        int64_t token_embd_group = 64;
+        if (const char * group_env = std::getenv("AICAS_TEXT_TOKEN_EMBD_W8A16_GROUP")) {
+            const long parsed = std::strtol(group_env, nullptr, 10);
+            if (parsed > 0 && parsed <= 128) {
+                token_embd_group = parsed;
+            }
+        }
+        if (token_embd_enabled && token_embd_preload) {
+            if (tok_embd != nullptr &&
+                    tok_embd->data != nullptr &&
+                    tok_embd->type == GGML_TYPE_F16 &&
+                    tok_embd->ne[0] > 0 &&
+                    tok_embd->ne[1] > 0 &&
+                    tok_embd->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+                const bool ok = llama_text_token_embd_w8a16_preload(tok_embd, token_embd_group);
+                LLAMA_LOG_INFO("%s: %s AICAS token_embd.weight W8A16 preload; group=%" PRId64 "\n",
+                        __func__, ok ? "completed" : "failed", token_embd_group);
+            } else {
+                LLAMA_LOG_WARN("%s: skipped AICAS token_embd.weight W8A16 preload; tensor is missing or not contiguous F16\n",
+                        __func__);
+            }
+        }
+    }
+
 #ifdef GGML_USE_NPU
     if (aicas_text_sq_enabled) {
         const char * preload_env = std::getenv("GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD");
@@ -6558,6 +6601,49 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         }
     }
     {
+        const char * lm_head_w8_env = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_NPU");
+        const bool lm_head_w8_enabled =
+            lm_head_w8_env != nullptr && lm_head_w8_env[0] != '\0' && std::strcmp(lm_head_w8_env, "0") != 0;
+        const char * awq_preload_env = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD");
+        const bool awq_preload = awq_preload_env != nullptr && awq_preload_env[0] != '\0' && std::strcmp(awq_preload_env, "0") != 0;
+        const char * lm_head_w8_preload_env = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_NPU_PRELOAD");
+        const bool lm_head_w8_preload =
+            lm_head_w8_preload_env == nullptr || lm_head_w8_preload_env[0] == '\0' || std::strcmp(lm_head_w8_preload_env, "0") != 0;
+        int64_t lm_head_w8_group = 64;
+        if (const char * group_env = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_GROUP")) {
+            const long parsed = std::strtol(group_env, nullptr, 10);
+            if (parsed > 0 && parsed <= 128) {
+                lm_head_w8_group = parsed;
+            }
+        }
+        if (lm_head_w8_enabled && awq_preload && lm_head_w8_preload) {
+            const ggml_tensor * output = get_tensor("output.weight");
+            if (output != nullptr &&
+                    output->data != nullptr &&
+                    output->type == GGML_TYPE_F16 &&
+                    output->ne[0] > 0 &&
+                    output->ne[1] > 0 &&
+                    output->nb[0] == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+                const bool ok = ggml_backend_npu_decode_w8a16_preload(
+                        ggml_get_name(output),
+                        output->data,
+                        output->ne[0],
+                        output->ne[1],
+                        output->nb[0],
+                        output->nb[1],
+                        lm_head_w8_group);
+                LLAMA_LOG_INFO("%s: %s AICAS lm_head W8A16 output.weight preload into NPU CMA; group=%" PRId64 "\n",
+                        __func__, ok ? "completed" : "failed", lm_head_w8_group);
+            } else {
+                LLAMA_LOG_WARN("%s: skipped AICAS lm_head W8A16 preload; output.weight is missing or not contiguous F16\n",
+                        __func__);
+            }
+        }
+    }
+    {
+        // W16A16 decode/lm_head is retired for the current overlay. Keep the old
+        // preload block disabled so env vars cannot accidentally enter it.
+#if 0
         const char * lm_head_env = std::getenv("AICAS_TEXT_LM_HEAD_W16A16_NPU");
         const bool lm_head_enabled = lm_head_env != nullptr && lm_head_env[0] != '\0' && std::strcmp(lm_head_env, "0") != 0;
         const char * awq_preload_env = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD");
@@ -6587,6 +6673,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         __func__);
             }
         }
+#endif
     }
 #endif
 
@@ -6946,6 +7033,27 @@ struct llm_build_llama : public llm_graph_context {
 
             // self-attention
             {
+                ggml_tensor * npu_attn = build_attn_decode_npu(
+                        inp_attn,
+                        inp_pos,
+                        cur,
+                        model.layers[il].wq, model.layers[il].bq,
+                        model.layers[il].wk, model.layers[il].bk,
+                        model.layers[il].wv, model.layers[il].bv,
+                        model.layers[il].wo, model.layers[il].bo,
+                        kq_scale,
+                        il);
+                if (npu_attn != nullptr) {
+                    cur = npu_attn;
+                    const char * npu_attn_pre_o = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_PRE_O");
+                    if (npu_attn_pre_o != nullptr && npu_attn_pre_o[0] != '\0' && std::strcmp(npu_attn_pre_o, "0") != 0) {
+                        cur = build_lora_mm(model.layers[il].wo, cur);
+                        if (model.layers[il].bo) {
+                            cur = ggml_add(ctx0, cur, model.layers[il].bo);
+                        }
+                    }
+                    cb(cur, "attn_out", il);
+                } else {
                 // rope freq factors for llama3; may return nullptr for llama2 and other models
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
@@ -7003,6 +7111,7 @@ struct llm_build_llama : public llm_graph_context {
                         model.layers[il].wo, model.layers[il].bo,
                         Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
                 cb(cur, "attn_out", il);
+                }
             }
 
             if (il == n_layer - 1 && inp_out_ids) {
