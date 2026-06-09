@@ -32,6 +32,18 @@
 
 using json = nlohmann::ordered_json;
 
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" void ggml_backend_npu_decode_attention_zero_cache(void) __attribute__((weak));
+#endif
+
+static void server_npu_decode_attention_zero_cache() {
+#if defined(__GNUC__) || defined(__clang__)
+    if (ggml_backend_npu_decode_attention_zero_cache != nullptr) {
+        ggml_backend_npu_decode_attention_zero_cache();
+    }
+#endif
+}
+
 constexpr int HTTP_POLLING_SECONDS = 1;
 
 enum stop_type {
@@ -2563,6 +2575,16 @@ struct server_context {
             SLT_INF(slot, "new slot n_ctx_slot = %d\n", slot.n_ctx);
 
             slot.callback_on_release = [this](int) {
+                bool any_processing = false;
+                for (const server_slot & other : slots) {
+                    if (other.is_processing()) {
+                        any_processing = true;
+                        break;
+                    }
+                }
+                if (!any_processing) {
+                    server_npu_decode_attention_zero_cache();
+                }
                 queue_tasks.pop_deferred_task();
             };
 
@@ -3998,14 +4020,15 @@ struct server_context {
                         const llama_pos merged_start_pos = slot.n_past;
                         const int32_t merged_effective_n_predict =
                                 slot.task->params.n_predict != -1 ? slot.task->params.n_predict : params_base.n_predict;
-                        const bool merged_switch_decode_after = false;
+                        const bool merged_switch_decode_before_lm_head =
+                                merged_effective_n_predict < 0 || merged_effective_n_predict > 1;
                         if (server_mtmd_merge_prefill_trace_enabled()) {
                             SLT_INF(slot,
-                                    "merged prefill overlay policy: n_predict=%d switch_decode_after=%d\n",
+                                    "merged prefill overlay policy: n_predict=%d switch_decode_before_lm_head=%d\n",
                                     merged_effective_n_predict,
-                                    merged_switch_decode_after ? 1 : 0);
+                                    merged_switch_decode_before_lm_head ? 1 : 0);
                         }
-                        if (input_tokens.process_merged_prefill(ctx, mctx, slot.id, merged_start_pos, merged_n_past, merged_res, merged_switch_decode_after, &slot.mmproj_profile)) {
+                        if (input_tokens.process_merged_prefill(ctx, mctx, slot.id, merged_start_pos, merged_n_past, merged_res, merged_switch_decode_before_lm_head, &slot.mmproj_profile)) {
                             if (merged_res != 0) {
                                 SLT_ERR(slot, "failed to process merged multimodal prefill, res = %d\n", merged_res);
                                 send_error(slot, "failed to process merged multimodal prefill", ERROR_TYPE_SERVER);

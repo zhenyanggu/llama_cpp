@@ -137,8 +137,11 @@ GGML_BACKEND_API void * ggml_backend_npu_mem_alloc(size_t size);
 GGML_BACKEND_API void ggml_backend_npu_mem_free(void * ptr);
 GGML_BACKEND_API void ggml_backend_npu_runtime_shutdown(void);
 GGML_BACKEND_API void ggml_backend_npu_decode_runtime_shutdown(void);
+GGML_BACKEND_API void ggml_backend_npu_decode_attention_zero_cache(void);
 GGML_BACKEND_API void ggml_backend_npu_decode_overlay_mark_inactive(void);
 GGML_BACKEND_API void ggml_backend_npu_decode_overlay_mark_active(void);
+GGML_BACKEND_API bool ggml_backend_npu_decode_overlay_is_active(void);
+GGML_BACKEND_API bool ggml_backend_npu_decode_overlay_ensure_active(const char * op_name);
 
 GGML_BACKEND_API bool ggml_backend_npu_i8_gemm_raw_cma(
         const char * op_name,

@@ -58,6 +58,21 @@ using json = nlohmann::ordered_json;
 
 using raw_buffer = std::vector<uint8_t>;
 
+static std::mutex & server_npu_overlay_phase_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+static std::string & server_npu_overlay_active_phase() {
+    static std::string phase;
+    return phase;
+}
+
+static void server_note_npu_overlay_phase(const char * phase) {
+    std::lock_guard<std::mutex> lock(server_npu_overlay_phase_mutex());
+    server_npu_overlay_active_phase() = phase != nullptr ? phase : "";
+}
+
 static std::string server_mtmd_profile_output_path() {
     const char * path = std::getenv("LLAMA_MTMD_PREFILL_SUMMARY_JSON");
     return path ? path : "";
@@ -106,12 +121,10 @@ static bool server_run_npu_overlay_switch_cmd(const char * env_name, const char 
 	        return true;
 	    }
 
-	    static std::mutex overlay_phase_mutex;
-	    static std::string active_phase;
 	    const std::string requested_phase = phase != nullptr ? phase : "";
 	    {
-	        std::lock_guard<std::mutex> lock(overlay_phase_mutex);
-	        if (active_phase == requested_phase) {
+	        std::lock_guard<std::mutex> lock(server_npu_overlay_phase_mutex());
+	        if (server_npu_overlay_active_phase() == requested_phase) {
 	            return true;
 	        }
 	    }
@@ -138,10 +151,7 @@ static bool server_run_npu_overlay_switch_cmd(const char * env_name, const char 
 	    if (std::strcmp(phase, "decode") == 0) {
 	        ggml_backend_npu_decode_overlay_mark_active();
 	    }
-	    {
-	        std::lock_guard<std::mutex> lock(overlay_phase_mutex);
-	        active_phase = requested_phase;
-	    }
+	    server_note_npu_overlay_phase(requested_phase.c_str());
 	    return true;
 #else
     GGML_UNUSED(env_name);
@@ -149,6 +159,57 @@ static bool server_run_npu_overlay_switch_cmd(const char * env_name, const char 
     return true;
 #endif
 }
+
+static void server_set_env_var(const char * name, const char * value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void server_unset_env_var(const char * name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+class server_scoped_env_var {
+public:
+    server_scoped_env_var(const char * name, const char * value, bool enabled) : name(name), enabled(enabled) {
+        if (!enabled) {
+            return;
+        }
+        const char * old = std::getenv(name);
+        had_old = old != nullptr;
+        if (had_old) {
+            old_value = old;
+        }
+        server_set_env_var(name, value);
+    }
+
+    ~server_scoped_env_var() {
+        if (!enabled) {
+            return;
+        }
+        if (had_old) {
+            server_set_env_var(name, old_value.c_str());
+        } else {
+            server_unset_env_var(name);
+        }
+    }
+
+    server_scoped_env_var(const server_scoped_env_var &) = delete;
+    server_scoped_env_var & operator=(const server_scoped_env_var &) = delete;
+
+private:
+    const char * name;
+    bool enabled;
+    bool had_old = false;
+    std::string old_value;
+};
 
 static bool server_mtmd_profile_enabled() {
     const std::string path = server_mtmd_profile_output_path();
@@ -2384,7 +2445,7 @@ public:
                 llama_pos start_pos,
                 llama_pos & n_pos_out,
                 int32_t & result,
-                bool switch_decode_after,
+                bool switch_decode_before_lm_head,
                 server_mtmd_prefill_profile * profile = nullptr) const {
         if (start_pos < 0 || (size_t) start_pos > tokens.size()) {
             if (server_mtmd_merge_prefill_trace_enabled()) {
@@ -2623,6 +2684,10 @@ public:
         if (collect_text_cpu_profile) {
             server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_TEXT_CPU_PROFILE_MODE"));
         }
+        server_scoped_env_var prefill_tail_decode_switch_env(
+                "AICAS_PREFILL_TAIL_DECODE_SWITCH",
+                "1",
+                switch_decode_before_lm_head);
         result = llama_decode(ctx, batch);
         const char * text_cpu_profile_json =
             collect_text_cpu_profile ? ggml_backend_cpu_profile_stop_json() : nullptr;
@@ -2644,6 +2709,11 @@ public:
             SRV_ERR("failed to decode merged multimodal prefill, res = %d\n", result);
             return true;
         }
+#ifdef GGML_USE_NPU
+        if (switch_decode_before_lm_head && ggml_backend_npu_decode_overlay_is_active()) {
+            server_note_npu_overlay_phase("decode");
+        }
+#endif
 
         SRV_INF("merged multimodal prefill decoded in %" PRId64 " ms\n", ggml_time_ms() - t1);
         if (server_mtmd_merge_prefill_trace_enabled()) {
@@ -2655,13 +2725,7 @@ public:
                     text_token_count,
                     n_suffix - (size_t) text_token_count);
         }
-        if (switch_decode_after) {
-            if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_DECODE_SWITCH_CMD", "decode")) {
-                SRV_ERR("%s", "failed to switch NPU overlay for decode\n");
-                result = -1;
-                return true;
-            }
-        } else if (server_mtmd_merge_prefill_trace_enabled()) {
+        if (!switch_decode_before_lm_head && server_mtmd_merge_prefill_trace_enabled()) {
             SRV_INF("%s", "merged prefill keeping prefill overlay: reason=no_decode_batch_expected\n");
         }
         if (profile != nullptr && profile->enabled) {

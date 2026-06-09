@@ -260,6 +260,10 @@ void ggml_backend_npu_decode_runtime_shutdown(void) {
     npu_decode_destroy();
 }
 
+void ggml_backend_npu_decode_attention_zero_cache(void) {
+    ggml_npu::npu_decode_attention_zero_cache();
+}
+
 void ggml_backend_npu_decode_overlay_mark_inactive(void) {
     using namespace ggml_npu;
     std::lock_guard<std::mutex> lock(npu_decode_overlay_mutex());
@@ -274,3 +278,12 @@ void ggml_backend_npu_decode_overlay_mark_active(void) {
     npu_decode_overlay_active() = true;
 }
 
+bool ggml_backend_npu_decode_overlay_is_active(void) {
+    using namespace ggml_npu;
+    std::lock_guard<std::mutex> lock(npu_decode_overlay_mutex());
+    return npu_decode_overlay_active();
+}
+
+bool ggml_backend_npu_decode_overlay_ensure_active(const char * op_name) {
+    return ggml_npu::npu_decode_ensure_overlay_active(op_name);
+}

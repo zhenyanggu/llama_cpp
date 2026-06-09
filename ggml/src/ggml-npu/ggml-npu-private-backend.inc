@@ -448,11 +448,20 @@ static void * npu_reg_get_proc_address(ggml_backend_reg_t reg, const char * name
     if (std::strcmp(name, "ggml_backend_npu_decode_runtime_shutdown") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_runtime_shutdown);
     }
+    if (std::strcmp(name, "ggml_backend_npu_decode_attention_zero_cache") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_decode_attention_zero_cache);
+    }
     if (std::strcmp(name, "ggml_backend_npu_decode_overlay_mark_inactive") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_overlay_mark_inactive);
     }
     if (std::strcmp(name, "ggml_backend_npu_decode_overlay_mark_active") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_overlay_mark_active);
+    }
+    if (std::strcmp(name, "ggml_backend_npu_decode_overlay_is_active") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_decode_overlay_is_active);
+    }
+    if (std::strcmp(name, "ggml_backend_npu_decode_overlay_ensure_active") == 0) {
+        return reinterpret_cast<void *>(ggml_backend_npu_decode_overlay_ensure_active);
     }
 if (std::strcmp(name, "ggml_backend_npu_decode_w4a16_gemv_ex") == 0) {
         return reinterpret_cast<void *>(ggml_backend_npu_decode_w4a16_gemv_ex);
@@ -477,4 +486,3 @@ static ggml_backend_buffer_type_t npu_device_get_buffer_type(ggml_backend_dev_t 
     npu_reg_context * ctx = static_cast<npu_reg_context *>(dev->reg->context);
     return &ctx->buffer_type;
 }
-

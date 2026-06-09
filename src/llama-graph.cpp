@@ -126,6 +126,7 @@ extern "C" bool ggml_backend_npu_decode_w8a16_gemv_ex(
         void * dst_data,
         int dst_type,
         int64_t dst_nb1);
+extern "C" bool ggml_backend_npu_decode_overlay_ensure_active(const char * op_name);
 extern "C" bool ggml_backend_npu_decode_w4a16_gemv_ex(
         const char * op_name,
         const void * q4_data,
@@ -508,6 +509,26 @@ static bool llama_text_lm_head_w8a16_dp128_enabled() {
     return enabled;
 }
 
+static bool llama_text_prefill_lm_head_default_enabled() {
+    static const bool enabled = []() {
+        const char * value = std::getenv("AICAS_TEXT_PREFILL_LM_HEAD_DEFAULT");
+        if (value == nullptr || value[0] == '\0') {
+            return true;
+        }
+        return std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool llama_prefill_tail_decode_switch_enabled() {
+#ifdef GGML_USE_NPU
+    const char * value = std::getenv("AICAS_PREFILL_TAIL_DECODE_SWITCH");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+#else
+    return false;
+#endif
+}
+
 static bool llama_text_decode_awq_npu_gemv_only() {
     static const bool enabled = []() {
         const char * decode_npu = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU");
@@ -516,9 +537,16 @@ static bool llama_text_decode_awq_npu_gemv_only() {
         }
         const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_GEMV_ONLY");
         if (value == nullptr || value[0] == '\0') {
-            return true;
+            return false;
         }
-        return std::strcmp(value, "0") != 0;
+        const bool gemv_only = std::strcmp(value, "0") != 0;
+        if (gemv_only) {
+            LLAMA_LOG_WARN(
+                    "%s: WARNING: AICAS_TEXT_DECODE_AWQ_NPU_GEMV_ONLY is enabled; "
+                    "attention NPU, fused SwiGLU FFN, and lm_head NPU decode paths will be disabled\n",
+                    __func__);
+        }
+        return gemv_only;
     }();
     return enabled;
 }
@@ -530,7 +558,8 @@ static bool llama_text_lm_head_w8a16_npu_enabled() {
         }
         const char * value = std::getenv("AICAS_TEXT_LM_HEAD_W8A16_NPU");
         if (value == nullptr || value[0] == '\0') {
-            return false;
+            const char * decode_npu = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU");
+            return decode_npu != nullptr && decode_npu[0] != '\0' && std::strcmp(decode_npu, "0") != 0;
         }
         return std::strcmp(value, "0") != 0;
     }();
@@ -649,7 +678,10 @@ static bool llama_text_decode_awq_fused_ffn_npu_enabled() {
             return false;
         }
         const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_FUSED_FFN_NPU");
-        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+        if (value == nullptr || value[0] == '\0') {
+            return llama_text_decode_awq_npu_enabled();
+        }
+        return std::strcmp(value, "0") != 0;
     }();
     return enabled;
 }
@@ -4761,7 +4793,10 @@ static bool llama_text_decode_attention_npu_enabled() {
         return false;
     }
     const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    if (value == nullptr || value[0] == '\0') {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0;
 }
 
 static int llama_text_decode_attention_npu_max_layer() {
@@ -5024,6 +5059,33 @@ static ggml_tensor * llama_maybe_observe_text_activation(
         return act;
     }
     return ggml_map_custom1(ctx0, act, llama_collect_text_activation_f32_passthrough, 1, observer);
+}
+
+static void llama_compute_prefill_tail_decode_switch_passthrough(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * a,
+        int ith,
+        int nth,
+        void * userdata) {
+    GGML_UNUSED(nth);
+    GGML_UNUSED(userdata);
+
+    if (ith != 0) {
+        return;
+    }
+
+#ifdef GGML_USE_NPU
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+        LLAMA_LOG_INFO("%s: switching to decode overlay before prefill-tail lm_head\n", __func__);
+    }
+    if (!ggml_backend_npu_decode_overlay_ensure_active("prefill_tail_lm_head")) {
+        LLAMA_LOG_WARN("%s: decode overlay switch before prefill-tail lm_head failed\n", __func__);
+    }
+#endif
+
+    GGML_ASSERT(ggml_nbytes(dst) == ggml_nbytes(a));
+    memcpy(dst->data, a->data, ggml_nbytes(a));
 }
 
 } // namespace
@@ -5641,6 +5703,13 @@ ggml_tensor * llm_graph_context::build_lora_mm(
 
     const bool is_prefill_gemm = cur->ne[1] > 1;
     const bool is_decode_step = n_tokens == 1;
+    const bool is_prefill_tail_lm_head =
+        n_tokens > 1 &&
+        n_outputs > 0 &&
+        std::strcmp(w->name, "output.weight") == 0;
+    const bool prefill_tail_decode_switch =
+        is_prefill_tail_lm_head &&
+        llama_prefill_tail_decode_switch_enabled();
     const bool use_decode_gemv_sq = !is_prefill_gemm && llama_text_sq_enable_decode_gemv();
     const bool allow_text_sq = is_prefill_gemm || use_decode_gemv_sq;
     auto it_sq = model.aicas_text_sq_tensors.find(w->name);
@@ -5754,6 +5823,7 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     if (res == nullptr &&
+        !(is_prefill_tail_lm_head && llama_text_prefill_lm_head_default_enabled() && !prefill_tail_decode_switch) &&
         llama_text_lm_head_w8a16_dp128_enabled() &&
         std::strcmp(w->name, "output.weight") == 0 &&
         w->type == GGML_TYPE_F16 &&
@@ -5763,13 +5833,23 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         if (cur_lm_head->type == GGML_TYPE_F32) {
             cur_lm_head = ggml_cast(ctx0, cur_lm_head, GGML_TYPE_F16);
         }
-        ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
         static llama_text_lm_head_w8a16_userdata lm_head_w8a16_cfg;
         lm_head_w8a16_cfg.tile = llama_text_lm_head_w8a16_group();
         const bool lm_head_w8a16_npu =
             llama_text_lm_head_w8a16_npu_enabled() &&
             !llama_text_lm_head_w8a16_int24_enabled() &&
             llama_text_lm_head_w8a16_int24_diag_path().empty();
+        if (prefill_tail_decode_switch && lm_head_w8a16_npu) {
+            cur_lm_head = ggml_map_custom1(
+                    ctx0,
+                    cur_lm_head,
+                    llama_compute_prefill_tail_decode_switch_passthrough,
+                    1,
+                    nullptr);
+            ggml_set_name(cur_lm_head, "prefill_tail_decode_switch_barrier");
+            ggml_backend_sched_set_tensor_backend(sched, cur_lm_head, backend_cpu);
+        }
+        ggml_tensor * out_template = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur_lm_head->ne[1]);
         static bool lm_head_w8a16_logged = false;
         if (!lm_head_w8a16_logged) {
             LLAMA_LOG_INFO("%s: using AICAS lm_head W8A16 %s path for output.weight; group=%" PRId64 "; Q4 lm_head disabled\n",
@@ -5787,6 +5867,21 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             lm_head_w8a16_npu ? 1 : GGML_N_TASKS_MAX,
             &lm_head_w8a16_cfg);
         ggml_set_name(res, lm_head_w8a16_npu ? "text_lm_head_w8a16_npu" : "text_lm_head_w8a16_dp128");
+    }
+
+    if (res == nullptr &&
+        is_prefill_tail_lm_head &&
+        llama_text_prefill_lm_head_default_enabled() &&
+        !prefill_tail_decode_switch) {
+        static bool logged = false;
+        if (!logged) {
+            LLAMA_LOG_INFO("%s: using default CPU FP lm_head for prefill-tail output.weight; AICAS W8A16 lm_head and decode overlay are not requested\n",
+                    __func__);
+            logged = true;
+        }
+        res = ggml_mul_mat(ctx0, w, cur);
+        ggml_set_name(res, "text_prefill_lm_head_default_cpu");
+        ggml_backend_sched_set_tensor_backend(sched, res, backend_cpu);
     }
 
     if (false && res == nullptr &&
