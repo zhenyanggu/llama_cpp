@@ -15,6 +15,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -23,27 +24,45 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+struct npu_device {
+    uint32_t magic;
+};
+
 namespace {
 
-constexpr uint32_t kDmaChannelCount = 1;
 constexpr uint32_t kDefaultCmaMapSize = 256u * 1024u * 1024u;
 constexpr uint32_t kRegMapSize = NPU_KV260_REG_MMAP_SIZE;
 constexpr off_t kRegMapOffset = NPU_KV260_MMAP_REGS_OFFSET;
-constexpr size_t kAlignment = 64;
+constexpr size_t kAlignment = 256;
 
-constexpr uint32_t kGemvActSpmBase = 0x00000;
-constexpr uint32_t kGemvScaleSpmBase = 0x02000;
+// GEMV SPM is a single 512 KiB address space in RTL, but stream GEMV reserves
+// fixed regions for one active cached weight block and the next staged block.
+// Weight MVINs must fit in one region at a time; do not treat
+// 0x10000..SPM_END as one contiguous block.  The supported per-block weight
+// capacity is min(region0, region1):
+//   region0: 0x10000..0x3ffff = 192 KiB
+//   region1: 0x40000..0x7ffff = 256 KiB
+// so the safe weight block limit is 192 KiB.  For example, W8A16 with K=64
+// uses 2048 bytes per 32-row tile, hence max 96 row tiles / 3072 rows.
+constexpr uint32_t kGemvStreamScaleSpmBase = 0x00000;
 constexpr uint32_t kGemvPingWeightSpmBase = 0x10000;
 constexpr uint32_t kGemvPongWeightSpmBase = 0x40000;
-constexpr uint32_t kGemvOutputSpmBase = 0x00000;
-constexpr uint32_t kGemvActTileBytes = NPU_GEMV_TILE_ELEMS * NPU_GEMV_FP16_BYTES;
 constexpr uint32_t kGemvScaleTileBytes = NPU_GEMV_LINE_BYTES;
 constexpr uint32_t kGemvWeightW4RowBytes = NPU_GEMV_TILE_ELEMS / 2;
-constexpr uint32_t kGemvWeightW8RowBytes = NPU_GEMV_TILE_ELEMS;
+constexpr uint32_t kGemvWeightW8TileElems = NPU_GEMV_TILE_ELEMS / 2;
+constexpr uint32_t kGemvWeightW8RowBytes = kGemvWeightW8TileElems;
 constexpr uint32_t kGemvWeightW16RowBytes = NPU_GEMV_TILE_ELEMS * NPU_GEMV_FP16_BYTES;
-constexpr uint32_t kRopeLutActSpmBase = NPU_ROPE_LUT_ACT_SPM_BASE;
 constexpr uint32_t kRopeLutWindowBytes = NPU_ROPE_LUT_WINDOW_BYTES;
-
+constexpr uint64_t kApiStatusBusy = 1ull << 0;
+constexpr uint64_t kApiStatusDone = 1ull << 1;
+constexpr uint64_t kApiStatusError = 1ull << 2;
+constexpr uint32_t kApiStatusErrorCodeShift = 4;
+constexpr uint32_t kNpuDeviceMagic = 0x4E505544u; // "NPUD"
+constexpr uint16_t kDecodeAttentionHeadDim = 64;
+constexpr uint16_t kDecodeAttentionKvHeads = 5;
+constexpr uint16_t kDecodeAttentionKvDim =
+    kDecodeAttentionHeadDim * kDecodeAttentionKvHeads;
+constexpr uint16_t kGemvStreamCacheInvalidateTag = 0x8000;
 #ifndef NPU_POLL_SPIN_COUNT
 #define NPU_POLL_SPIN_COUNT 10000
 #endif
@@ -64,8 +83,38 @@ constexpr uint32_t kRopeLutWindowBytes = NPU_ROPE_LUT_WINDOW_BYTES;
 
 #define NPU_ERR(fmt, ...) std::fprintf(stderr, "[NPU][ERR] " fmt "\n", ##__VA_ARGS__)
 
+struct GemvPingPongConfig {
+    void* act_ptr;
+    void* act_scale_ptr;
+    void* act_scale2_ptr;
+    void* scale_ptr;
+    void* weight_ptr;
+    void* output_ptr;
+    void* rope_lut_ptr;
+    uint16_t m;
+    uint16_t n;
+    uint8_t gemv_mode;
+    uint8_t output_precision;
+    bool enable_act_scale;
+    bool enable_act_scale2;
+    uint64_t decode_flow;
+    uint16_t cache_cell_idx;
+    uint32_t act_group_stride_bytes;
+    bool cached_group_enable;
+};
+
 uint32_t ceil_div_u32(uint32_t a, uint32_t b) {
     return (a + b - 1u) / b;
+}
+
+uint32_t align_up_u32(uint32_t value, uint32_t alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+uint32_t gemv_tile_elems(uint8_t gemv_mode) {
+    return (gemv_mode == NPU_GEMV_MODE_W8A16)
+        ? static_cast<uint32_t>(kGemvWeightW8TileElems)
+        : static_cast<uint32_t>(NPU_GEMV_TILE_ELEMS);
 }
 
 uint32_t gemv_weight_tile_bytes(uint8_t gemv_mode) {
@@ -76,20 +125,54 @@ uint32_t gemv_weight_tile_bytes(uint8_t gemv_mode) {
         row_bytes = kGemvWeightW16RowBytes;
     }
     const uint32_t data_bytes = NPU_GEMV_ROW_TILE_ELEMS * row_bytes;
-    return (gemv_mode == NPU_GEMV_MODE_W4A16 || gemv_mode == NPU_GEMV_MODE_W8A16)
-        ? kGemvScaleTileBytes + data_bytes
-        : data_bytes;
+    return data_bytes;
 }
 
-bool gemv_uses_embedded_scale(uint8_t gemv_mode) {
+bool gemv_mode_uses_weight_scale(uint8_t gemv_mode) {
     return gemv_mode == NPU_GEMV_MODE_W4A16 || gemv_mode == NPU_GEMV_MODE_W8A16;
 }
 
-uint32_t default_act_scale_addr(uint32_t vec_addr, uint16_t mat_width, uint8_t gemv_mode) {
-    if (gemv_mode != NPU_GEMV_MODE_W4A16) {
+bool decode_flow_unit_weight_scale(uint64_t decode_flow) {
+    return (decode_flow & NPU_DECODE_FLAG_UNIT_WEIGHT_SCALE) != 0;
+}
+
+bool gemv_request_uses_weight_scale(uint8_t gemv_mode, uint64_t decode_flow) {
+    return gemv_mode_uses_weight_scale(gemv_mode) &&
+           !decode_flow_unit_weight_scale(decode_flow);
+}
+
+bool decode_flow_uses_rope_lut(uint64_t decode_flow) {
+    return ((decode_flow >> 8) & 0x3u) == NPU_DECODE_UNARY_ROPE;
+}
+
+bool decode_flow_kv_quant_scratch(uint64_t decode_flow) {
+    return (decode_flow & NPU_DECODE_FLAG_KV_QUANT) != 0 &&
+           (decode_flow & NPU_DECODE_FLAG_KV_QUANT_SCRATCH) != 0;
+}
+
+uint32_t act_scale_bytes_for(uint16_t mat_width, uint8_t gemv_mode,
+                             uint64_t decode_flow, bool enable_act_scale) {
+    if (!enable_act_scale) {
         return 0;
     }
-    return vec_addr + ceil_div_u32(mat_width, NPU_GEMV_TILE_ELEMS) * kGemvActTileBytes;
+    const uint32_t col_tiles = ceil_div_u32(mat_width, gemv_tile_elems(gemv_mode));
+    const uint32_t act_tile_bytes = gemv_tile_elems(gemv_mode) * NPU_GEMV_FP16_BYTES;
+    (void)decode_flow;
+    return col_tiles * act_tile_bytes;
+}
+
+uint32_t group_count_from_decode_flow(uint64_t decode_flow) {
+    return static_cast<uint32_t>((decode_flow >> 25) & 0x3u) + 1u;
+}
+
+uint32_t grouped_act_span_bytes(uint32_t act_bytes, uint32_t group_count,
+                                uint32_t act_group_stride_bytes) {
+    if (group_count <= 1u) {
+        return act_bytes;
+    }
+    const uint32_t stride =
+        act_group_stride_bytes != 0 ? act_group_stride_bytes : act_bytes;
+    return (group_count - 1u) * stride + act_bytes;
 }
 
 uint64_t make_decode_flow_value(uint8_t src0, uint8_t src1,
@@ -107,53 +190,6 @@ uint64_t make_decode_flow_value(uint8_t src0, uint8_t src1,
            (uint64_t(dst_buffer_id & 0xfu) << 20) |
            (uint64_t(elem_count) << 32) |
            (uint64_t(position) << 48);
-}
-
-uint64_t make_matvec_bypass_output_flow(uint16_t elem_count) {
-    return make_decode_flow_value(
-        NPU_DECODE_SRC_GEMV_STREAM,
-        0,
-        NPU_DECODE_UNARY_BYPASS,
-        NPU_DECODE_BINARY_BYPASS,
-        NPU_DECODE_REDUCE_BYPASS,
-        NPU_DECODE_DST_OUTPUT_SPM,
-        0,
-        0,
-        elem_count,
-        0);
-}
-
-uint64_t make_matvec_silu_buffer_flow(uint16_t elem_count) {
-    return make_decode_flow_value(
-        NPU_DECODE_SRC_GEMV_STREAM,
-        0,
-        NPU_DECODE_UNARY_SILU,
-        NPU_DECODE_BINARY_BYPASS,
-        NPU_DECODE_REDUCE_BYPASS,
-        NPU_DECODE_DST_POST_BUFFER,
-        0,
-        0,
-        elem_count,
-        0);
-}
-
-MvinConfig make_rope_lut_mvin_config(void* rope_table_base, uint16_t position) {
-    if (!rope_table_base) {
-        throw std::runtime_error("RoPE LUT table pointer is null");
-    }
-
-    const uint32_t even_position = uint32_t(position) & ~1u;
-    const uint32_t window_index = even_position >> 1;
-
-    MvinConfig cfg = {};
-    cfg.host_ptr = static_cast<uint8_t*>(rope_table_base) +
-                   window_index * kRopeLutWindowBytes;
-    cfg.sram_addr = kRopeLutActSpmBase;
-    cfg.col_num = kRopeLutWindowBytes - 1u;
-    cfg.row_num = 0;
-    cfg.precision = 1;
-    cfg.input_type = NPU_GEMV_MVIN_ACT;
-    return cfg;
 }
 
 uint64_t parse_size_with_suffix(const char* value, uint64_t fallback) {
@@ -230,14 +266,48 @@ struct PreparedWaitContext {
     bool prepared = false;
 };
 
-struct DmaWaitContext {
-    std::string shape_key;
-    std::chrono::steady_clock::time_point start;
-    uint64_t bytes = 0;
-    bool valid = false;
+thread_local PreparedWaitContext g_prepared_wait;
+
+struct GemvBlockShadow {
+    uint64_t desc0 = 0;
+    uint64_t desc1 = 0;
+    uint64_t desc2 = 0;
+    uint64_t desc3 = 0;
+    uint64_t desc4 = 0;
+    uint64_t desc5 = 0;
+    uint64_t desc6 = 0;
+    uint64_t desc7 = 0;
+    const char* tag = "unset";
 };
 
-thread_local PreparedWaitContext g_prepared_wait;
+GemvBlockShadow g_last_gemv_block;
+uint32_t g_device_refcount = 0;
+bool g_runtime_owned_by_device_api = false;
+
+bool is_default_dev_path(const char* dev_path) {
+    return dev_path == nullptr || dev_path[0] == '\0' ||
+           std::strcmp(dev_path, NPU_KV260_DEV_PATH) == 0;
+}
+
+bool valid_device(const npu_device* dev) {
+    return dev && dev->magic == kNpuDeviceMagic;
+}
+
+bool valid_output_precision(decode_output_precision precision) {
+    return precision == DECODE_OUTPUT_FP16 || precision == DECODE_OUTPUT_FP32;
+}
+
+uint8_t output_precision_to_hw(decode_output_precision precision) {
+    return precision == DECODE_OUTPUT_FP32 ? 3u : 1u;
+}
+
+bool valid_decode_gemv_mode(decode_gemv_mode mode) {
+    return mode == DECODE_GEMV_W4A16 || mode == DECODE_GEMV_W8A16;
+}
+
+int validate_timeout_default_only(uint32_t timeout_ms) {
+    return timeout_ms == 0 ? 0 : -ENOTSUP;
+}
 
 const char* wait_strategy_name(NpuWaitStrategy strategy) {
     switch (strategy) {
@@ -424,51 +494,16 @@ void write_wait_trace(const std::string& op,
         << "}\n";
 }
 
-std::string mvin_shape_key(uint32_t dma_id, const MvinConfig& cfg, uint64_t bytes) {
-    std::ostringstream oss;
-    oss << "dma=" << dma_id
-        << ",row=" << cfg.row_num
-        << ",col=" << cfg.col_num
-        << ",precision=" << static_cast<unsigned>(cfg.precision)
-        << ",input_type=" << static_cast<unsigned>(cfg.input_type)
-        << ",bytes=" << bytes;
-    return oss.str();
-}
-
-std::string mvout_shape_key(uint32_t dma_id, const MvoutConfig& cfg, uint64_t bytes) {
-    std::ostringstream oss;
-    oss << "dma=" << dma_id
-        << ",row=" << cfg.row_num
-        << ",col=" << cfg.col_num
-        << ",precision=" << static_cast<unsigned>(cfg.precision)
-        << ",output_type=" << static_cast<unsigned>(cfg.output_type)
-        << ",bytes=" << bytes;
-    return oss.str();
-}
-
-std::string matvec_shape_key(const MatvecConfig& cfg) {
-    std::ostringstream oss;
-    oss << "mode=" << static_cast<unsigned>(cfg.gemv_mode)
-        << ",m=" << cfg.mat_height
-        << ",n=" << cfg.mat_width
-        << ",flow=" << (cfg.decode_flow ? 1 : 0);
-    return oss.str();
-}
-
-uint64_t mvout_transfer_bytes(const MvoutConfig& cfg) {
-    const uint64_t elem_bytes = cfg.precision == 3 ? 4ull : 2ull;
-    return (static_cast<uint64_t>(cfg.row_num) + 1ull) *
-           (static_cast<uint64_t>(cfg.col_num) + 1ull) * elem_bytes;
-}
-
 class NpuRuntime {
 public:
     NpuRuntime() = default;
     ~NpuRuntime();
 
-    bool init();
+    bool init(bool require_decode = true);
     bool reinit();
     void reset();
+    bool hardware_ready() const { return hardware_ready_; }
+    bool activate_decode();
 
     void* memory_base() const { return data_virt_base_; }
     uint32_t memory_size() const { return data_map_size_; }
@@ -476,17 +511,13 @@ public:
     void* alloc(size_t size);
     void free_mem(void* ptr);
 
-    void run_mvin(const MvinConfig& cfg);
-    void run_mvout(const MvoutConfig& cfg);
-    void run_mvin_async(uint32_t dma_id, const MvinConfig& cfg);
-    void run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg);
-    void wait_mvin(uint32_t dma_mask);
-    void wait_mvout(uint32_t dma_mask);
-    void run_matvec(const MatvecConfig& cfg);
-    void run_gemv_pingpong(const GemvPingPongConfig& cfg);
+    void run_gemv_stream(const GemvPingPongConfig& cfg,
+                         uint32_t weight_row_tile_stride_bytes = 0,
+                         uint16_t weight_capacity_tokens = 0);
+    void read_kv_scale(bool is_v, npu_stream_kv_scale_result* out) const;
 
 private:
-    struct alignas(64) BlockHeader {
+    struct alignas(256) BlockHeader {
         size_t size;
         bool is_free;
         BlockHeader* next;
@@ -504,9 +535,7 @@ private:
     void* data_virt_base_ = nullptr;
     uint32_t data_phy_base_ = 0;
     uint32_t data_map_size_ = 0;
-    void* pending_mvin_staging_[kDmaChannelCount] = {};
-    DmaWaitContext pending_mvin_ctx_[kDmaChannelCount] = {};
-    DmaWaitContext pending_mvout_ctx_[kDmaChannelCount] = {};
+    bool hardware_ready_ = false;
     BlockHeader* free_list_head_ = nullptr;
     BlockHeader* alloc_cursor_ = nullptr;
     ShadowRegs shadow_;
@@ -515,23 +544,13 @@ private:
     void coalesce(BlockHeader* block);
     uint32_t virt_to_phys(void* ptr) const;
 
-    void validate_dma_id(uint32_t dma_id) const;
-    void validate_dma_mask(uint32_t dma_mask) const;
-    void validate_mvin(uint32_t dma_id, const MvinConfig& cfg) const;
-    void validate_mvout(uint32_t dma_id, const MvoutConfig& cfg) const;
-    void validate_matvec(const MatvecConfig& cfg) const;
-
-    uint32_t read_dma_busy_mask(bool is_mvin);
-    void wait_dma_idle(bool is_mvin, uint32_t dma_mask);
-    void release_mvin_staging(uint32_t dma_mask);
-    size_t mvin_transfer_bytes(const MvinConfig& cfg) const;
-
     void reg_write(uint32_t offset, uint32_t val);
     void reg_write64(uint32_t offset, uint64_t val);
     uint32_t reg_read(uint32_t offset) const;
-    void reg_write64_cached(uint32_t offset, uint64_t val, uint64_t* cache);
+    uint64_t reg_read64(uint32_t offset) const;
     void ack_irq(uint32_t mask);
     void dump_irq_regs();
+    void dump_gemv_block_regs(const char* tag);
     void prepare_wait_irq_before_start(const std::string& op, const std::string& shape_key,
                                        uint64_t bytes, uint32_t expected_mask);
     void wait_irq(uint32_t expected_mask);
@@ -548,12 +567,301 @@ NpuRuntime& runtime() {
     return *g_runtime;
 }
 
+int dma_offset_for_ptr(const void* ptr, uint32_t* out_offset) {
+    if (!ptr || !out_offset) {
+        return -EINVAL;
+    }
+    void* base_ptr = runtime().memory_base();
+    const uint32_t map_size = runtime().memory_size();
+    if (!base_ptr || map_size == 0) {
+        return -EIO;
+    }
+
+    const uintptr_t base = reinterpret_cast<uintptr_t>(base_ptr);
+    const uintptr_t value = reinterpret_cast<uintptr_t>(ptr);
+    if (value < base || value >= base + map_size) {
+        return -ERANGE;
+    }
+    const uint32_t offset = static_cast<uint32_t>(value - base);
+    if ((offset % kAlignment) != 0) {
+        return -EINVAL;
+    }
+    *out_offset = offset;
+    return 0;
+}
+
+uint16_t stream_group_count_or_default(const npu_stream_gemv_desc& desc) {
+    return desc.group_count == 0 ? 1 : desc.group_count;
+}
+
+bool valid_stream_role(npu_stream_gemv_role role) {
+    return role == NPU_STREAM_GEMV_ROLE_LINEAR ||
+           role == NPU_STREAM_GEMV_ROLE_QK ||
+           role == NPU_STREAM_GEMV_ROLE_PV ||
+           role == NPU_STREAM_GEMV_ROLE_KV_PROJ ||
+           role == NPU_STREAM_GEMV_ROLE_MLP;
+}
+
+bool valid_stream_dst(npu_stream_gemv_dst dst) {
+    return dst == NPU_STREAM_GEMV_DST_OUTPUT ||
+           dst == NPU_STREAM_GEMV_DST_ACT ||
+           dst == NPU_STREAM_GEMV_DST_POST;
+}
+
+bool valid_stream_post_op(npu_stream_post_op post_op) {
+    return post_op == NPU_STREAM_POST_BYPASS ||
+           post_op == NPU_STREAM_POST_ROPE ||
+           post_op == NPU_STREAM_POST_SILU ||
+           post_op == NPU_STREAM_POST_SOFTMAX;
+}
+
+uint8_t stream_dst_to_decode_dst(npu_stream_gemv_dst dst) {
+    switch (dst) {
+    case NPU_STREAM_GEMV_DST_OUTPUT:
+        return NPU_DECODE_DST_OUTPUT_SPM;
+    case NPU_STREAM_GEMV_DST_ACT:
+        return NPU_DECODE_DST_ACT_BUFFER;
+    case NPU_STREAM_GEMV_DST_POST:
+        return NPU_DECODE_DST_POST_BUFFER;
+    }
+    return 0;
+}
+
+uint8_t stream_post_to_unary(npu_stream_post_op post_op) {
+    switch (post_op) {
+    case NPU_STREAM_POST_ROPE:
+        return NPU_DECODE_UNARY_ROPE;
+    case NPU_STREAM_POST_SILU:
+        return NPU_DECODE_UNARY_SILU;
+    case NPU_STREAM_POST_BYPASS:
+    case NPU_STREAM_POST_SOFTMAX:
+        return NPU_DECODE_UNARY_BYPASS;
+    }
+    return NPU_DECODE_UNARY_BYPASS;
+}
+
+uint8_t stream_post_to_reduce(npu_stream_post_op post_op) {
+    return post_op == NPU_STREAM_POST_SOFTMAX
+        ? NPU_DECODE_REDUCE_SOFTMAX
+        : NPU_DECODE_REDUCE_BYPASS;
+}
+
+uint64_t stream_flags_to_decode_flow(uint32_t flags) {
+    uint64_t flow = 0;
+    if (flags & NPU_STREAM_GEMV_F_KV_QUANT) {
+        flow |= NPU_DECODE_FLAG_KV_QUANT |
+                NPU_DECODE_FLAG_KV_QUANT_SCRATCH;
+        if (flags & NPU_STREAM_GEMV_F_KV_IS_V) {
+            flow |= NPU_DECODE_FLAG_KV_V_SEPARATED;
+        }
+    }
+    if (flags & NPU_STREAM_GEMV_F_KV_COL_SCALE) {
+        flow |= NPU_DECODE_FLAG_KV_COL_SCALE;
+    }
+    if (flags & NPU_STREAM_GEMV_F_UNIT_WEIGHT_SCALE) {
+        flow |= NPU_DECODE_FLAG_UNIT_WEIGHT_SCALE;
+    }
+    return flow;
+}
+
+uint64_t stream_decode_flow_from_desc(const npu_stream_gemv_desc& desc) {
+    const uint16_t elem_count = desc.elem_count != 0 ? desc.elem_count : desc.m;
+    const uint16_t group_count = stream_group_count_or_default(desc);
+    const bool needs_post_flow =
+        desc.post_op != NPU_STREAM_POST_BYPASS ||
+        desc.dst != NPU_STREAM_GEMV_DST_OUTPUT ||
+        desc.elem_count != 0 ||
+        desc.position != 0 ||
+        desc.flags != 0 ||
+        group_count != 1;
+    uint64_t flow = needs_post_flow
+        ? make_decode_flow_value(NPU_DECODE_SRC_GEMV_STREAM,
+                                 0,
+                                 stream_post_to_unary(desc.post_op),
+                                 NPU_DECODE_BINARY_BYPASS,
+                                 stream_post_to_reduce(desc.post_op),
+                                 stream_dst_to_decode_dst(desc.dst),
+                                 0,
+                                 0,
+                                 elem_count,
+                                 desc.position)
+        : 0;
+
+    flow |= uint64_t(group_count - 1u) << 25;
+    flow |= stream_flags_to_decode_flow(desc.flags);
+    if (desc.role == NPU_STREAM_GEMV_ROLE_PV) {
+        flow |= NPU_DECODE_FLAG_PV_UQ24;
+    }
+    return flow;
+}
+
+int validate_stream_ptr(const void* ptr) {
+    uint32_t offset = 0;
+    return dma_offset_for_ptr(ptr, &offset);
+}
+
+int validate_stream_gemv_desc(npu_device* dev,
+                              const npu_stream_gemv_desc* desc) {
+    constexpr uint32_t kKnownFlags =
+        NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE |
+        NPU_STREAM_GEMV_F_KV_COL_SCALE |
+        NPU_STREAM_GEMV_F_UNIT_WEIGHT_SCALE |
+        NPU_STREAM_GEMV_F_KV_QUANT |
+        NPU_STREAM_GEMV_F_KV_IS_V |
+        NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE2;
+    constexpr uint32_t kPvRequiredFlags =
+        NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE |
+        NPU_STREAM_GEMV_F_KV_COL_SCALE |
+        NPU_STREAM_GEMV_F_UNIT_WEIGHT_SCALE;
+    constexpr uint32_t kPvValueRowStrideTileBytes = 2048;
+
+    if (!valid_device(dev) || !desc || !desc->act_ptr ||
+        !desc->weight_payload_ptr || !desc->output_ptr ||
+        desc->m == 0 || desc->n == 0 ||
+        !valid_decode_gemv_mode(desc->mode) ||
+        !valid_output_precision(desc->output_precision) ||
+        !valid_stream_role(desc->role) ||
+        !valid_stream_dst(desc->dst) ||
+        !valid_stream_post_op(desc->post_op) ||
+        (desc->flags & ~kKnownFlags) != 0) {
+        return -EINVAL;
+    }
+
+    const uint16_t group_count = stream_group_count_or_default(*desc);
+    const bool kv_quant = (desc->flags & NPU_STREAM_GEMV_F_KV_QUANT) != 0;
+    const bool kv_is_v = (desc->flags & NPU_STREAM_GEMV_F_KV_IS_V) != 0;
+    if (kv_is_v && !kv_quant) {
+        return -EINVAL;
+    }
+    if (group_count > 4 ||
+        (desc->act_group_stride_bytes != 0 &&
+         (desc->act_group_stride_bytes % NPU_GEMV_LINE_BYTES) != 0)) {
+        return -EINVAL;
+    }
+    if (group_count <= 1 && desc->act_group_stride_bytes != 0) {
+        return -EINVAL;
+    }
+    if (group_count > 1 &&
+        desc->role != NPU_STREAM_GEMV_ROLE_QK &&
+        desc->role != NPU_STREAM_GEMV_ROLE_PV) {
+        return -EINVAL;
+    }
+    if (group_count > 1 &&
+        (desc->role == NPU_STREAM_GEMV_ROLE_QK ||
+         desc->role == NPU_STREAM_GEMV_ROLE_PV) &&
+        desc->act_group_stride_bytes != 0 &&
+        (desc->act_group_stride_bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
+        return -EINVAL;
+    }
+
+    if (validate_stream_ptr(desc->act_ptr) != 0 ||
+        validate_stream_ptr(desc->weight_payload_ptr) != 0 ||
+        validate_stream_ptr(desc->output_ptr) != 0) {
+        return -EINVAL;
+    }
+
+    const bool enable_act_scale =
+        (desc->flags & NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE) != 0;
+    const bool enable_act_scale2 =
+        (desc->flags & NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE2) != 0;
+    if (enable_act_scale2 && !enable_act_scale) {
+        return -EINVAL;
+    }
+    if (enable_act_scale2 &&
+        (desc->mode != DECODE_GEMV_W4A16 ||
+         desc->role != NPU_STREAM_GEMV_ROLE_LINEAR ||
+         group_count != 1)) {
+        return -EINVAL;
+    }
+    const uint64_t flow = stream_flags_to_decode_flow(desc->flags);
+    const bool uses_weight_scale =
+        gemv_request_uses_weight_scale(static_cast<uint8_t>(desc->mode), flow);
+
+    const uint64_t full_flow = stream_decode_flow_from_desc(*desc);
+    const bool uses_rope_lut = decode_flow_uses_rope_lut(full_flow);
+
+    if ((enable_act_scale && !desc->act_scale_ptr) ||
+        (enable_act_scale2 && !desc->act_scale2_ptr) ||
+        (uses_rope_lut && !desc->rope_lut_ptr) ||
+        (uses_weight_scale && !desc->weight_scale_ptr)) {
+        return -EINVAL;
+    }
+    if (enable_act_scale && validate_stream_ptr(desc->act_scale_ptr) != 0) {
+        return -EINVAL;
+    }
+    if (enable_act_scale2 && validate_stream_ptr(desc->act_scale2_ptr) != 0) {
+        return -EINVAL;
+    }
+    if (uses_rope_lut && validate_stream_ptr(desc->rope_lut_ptr) != 0) {
+        return -EINVAL;
+    }
+    if (uses_weight_scale && validate_stream_ptr(desc->weight_scale_ptr) != 0) {
+        return -EINVAL;
+    }
+
+    if (desc->role == NPU_STREAM_GEMV_ROLE_PV) {
+        if (desc->m != kDecodeAttentionHeadDim ||
+            desc->mode != DECODE_GEMV_W8A16 ||
+            !desc->act_scale_ptr ||
+            desc->weight_scale_ptr != nullptr ||
+            (desc->flags & kPvRequiredFlags) != kPvRequiredFlags ||
+            desc->weight_capacity_tokens == 0 ||
+            desc->n > desc->weight_capacity_tokens ||
+            desc->weight_row_tile_stride_bytes == 0 ||
+            (desc->weight_row_tile_stride_bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
+            return -EINVAL;
+        }
+        const uint32_t min_stride =
+            ceil_div_u32(desc->weight_capacity_tokens, 64) *
+            kPvValueRowStrideTileBytes;
+        if (desc->weight_row_tile_stride_bytes < min_stride) {
+            return -EINVAL;
+        }
+    } else if (desc->weight_row_tile_stride_bytes != 0) {
+        return -EINVAL;
+    }
+
+    if (desc->role == NPU_STREAM_GEMV_ROLE_QK &&
+        (desc->mode != DECODE_GEMV_W8A16 ||
+         desc->n != kDecodeAttentionHeadDim ||
+         !desc->weight_scale_ptr)) {
+        return -EINVAL;
+    }
+
+    if (kv_quant) {
+        const uint16_t elem_count = desc->elem_count != 0 ? desc->elem_count : desc->m;
+        if (desc->role != NPU_STREAM_GEMV_ROLE_KV_PROJ ||
+            desc->mode != DECODE_GEMV_W4A16 ||
+            desc->m != kDecodeAttentionKvDim ||
+            elem_count != kDecodeAttentionKvDim ||
+            desc->dst != NPU_STREAM_GEMV_DST_OUTPUT ||
+            desc->output_precision != DECODE_OUTPUT_FP16 ||
+            group_count != 1 ||
+            desc->weight_row_tile_stride_bytes != 0 ||
+            desc->weight_capacity_tokens != 0 ||
+            (desc->flags & (NPU_STREAM_GEMV_F_KV_COL_SCALE |
+                            NPU_STREAM_GEMV_F_UNIT_WEIGHT_SCALE)) != 0) {
+            return -EINVAL;
+        }
+        if (kv_is_v) {
+            if (desc->post_op != NPU_STREAM_POST_BYPASS) {
+                return -EINVAL;
+            }
+        } else if (desc->post_op != NPU_STREAM_POST_ROPE) {
+            return -EINVAL;
+        }
+    } else if (desc->role == NPU_STREAM_GEMV_ROLE_KV_PROJ) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
 void report_exception(const char* api, const std::exception& ex) {
     NPU_ERR("%s failed: %s", api, ex.what());
 }
 
 NpuRuntime::~NpuRuntime() {
-    release_mvin_staging((1u << kDmaChannelCount) - 1u);
     if (regs_virt_base_) {
         munmap(regs_virt_base_, kRegMapSize);
     }
@@ -566,7 +874,7 @@ NpuRuntime::~NpuRuntime() {
     }
 }
 
-bool NpuRuntime::init() {
+bool NpuRuntime::init(bool require_decode) {
     fd_ = open(NPU_KV260_DEV_PATH, O_RDWR);
     if (fd_ < 0) {
         perror("open " NPU_KV260_DEV_PATH);
@@ -621,21 +929,23 @@ bool NpuRuntime::init() {
         return false;
     }
 
-    if (!reinit()) {
-        munmap(data_virt_base_, data_map_size_);
-        data_virt_base_ = nullptr;
-        munmap(regs_virt_base_, kRegMapSize);
-        regs_virt_base_ = nullptr;
-        ioctl(fd_, NPU_KV260_IOC_FREE_BUFFER);
-        close(fd_);
-        fd_ = -1;
-        return false;
-    }
-
     init_allocator();
-    ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
-    reset();
-    ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
+    if (require_decode) {
+        if (!reinit()) {
+            munmap(data_virt_base_, data_map_size_);
+            data_virt_base_ = nullptr;
+            munmap(regs_virt_base_, kRegMapSize);
+            regs_virt_base_ = nullptr;
+            ioctl(fd_, NPU_KV260_IOC_FREE_BUFFER);
+            close(fd_);
+            fd_ = -1;
+            return false;
+        }
+
+        ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
+        reset();
+        ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
+    }
     return true;
 }
 
@@ -657,15 +967,24 @@ bool NpuRuntime::reinit() {
         return false;
     }
 
-    release_mvin_staging((1u << kDmaChannelCount) - 1u);
     shadow_ = ShadowRegs{};
+    hardware_ready_ = true;
     NPU_LOG("NPU generic reinit OK: mode=decode caps=0x%08X status=0x%08X error=0x%08X",
             state.caps, state.status, state.error);
     return true;
 }
 
+bool NpuRuntime::activate_decode() {
+    if (!reinit()) {
+        return false;
+    }
+    ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
+    reset();
+    ioctl(fd_, NPU_KV260_IOC_SET_IRQ_MODE, NPU_KV260_IRQ_MODE_USERSPACE);
+    return hardware_ready_;
+}
+
 void NpuRuntime::reset() {
-    release_mvin_staging((1u << kDmaChannelCount) - 1u);
     if (fd_ >= 0 && ioctl(fd_, NPU_KV260_IOC_RESET_DEV) < 0) {
         NPU_ERR("hardware reset ioctl failed: errno=%d", errno);
     } else {
@@ -673,7 +992,7 @@ void NpuRuntime::reset() {
     }
     shadow_ = ShadowRegs{};
     ack_irq(NPU_REGS__IAR__ACK_bm);
-    reg_write(RegOffset::MER, 0x3);
+    reg_write(RegOffset::MER, 0x1);
     reg_write(RegOffset::IER, 0x0);
 }
 
@@ -792,151 +1111,6 @@ uint32_t NpuRuntime::virt_to_phys(void* ptr) const {
     return data_phy_base_ + static_cast<uint32_t>(virt - base);
 }
 
-void NpuRuntime::validate_dma_id(uint32_t dma_id) const {
-    if (dma_id >= kDmaChannelCount) {
-        throw std::runtime_error("only DMA0 is present in the current GEMV top");
-    }
-}
-
-void NpuRuntime::validate_dma_mask(uint32_t dma_mask) const {
-    const uint32_t valid = (1u << kDmaChannelCount) - 1u;
-    if ((dma_mask & ~valid) != 0) {
-        throw std::runtime_error("DMA mask references a non-existent channel");
-    }
-}
-
-void NpuRuntime::validate_mvin(uint32_t dma_id, const MvinConfig& cfg) const {
-    validate_dma_id(dma_id);
-    if (!cfg.host_ptr) {
-        throw std::runtime_error("MVIN host_ptr is null");
-    }
-    if (cfg.row_num != 0) {
-        throw std::runtime_error("GEMV MVIN supports one 4AXI row only");
-    }
-    const uint64_t bytes = static_cast<uint64_t>(cfg.col_num) + 1ull;
-    if (bytes == 0 || (bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
-        throw std::runtime_error("GEMV MVIN byte count must be a 256B multiple");
-    }
-    if ((cfg.sram_addr % NPU_GEMV_LINE_BYTES) != 0) {
-        throw std::runtime_error("GEMV MVIN sram_addr must be 64B aligned");
-    }
-    if (cfg.dest || cfg.is_bias || cfg.is_quant || cfg.quant_zero ||
-        cfg.quant_scale || cfg.quant_shift) {
-        throw std::runtime_error("GEMV runtime does not support ACC/bias/quant MVIN");
-    }
-    if (cfg.input_type != NPU_GEMV_MVIN_INPUT_SPM &&
-        cfg.input_type != NPU_GEMV_MVIN_WEIGHT &&
-        cfg.input_type != NPU_GEMV_MVIN_ACT) {
-        throw std::runtime_error("GEMV MVIN input_type must be input SPM, weight, or act");
-    }
-    if (cfg.precision > 3) {
-        throw std::runtime_error("GEMV MVIN precision must fit the 2-bit hardware field");
-    }
-}
-
-void NpuRuntime::validate_mvout(uint32_t dma_id, const MvoutConfig& cfg) const {
-    validate_dma_id(dma_id);
-    if (!cfg.host_ptr) {
-        throw std::runtime_error("MVOUT host_ptr is null");
-    }
-    if ((cfg.sram_addr % NPU_GEMV_LINE_BYTES) != 0) {
-        throw std::runtime_error("GEMV MVOUT sram_addr must be 64B aligned");
-    }
-    if (cfg.source || cfg.is_quant || cfg.per_channel || cfg.quant_zero || cfg.scale_or_addr) {
-        throw std::runtime_error("GEMV runtime only supports raw output-SPM MVOUT");
-    }
-    if (cfg.precision != 1 && cfg.precision != 3) {
-        throw std::runtime_error("GEMV MVOUT precision must be 1(FP16) or 3(FP32)");
-    }
-}
-
-void NpuRuntime::validate_matvec(const MatvecConfig& cfg) const {
-    if (cfg.mat_width == 0 || cfg.mat_height == 0) {
-        throw std::runtime_error("MATVEC width/height must be non-zero");
-    }
-    if (cfg.gemv_mode > NPU_GEMV_MODE_W16A16) {
-        throw std::runtime_error("MATVEC gemv_mode must be 0(W4A16), 1(W8A16), or 2(W16A16)");
-    }
-    if ((cfg.mat_addr % NPU_GEMV_LINE_BYTES) != 0 ||
-        (cfg.vec_addr % NPU_GEMV_LINE_BYTES) != 0 ||
-        (cfg.output_addr % NPU_GEMV_FP16_BYTES) != 0 ||
-        (cfg.scale_addr % NPU_GEMV_LINE_BYTES) != 0 ||
-        (cfg.gemv_mode == NPU_GEMV_MODE_W4A16 &&
-         (cfg.act_scale_addr % NPU_GEMV_LINE_BYTES) != 0)) {
-        throw std::runtime_error("MATVEC addresses do not meet GEMV alignment constraints");
-    }
-}
-
-uint32_t NpuRuntime::read_dma_busy_mask(bool is_mvin) {
-    const uint32_t raw = reg_read(RegOffset::DMA_STATUS);
-    return is_mvin
-        ? static_cast<uint32_t>(REG_GET_FIELD(DMA_STATUS, MVIN_BUSY, raw))
-        : static_cast<uint32_t>(REG_GET_FIELD(DMA_STATUS, MVOUT_BUSY, raw));
-}
-
-void NpuRuntime::wait_dma_idle(bool is_mvin, uint32_t dma_mask) {
-    if (dma_mask == 0) {
-        return;
-    }
-    validate_dma_mask(dma_mask);
-
-    const auto start = std::chrono::steady_clock::now();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    int iter = 0;
-    while (true) {
-        const uint32_t busy = read_dma_busy_mask(is_mvin) & dma_mask;
-        if (busy == 0) {
-            std::string shape_key = "dma_mask=" + std::to_string(dma_mask);
-            uint64_t bytes = 0;
-            for (uint32_t dma_id = 0; dma_id < kDmaChannelCount; ++dma_id) {
-                if ((dma_mask & (1u << dma_id)) == 0) {
-                    continue;
-                }
-                DmaWaitContext& ctx = is_mvin ? pending_mvin_ctx_[dma_id] : pending_mvout_ctx_[dma_id];
-                if (ctx.valid) {
-                    shape_key = ctx.shape_key;
-                    bytes = ctx.bytes;
-                    const uint64_t full_us = elapsed_us(ctx.start);
-                    ctx.valid = false;
-                    write_wait_trace(is_mvin ? "mvin" : "mvout", shape_key, bytes, elapsed_us(start),
-                                     NpuWaitStrategy::Spin, "dma_idle", iter, 0, false, "ok", full_us);
-                    return;
-                }
-            }
-            write_wait_trace(is_mvin ? "mvin" : "mvout", shape_key, bytes, elapsed_us(start),
-                             NpuWaitStrategy::Spin, "dma_idle", iter, 0, false, "ok");
-            return;
-        }
-        if (++iter > NPU_POLL_SPIN_COUNT) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-                write_wait_trace(is_mvin ? "mvin" : "mvout", "dma_mask=" + std::to_string(dma_mask),
-                                 0, elapsed_us(start), NpuWaitStrategy::Spin, "dma_idle",
-                                 iter, 0, false, "timeout");
-                dump_irq_regs();
-                throw std::runtime_error(is_mvin ? "MVIN timeout" : "MVOUT timeout");
-            }
-            usleep(NPU_POLL_YIELD_US);
-        }
-    }
-}
-
-void NpuRuntime::release_mvin_staging(uint32_t dma_mask) {
-    if (dma_mask == 0) {
-        return;
-    }
-    validate_dma_mask(dma_mask);
-    for (uint32_t dma_id = 0; dma_id < kDmaChannelCount; ++dma_id) {
-        if ((dma_mask & (1u << dma_id)) && pending_mvin_staging_[dma_id]) {
-            free_mem(pending_mvin_staging_[dma_id]);
-            pending_mvin_staging_[dma_id] = nullptr;
-        }
-    }
-}
-
-size_t NpuRuntime::mvin_transfer_bytes(const MvinConfig& cfg) const {
-    return static_cast<size_t>(static_cast<uint64_t>(cfg.col_num) + 1ull);
-}
-
 void NpuRuntime::reg_write(uint32_t offset, uint32_t val) {
     *reinterpret_cast<volatile uint32_t*>(static_cast<uint8_t*>(regs_virt_base_) + offset) = val;
 }
@@ -955,11 +1129,32 @@ uint32_t NpuRuntime::reg_read(uint32_t offset) const {
         static_cast<uint8_t*>(regs_virt_base_) + offset);
 }
 
-void NpuRuntime::reg_write64_cached(uint32_t offset, uint64_t val, uint64_t* cache) {
-    if (*cache != val) {
-        reg_write64(offset, val);
-        *cache = val;
+uint64_t NpuRuntime::reg_read64(uint32_t offset) const {
+#if NPU_CPU_WIDTH == 32
+    const uint32_t lo = reg_read(offset);
+    const uint32_t hi = reg_read(offset + 4);
+    return (uint64_t(hi) << 32) | lo;
+#else
+    return *reinterpret_cast<volatile uint64_t*>(
+        static_cast<uint8_t*>(regs_virt_base_) + offset);
+#endif
+}
+
+void NpuRuntime::read_kv_scale(bool is_v, npu_stream_kv_scale_result* out) const {
+    if (!out) {
+        throw std::invalid_argument("null KV scale output");
     }
+    const uint64_t scale0 = reg_read64(is_v ? RegOffset::KV_V_SCALE0 : RegOffset::KV_K_SCALE0);
+    const uint64_t scale1 = reg_read64(is_v ? RegOffset::KV_V_SCALE1 : RegOffset::KV_K_SCALE1);
+    out->values[0] = static_cast<uint16_t>(scale0);
+    out->values[1] = static_cast<uint16_t>(scale0 >> 16);
+    out->values[2] = static_cast<uint16_t>(scale0 >> 32);
+    out->values[3] = static_cast<uint16_t>(scale0 >> 48);
+    out->values[4] = static_cast<uint16_t>(scale1);
+    out->count = static_cast<uint8_t>(scale1 >> 16);
+    out->seq = static_cast<uint8_t>(scale1 >> 24);
+    out->valid = static_cast<uint8_t>((scale1 >> 32) & 0x1u);
+    out->reserved = 0;
 }
 
 void NpuRuntime::ack_irq(uint32_t mask) {
@@ -971,9 +1166,22 @@ void NpuRuntime::dump_irq_regs() {
     const uint32_t ier = reg_read(RegOffset::IER);
     const uint32_t isr = reg_read(RegOffset::ISR);
     const uint32_t ipr = reg_read(RegOffset::IPR);
-    const uint32_t dma_status = reg_read(RegOffset::DMA_STATUS);
-    NPU_ERR("IRQ/DMA status MER=0x%08x IER=0x%08x ISR=0x%08x IPR=0x%08x DMA_STATUS=0x%08x",
-            mer, ier, isr, ipr, dma_status);
+    NPU_ERR("IRQ/API status MER=0x%08x IER=0x%08x ISR=0x%08x IPR=0x%08x",
+            mer, ier, isr, ipr);
+    dump_gemv_block_regs("irq_dump");
+}
+
+void NpuRuntime::dump_gemv_block_regs(const char* tag) {
+    const uint64_t status = reg_read64(RegOffset::GEMV_BLOCK_STATUS);
+    NPU_ERR("%s GEMV_BLOCK shadow_tag=%s desc0=0x%016llx desc1=0x%016llx desc2=0x%016llx desc3=0x%016llx desc7=0x%016llx status=0x%016llx",
+            tag,
+            g_last_gemv_block.tag,
+            static_cast<unsigned long long>(g_last_gemv_block.desc0),
+            static_cast<unsigned long long>(g_last_gemv_block.desc1),
+            static_cast<unsigned long long>(g_last_gemv_block.desc2),
+            static_cast<unsigned long long>(g_last_gemv_block.desc3),
+            static_cast<unsigned long long>(g_last_gemv_block.desc7),
+            static_cast<unsigned long long>(status));
 }
 
 void NpuRuntime::prepare_wait_irq_before_start(const std::string& op,
@@ -1123,287 +1331,212 @@ void NpuRuntime::wait_irq(uint32_t expected_mask) {
                      (status & expected_mask) ? "ok" : "unrelated");
 }
 
-void NpuRuntime::run_mvin(const MvinConfig& cfg) {
-    run_mvin_async(0, cfg);
-    wait_mvin(1u);
-}
-
-void NpuRuntime::run_mvin_async(uint32_t dma_id, const MvinConfig& cfg) {
-    validate_mvin(dma_id, cfg);
-    if (read_dma_busy_mask(true) & (1u << dma_id)) {
-        wait_mvin(1u << dma_id);
-    }
-    if (pending_mvin_staging_[dma_id]) {
-        throw std::runtime_error("MVIN staging buffer is still pending");
-    }
-
-    void* dma_src = cfg.host_ptr;
-    uint32_t phys = 0;
-    try {
-        phys = virt_to_phys(dma_src);
-    } catch (const std::runtime_error&) {
-        const size_t bytes = mvin_transfer_bytes(cfg);
-        void* staging = alloc(bytes);
-        if (!staging) {
-            throw std::runtime_error("MVIN staging allocation failed");
-        }
-        std::memcpy(staging, cfg.host_ptr, bytes);
-        pending_mvin_staging_[dma_id] = staging;
-        dma_src = staging;
-        phys = virt_to_phys(dma_src);
-    }
-
-    const uint64_t val_dram =
-        REG_FIELD(MVIN_CTRL0, DRAM_ADDR, phys) |
-        REG_FIELD(MVIN_CTRL0, ROW_NUM, cfg.row_num);
-    const uint64_t val_sram =
-        REG_FIELD(MVIN_CTRL1, SRAM_ADDR, cfg.sram_addr) |
-        REG_FIELD(MVIN_CTRL1, COL_NUM, cfg.col_num);
-    const uint64_t val_cfg =
-        REG_FIELD(CFG_MVIN0, INPUT_TYPE, cfg.input_type) |
-        REG_FIELD(CFG_MVIN0, INPUT_PRECISION, cfg.precision) |
-        REG_FIELD(CFG_MVIN0, IS_QUANT, 0) |
-        REG_FIELD(CFG_MVIN0, DEST, 0) |
-        REG_FIELD(CFG_MVIN0, IS_BIAS, 0) |
-        REG_FIELD(CFG_MVIN0, SRAM_STRIDE, cfg.sram_stride) |
-        REG_FIELD(CFG_MVIN0, DRAM_STRIDE, cfg.dram_stride);
-
-    reg_write64(RegOffset::MVIN_DRAM_ADDR, val_dram);
-    reg_write64(RegOffset::MVIN_SRAM_ADDR, val_sram);
-    reg_write64_cached(RegOffset::MVIN_CFG, val_cfg, &shadow_.mvin_cfg);
-    const uint64_t bytes = mvin_transfer_bytes(cfg);
-    pending_mvin_ctx_[dma_id].shape_key = mvin_shape_key(dma_id, cfg, bytes);
-    pending_mvin_ctx_[dma_id].start = std::chrono::steady_clock::now();
-    pending_mvin_ctx_[dma_id].bytes = bytes;
-    pending_mvin_ctx_[dma_id].valid = true;
-    reg_write(RegOffset::START,
-              BIT_START_DMA_MVIN |
-              static_cast<uint32_t>(REG_FIELD(START_REG, MVIN_DMA_SEL, dma_id)));
-}
-
-void NpuRuntime::run_mvout(const MvoutConfig& cfg) {
-    run_mvout_async(0, cfg);
-    wait_mvout(1u);
-}
-
-void NpuRuntime::run_mvout_async(uint32_t dma_id, const MvoutConfig& cfg) {
-    validate_mvout(dma_id, cfg);
-    if (read_dma_busy_mask(false) & (1u << dma_id)) {
-        wait_mvout(1u << dma_id);
-    }
-
-    const uint32_t phys = virt_to_phys(cfg.host_ptr);
-    const uint64_t val_dram =
-        REG_FIELD(MVOUT_CTRL0, DRAM_ADDR, phys) |
-        REG_FIELD(MVOUT_CTRL0, ROW_NUM, cfg.row_num);
-    const uint64_t val_sram =
-        REG_FIELD(MVOUT_CTRL1, SRAM_ADDR, cfg.sram_addr) |
-        REG_FIELD(MVOUT_CTRL1, COL_NUM, cfg.col_num);
-    const uint64_t val_cfg =
-        REG_FIELD(CFG_MVOUT0, OUTPUT_TYPE, cfg.output_type) |
-        REG_FIELD(CFG_MVOUT0, OUTPUT_PRECISION, cfg.precision) |
-        REG_FIELD(CFG_MVOUT0, IS_QUANT, 0) |
-        REG_FIELD(CFG_MVOUT0, SOURCE, 0) |
-        REG_FIELD(CFG_MVOUT0, PER_CHANNEL, 0) |
-        REG_FIELD(CFG_MVOUT0, SRAM_STRIDE, cfg.sram_stride) |
-        REG_FIELD(CFG_MVOUT0, DRAM_STRIDE, cfg.dram_stride);
-
-    reg_write64(RegOffset::MVOUT_DRAM_ADDR, val_dram);
-    reg_write64(RegOffset::MVOUT_SRAM_ADDR, val_sram);
-    reg_write64_cached(RegOffset::MVOUT_CFG, val_cfg, &shadow_.mvout_cfg);
-    const uint64_t bytes = mvout_transfer_bytes(cfg);
-    pending_mvout_ctx_[dma_id].shape_key = mvout_shape_key(dma_id, cfg, bytes);
-    pending_mvout_ctx_[dma_id].start = std::chrono::steady_clock::now();
-    pending_mvout_ctx_[dma_id].bytes = bytes;
-    pending_mvout_ctx_[dma_id].valid = true;
-    reg_write(RegOffset::START,
-              BIT_START_DMA_MVOUT |
-              static_cast<uint32_t>(REG_FIELD(START_REG, MVOUT_DMA_SEL, dma_id)));
-}
-
-void NpuRuntime::wait_mvin(uint32_t dma_mask) {
-    wait_dma_idle(true, dma_mask);
-    release_mvin_staging(dma_mask);
-    ack_irq(BIT_START_DMA_MVIN);
-}
-
-void NpuRuntime::wait_mvout(uint32_t dma_mask) {
-    wait_dma_idle(false, dma_mask);
-    ack_irq(BIT_START_DMA_MVOUT);
-}
-
-void NpuRuntime::run_matvec(const MatvecConfig& cfg) {
-    validate_matvec(cfg);
-
-    const uint64_t decode_flow =
-        cfg.decode_flow ? cfg.decode_flow : make_matvec_bypass_output_flow(cfg.mat_height);
-    const uint64_t val_cfg =
-        REG_FIELD(CFG_COMPUTE0, OPTYPE, 2) |
-        REG_FIELD(CFG_COMPUTE0, GEMV_MODE, cfg.gemv_mode);
-    const uint64_t val_ctrl0 =
-        REG_FIELD(MATVEC_CTRL0, MAT_ADDR, cfg.mat_addr) |
-        REG_FIELD(MATVEC_CTRL0, VEC_ADDR, cfg.vec_addr);
-    const uint64_t val_ctrl1 =
-        REG_FIELD(MATVEC_CTRL1, MAT_W, cfg.mat_width) |
-        REG_FIELD(MATVEC_CTRL1, MAT_H, cfg.mat_height) |
-        REG_FIELD(MATVEC_CTRL1, MAT_S, cfg.output_addr) |
-        REG_FIELD(MATVEC_CTRL1, VEC_S, cfg.scale_addr);
-
-    reg_write64_cached(RegOffset::CFG_COMPUTE_1, val_cfg, &shadow_.compute_cfg);
-    reg_write64(RegOffset::CFG_COMPUTE_2, decode_flow);
-    reg_write64(RegOffset::MATVEC_CTRL_0, val_ctrl0);
-    reg_write64(RegOffset::MATVEC_CTRL_1, val_ctrl1);
-    reg_write64(RegOffset::MATVEC_ACT_SCALE,
-                REG_FIELD(MATVEC_ACT_SCALE_CTRL, ACT_SCALE_ADDR, cfg.act_scale_addr));
-    prepare_wait_irq_before_start("matvec", matvec_shape_key(cfg),
-                                  static_cast<uint64_t>(cfg.mat_height) * cfg.mat_width,
-                                  BIT_START_MATVEC);
-    reg_write(RegOffset::START, BIT_START_MATVEC);
-    wait_irq(BIT_START_MATVEC);
-}
-
-void NpuRuntime::run_gemv_pingpong(const GemvPingPongConfig& cfg) {
-    const bool embedded_scale = gemv_uses_embedded_scale(cfg.gemv_mode);
+void NpuRuntime::run_gemv_stream(const GemvPingPongConfig& cfg,
+                                 uint32_t weight_row_tile_stride_bytes,
+                                 uint16_t weight_capacity_tokens) {
+    const bool uses_weight_scale =
+        gemv_request_uses_weight_scale(cfg.gemv_mode, cfg.decode_flow);
+    const bool uses_rope_lut = decode_flow_uses_rope_lut(cfg.decode_flow);
+    const bool fixed_stride_enable = weight_row_tile_stride_bytes != 0;
+    const bool cached_group_enable = cfg.cached_group_enable;
     if (!cfg.act_ptr || !cfg.weight_ptr || !cfg.output_ptr ||
-        (!embedded_scale && !cfg.scale_ptr)) {
-        throw std::runtime_error("GEMV ping-pong buffer pointer is null");
+        (cfg.enable_act_scale && !cfg.act_scale_ptr) ||
+        (cfg.enable_act_scale2 && !cfg.act_scale2_ptr) ||
+        (uses_rope_lut && !cfg.rope_lut_ptr) ||
+        (uses_weight_scale && !cfg.scale_ptr)) {
+        throw std::runtime_error("GEMV stream buffer pointer is null");
+    }
+    if (cfg.enable_act_scale2 && !cfg.enable_act_scale) {
+        throw std::runtime_error("GEMV stream act_scale2 requires act_scale");
     }
     if (cfg.m == 0 || cfg.n == 0) {
-        throw std::runtime_error("GEMV ping-pong M/N must be non-zero");
+        throw std::runtime_error("GEMV stream M/N must be non-zero");
     }
-    if (cfg.gemv_mode > NPU_GEMV_MODE_W16A16) {
-        throw std::runtime_error("GEMV ping-pong gemv_mode must be 0(W4A16), 1(W8A16), or 2(W16A16)");
+    if (cfg.gemv_mode > NPU_GEMV_MODE_W8A16) {
+        throw std::runtime_error("GEMV stream gemv_mode must be 0(W4A16) or 1(W8A16) on this RTL");
     }
     if (cfg.output_precision != 1 && cfg.output_precision != 3) {
-        throw std::runtime_error("GEMV ping-pong output_precision must be 1(FP16) or 3(FP32)");
+        throw std::runtime_error("GEMV stream output_precision must be 1(FP16) or 3(FP32)");
+    }
+    if (fixed_stride_enable &&
+        (cfg.gemv_mode != NPU_GEMV_MODE_W8A16 ||
+         weight_capacity_tokens == 0 ||
+         cfg.n > weight_capacity_tokens ||
+         (weight_row_tile_stride_bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0)) {
+        throw std::runtime_error("GEMV stream fixed-stride descriptor is invalid");
     }
 
-    const uint32_t row_tiles = ceil_div_u32(cfg.m, NPU_GEMV_ROW_TILE_ELEMS);
-    const uint32_t col_tiles = ceil_div_u32(cfg.n, NPU_GEMV_TILE_ELEMS);
+    const uint32_t group_count = group_count_from_decode_flow(cfg.decode_flow);
+    if (cfg.enable_act_scale2 &&
+        (cfg.gemv_mode != NPU_GEMV_MODE_W4A16 ||
+         fixed_stride_enable ||
+         cached_group_enable ||
+         group_count != 1)) {
+        throw std::runtime_error("GEMV stream act_scale2 is only supported for single-group W4A16 linear streams");
+    }
+    if (group_count > 1 && !fixed_stride_enable && !cached_group_enable) {
+        throw std::runtime_error("GEMV stream grouped mode requires fixed-stride weight payload");
+    }
+    if (cached_group_enable && group_count <= 1) {
+        throw std::runtime_error("GEMV cached-group stream requires grouped decode_flow");
+    }
+    if (cached_group_enable && cfg.act_group_stride_bytes != 0 &&
+        (cfg.act_group_stride_bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
+        throw std::runtime_error("GEMV cached-group act_group_stride must be 256B aligned");
+    }
+
+    const uint32_t col_tiles = ceil_div_u32(cfg.n, gemv_tile_elems(cfg.gemv_mode));
+    const uint32_t total_row_tiles = ceil_div_u32(cfg.m, NPU_GEMV_ROW_TILE_ELEMS);
     const uint32_t weight_tile_bytes = gemv_weight_tile_bytes(cfg.gemv_mode);
-    const uint32_t act_bytes = col_tiles * kGemvActTileBytes;
-    const uint32_t act_payload_bytes =
-        cfg.gemv_mode == NPU_GEMV_MODE_W4A16 ? act_bytes * 2u : act_bytes;
-    const uint32_t scale_bytes = row_tiles * col_tiles * kGemvScaleTileBytes;
-    const uint32_t output_bytes = static_cast<uint32_t>(cfg.m) * NPU_GEMV_FP16_BYTES;
-    const uint32_t bytes_per_row_tile = col_tiles * weight_tile_bytes;
-    const uint32_t ping_capacity = kGemvPongWeightSpmBase - kGemvPingWeightSpmBase;
-    const uint32_t pong_capacity = NPU_GEMV_SPM_BYTES - kGemvPongWeightSpmBase;
-    const uint32_t weight_capacity = std::min(ping_capacity, pong_capacity);
-    const uint32_t max_row_tiles = bytes_per_row_tile ? weight_capacity / bytes_per_row_tile : 0;
+    const uint32_t act_tile_bytes = gemv_tile_elems(cfg.gemv_mode) * NPU_GEMV_FP16_BYTES;
+    const uint32_t act_bytes = col_tiles * act_tile_bytes;
+    const uint32_t act_group_span_bytes =
+        grouped_act_span_bytes(act_bytes, group_count, cfg.act_group_stride_bytes);
+    const uint32_t act_scale_bytes =
+        act_scale_bytes_for(cfg.n, cfg.gemv_mode, cfg.decode_flow,
+                            cfg.enable_act_scale);
+    const uint32_t act_mvin_bytes = cached_group_enable
+        ? align_up_u32(act_bytes, NPU_GEMV_MVIN_ALIGN_BYTES)
+        : align_up_u32(act_group_span_bytes, NPU_GEMV_MVIN_ALIGN_BYTES);
+    const uint32_t act_scale_mvin_bytes =
+        cfg.enable_act_scale ?
+            align_up_u32(act_scale_bytes, NPU_GEMV_MVIN_ALIGN_BYTES) : 0u;
+    const uint32_t act_scale2_mvin_bytes =
+        cfg.enable_act_scale2 ?
+            align_up_u32(act_scale_bytes, NPU_GEMV_MVIN_ALIGN_BYTES) : 0u;
+    const uint32_t weight_bytes = total_row_tiles * col_tiles * weight_tile_bytes;
+    const uint32_t stream_weight_bytes = cached_group_enable ?
+        weight_bytes : (fixed_stride_enable ? weight_bytes * group_count : weight_bytes);
+    const uint32_t scale_bytes = total_row_tiles * col_tiles * kGemvScaleTileBytes;
+    const uint32_t scale_mvin_bytes =
+        uses_weight_scale ? align_up_u32(scale_bytes, NPU_GEMV_MVIN_ALIGN_BYTES) : 0u;
+    const uint32_t output_elems = static_cast<uint32_t>(cfg.m) * group_count;
+    const bool kv_quant_scratch = decode_flow_kv_quant_scratch(cfg.decode_flow);
+    const uint32_t output_bytes =
+        output_elems * (kv_quant_scratch ? 1u : ((cfg.output_precision == 3) ? 4u : 2u));
 
-    if (act_payload_bytes > NPU_GEMV_ACT_PAYLOAD_BYTES) {
-        throw std::runtime_error("GEMV activation vector overlaps reserved RoPE LUT window");
+    if (act_mvin_bytes > NPU_GEMV_ACT_PAYLOAD_BYTES) {
+        throw std::runtime_error("GEMV stream activation vector overlaps reserved RoPE LUT window");
     }
-    if (!embedded_scale &&
-        kGemvScaleSpmBase + scale_bytes > kGemvPingWeightSpmBase) {
-        throw std::runtime_error("GEMV scale layout overlaps weight ping buffer");
+    if (cfg.enable_act_scale &&
+        (act_scale_bytes == 0 ||
+         ((cached_group_enable ? (2u * act_mvin_bytes) : act_mvin_bytes) +
+          act_scale_mvin_bytes + act_scale2_mvin_bytes >
+          NPU_GEMV_ACT_PAYLOAD_BYTES))) {
+        throw std::runtime_error("GEMV stream activation scale exceeds act bank payload window");
     }
-    if (kGemvOutputSpmBase + output_bytes > NPU_GEMV_SPM_BYTES ||
-        kGemvOutputSpmBase + output_bytes > std::numeric_limits<uint16_t>::max() + 1u) {
-        throw std::runtime_error("GEMV output exceeds output SPM/MATVEC address capacity");
+    if (weight_bytes == 0 || weight_bytes > 4194240u ||
+        (weight_bytes % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
+        throw std::runtime_error("GEMV stream weight payload does not fit one stream MVIN descriptor");
     }
-    if (max_row_tiles == 0) {
-        throw std::runtime_error("GEMV row tile cannot fit ping-pong weight buffers");
+    if (uses_weight_scale &&
+        kGemvStreamScaleSpmBase + scale_mvin_bytes > 256u * 1024u) {
+        throw std::runtime_error("GEMV stream weight scale exceeds dedicated scale bank");
     }
-
-    auto make_mvin_cfg = [](void* host_ptr, uint32_t spm_addr, uint32_t bytes,
-                            uint8_t input_type, uint8_t precision) {
-        MvinConfig mvin = {};
-        mvin.host_ptr = host_ptr;
-        mvin.sram_addr = spm_addr;
-        mvin.col_num = bytes - 1u;
-        mvin.row_num = 0;
-        mvin.precision = precision;
-        mvin.input_type = input_type;
-        return mvin;
-    };
-
-    auto make_mvout_cfg = [](void* host_ptr, uint32_t spm_addr, uint32_t rows,
-                             uint8_t precision) {
-        MvoutConfig mvout = {};
-        mvout.host_ptr = host_ptr;
-        mvout.sram_addr = spm_addr;
-        mvout.col_num = 0;
-        mvout.row_num = rows - 1u;
-        mvout.sram_stride = 1;
-        mvout.dram_stride = 1;
-        mvout.precision = precision;
-        mvout.output_type = 0;
-        return mvout;
-    };
-
-    auto block_rows_for = [&](uint32_t row_base) {
-        const uint32_t remaining = static_cast<uint32_t>(cfg.m) - row_base;
-        return std::min(max_row_tiles * NPU_GEMV_ROW_TILE_ELEMS, remaining);
-    };
-    auto weight_offset_for = [&](uint32_t row_base) {
-        return (row_base / NPU_GEMV_ROW_TILE_ELEMS) * bytes_per_row_tile;
-    };
-    auto scale_addr_for = [&](uint32_t row_base) {
-        return kGemvScaleSpmBase +
-               (row_base / NPU_GEMV_ROW_TILE_ELEMS) * col_tiles * kGemvScaleTileBytes;
-    };
-
-    auto* weight_base = static_cast<uint8_t*>(cfg.weight_ptr);
-    run_mvin(make_mvin_cfg(cfg.act_ptr, kGemvActSpmBase, act_payload_bytes,
-                           NPU_GEMV_MVIN_ACT, 2));
-    if (!embedded_scale) {
-        run_mvin(make_mvin_cfg(cfg.scale_ptr, kGemvScaleSpmBase, scale_bytes,
-                               NPU_GEMV_MVIN_INPUT_SPM, 2));
+    if (cached_group_enable &&
+        kGemvPingWeightSpmBase + weight_bytes > kGemvPongWeightSpmBase) {
+        throw std::runtime_error("GEMV cached-group weight does not fit cached SPM window");
+    }
+    const uint32_t output_spm_elem_bytes =
+        kv_quant_scratch ? 1u : static_cast<uint32_t>(NPU_GEMV_FP16_BYTES);
+    if (output_elems * output_spm_elem_bytes > NPU_GEMV_SPM_BYTES) {
+        throw std::runtime_error("GEMV stream output exceeds output SPM capacity");
     }
 
-    const uint32_t first_rows = block_rows_for(0);
-    const uint32_t first_weight_bytes =
-        ceil_div_u32(first_rows, NPU_GEMV_ROW_TILE_ELEMS) * bytes_per_row_tile;
-    run_mvin(make_mvin_cfg(weight_base, kGemvPingWeightSpmBase, first_weight_bytes,
-                           NPU_GEMV_MVIN_WEIGHT, 1));
-
-    uint32_t block_idx = 0;
-    for (uint32_t row_base = 0; row_base < cfg.m; row_base += block_rows_for(row_base), ++block_idx) {
-        const uint32_t rows = block_rows_for(row_base);
-        const uint32_t cur_weight_spm =
-            (block_idx & 1u) ? kGemvPongWeightSpmBase : kGemvPingWeightSpmBase;
-
-        bool prefetch_started = false;
-        const uint32_t next_row_base = row_base + rows;
-        if (next_row_base < cfg.m) {
-            const uint32_t next_rows = block_rows_for(next_row_base);
-            const uint32_t next_weight_bytes =
-                ceil_div_u32(next_rows, NPU_GEMV_ROW_TILE_ELEMS) * bytes_per_row_tile;
-            const uint32_t next_weight_spm =
-                ((block_idx + 1u) & 1u) ? kGemvPongWeightSpmBase : kGemvPingWeightSpmBase;
-            run_mvin_async(
-                0,
-                make_mvin_cfg(
-                    weight_base + weight_offset_for(next_row_base),
-                    next_weight_spm,
-                    next_weight_bytes,
-                    NPU_GEMV_MVIN_WEIGHT,
-                    1));
-            prefetch_started = true;
+    auto checked_phys = [&](void* ptr, const char* name) {
+        const uint32_t phys = virt_to_phys(ptr);
+        if ((phys % NPU_GEMV_MVIN_ALIGN_BYTES) != 0) {
+            throw std::runtime_error(std::string("GEMV stream ") + name +
+                                     " physical address must be 256B aligned");
         }
+        return phys;
+    };
 
-        MatvecConfig matvec = {};
-        matvec.mat_addr = cur_weight_spm;
-        matvec.vec_addr = kGemvActSpmBase;
-        matvec.mat_width = cfg.n;
-        matvec.mat_height = static_cast<uint16_t>(rows);
-        matvec.output_addr =
-            static_cast<uint16_t>(kGemvOutputSpmBase + row_base * NPU_GEMV_FP16_BYTES);
-        matvec.scale_addr = static_cast<uint16_t>(
-            embedded_scale ? cur_weight_spm : scale_addr_for(row_base));
-        matvec.act_scale_addr = kGemvActSpmBase + act_bytes;
-        matvec.gemv_mode = cfg.gemv_mode;
-        run_matvec(matvec);
+    const uint32_t act_phys = checked_phys(cfg.act_ptr, "act_ptr");
+    const uint32_t act_scale_phys =
+        cfg.enable_act_scale ? checked_phys(cfg.act_scale_ptr, "act_scale_ptr") : 0u;
+    const uint32_t act_scale2_phys =
+        cfg.enable_act_scale2 ? checked_phys(cfg.act_scale2_ptr, "act_scale2_ptr") : 0u;
+    const uint32_t weight_phys = checked_phys(cfg.weight_ptr, "weight_ptr");
+    const uint32_t output_phys = checked_phys(cfg.output_ptr, "output_ptr");
+    const uint32_t scale_phys =
+        uses_weight_scale ? checked_phys(cfg.scale_ptr, "scale_ptr") : 0u;
+    const uint32_t rope_lut_phys =
+        uses_rope_lut ? checked_phys(cfg.rope_lut_ptr, "rope_lut_ptr") : 0u;
 
-        if (prefetch_started) {
-            wait_mvin(1u);
-        }
+    const uint8_t legacy_output_precision = (cfg.output_precision == 3) ? 1u : 0u;
+    const uint64_t desc0 = uint64_t(act_phys) | (uint64_t(weight_phys) << 32);
+    const uint64_t desc1 = uint64_t(act_scale_phys) | (uint64_t(output_phys) << 32);
+    const uint64_t desc2 =
+        uint64_t(cfg.n) |
+        (uint64_t(cfg.m) << 16) |
+        (uint64_t(cfg.cache_cell_idx) << 32) |
+        (uint64_t(cfg.gemv_mode) << 48) |
+        (uint64_t(legacy_output_precision) << 56) |
+        (uint64_t(cfg.enable_act_scale ? 1u : 0u) << 57) |
+        (uint64_t(fixed_stride_enable ? 1u : 0u) << 58) |
+        (uint64_t(cached_group_enable ? 1u : 0u) << 59) |
+        (uint64_t(cfg.enable_act_scale2 ? 1u : 0u) << 60);
+    const uint64_t desc3 = cfg.decode_flow;
+    const uint64_t desc4 = fixed_stride_enable
+        ? (uint64_t(weight_row_tile_stride_bytes) |
+           (uint64_t(weight_capacity_tokens) << 32))
+        : 0;
+    const uint64_t desc5 = uint64_t(cfg.act_group_stride_bytes);
+    const uint64_t desc6 = uint64_t(scale_phys) | (uint64_t(rope_lut_phys) << 32);
+    const uint64_t desc7 = uint64_t(act_scale2_phys);
+
+    const std::string shape_key =
+        "m=" + std::to_string(cfg.m) +
+        ",n=" + std::to_string(cfg.n) +
+        ",mode=" + std::to_string(cfg.gemv_mode) +
+        ",groups=" + std::to_string(group_count) +
+        ",stream=1,act_scale=" + std::to_string(cfg.enable_act_scale ? 1 : 0) +
+        ",act_scale2=" + std::to_string(cfg.enable_act_scale2 ? 1 : 0) +
+        ",flow=" + std::to_string(cfg.decode_flow ? 1 : 0);
+    NPU_LOG("gemv_stream %s cached=%u act_dma=%u act_scale_dma=%u act_scale2_dma=%u rope_lut_dma=%u scale_dma=%u weight=%u output=%u",
+            shape_key.c_str(), cached_group_enable ? 1u : 0u,
+            act_mvin_bytes, act_scale_mvin_bytes, act_scale2_mvin_bytes,
+            uses_rope_lut ? kRopeLutWindowBytes : 0u,
+            scale_mvin_bytes, stream_weight_bytes, output_bytes);
+
+    g_last_gemv_block.desc0 = desc0;
+    g_last_gemv_block.desc1 = desc1;
+    g_last_gemv_block.desc2 = desc2;
+    g_last_gemv_block.desc3 = desc3;
+    g_last_gemv_block.desc4 = desc4;
+    g_last_gemv_block.desc5 = desc5;
+    g_last_gemv_block.desc6 = desc6;
+    g_last_gemv_block.desc7 = desc7;
+    g_last_gemv_block.tag = "gemv_stream";
+
+    reg_write(RegOffset::GEMV_BLOCK_CTRL, 0u);
+    reg_write(RegOffset::GEMV_BLOCK_STATUS, kApiStatusDone | kApiStatusError);
+    ack_irq(NPU_IRQ_GEMV_BLOCK);
+
+    reg_write64(RegOffset::GEMV_BLOCK_DESC0, desc0);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC1, desc1);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC2, desc2);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC3, desc3);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC4, desc4);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC5, desc5);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC6, desc6);
+    reg_write64(RegOffset::GEMV_BLOCK_DESC7, desc7);
+    prepare_wait_irq_before_start("gemv_stream", shape_key,
+                                  uint64_t(act_mvin_bytes) +
+                                      act_scale_mvin_bytes + act_scale2_mvin_bytes +
+                                      (uses_rope_lut ? kRopeLutWindowBytes : 0u) +
+                                      scale_mvin_bytes + stream_weight_bytes + output_bytes,
+                                  NPU_IRQ_GEMV_BLOCK);
+    reg_write(RegOffset::GEMV_BLOCK_CTRL, 1u);
+    wait_irq(NPU_IRQ_GEMV_BLOCK);
+    const uint64_t status = reg_read64(RegOffset::GEMV_BLOCK_STATUS);
+    if (status & kApiStatusError) {
+        throw std::runtime_error("GEMV_BLOCK stream failed, code=" +
+                                 std::to_string((status >> kApiStatusErrorCodeShift) & 0xfu));
     }
-
-    run_mvout(make_mvout_cfg(cfg.output_ptr, kGemvOutputSpmBase, cfg.m,
-                             cfg.output_precision));
+    reg_write(RegOffset::GEMV_BLOCK_CTRL, 0u);
+    reg_write(RegOffset::GEMV_BLOCK_STATUS, kApiStatusDone | kApiStatusError);
 }
 
 } // namespace
@@ -1412,10 +1545,28 @@ extern "C" {
 
 int npu_init(void) {
     if (g_runtime) {
+        if (!g_runtime->hardware_ready()) {
+            if (!g_runtime->activate_decode()) {
+                return -1;
+            }
+        }
         return 0;
     }
     auto* rt = new NpuRuntime();
-    if (!rt->init()) {
+    if (!rt->init(true)) {
+        delete rt;
+        return -1;
+    }
+    g_runtime = rt;
+    return 0;
+}
+
+int npu_decode_cma_init(void) {
+    if (g_runtime) {
+        return 0;
+    }
+    auto* rt = new NpuRuntime();
+    if (!rt->init(false)) {
         delete rt;
         return -1;
     }
@@ -1442,6 +1593,53 @@ int npu_reinit(void) {
     } catch (const std::exception& ex) {
         report_exception("npu_reinit", ex);
         return -1;
+    }
+}
+
+int npu_open(npu_device** out_dev, const char* dev_path) {
+    if (!out_dev) {
+        return -EINVAL;
+    }
+    *out_dev = nullptr;
+    if (!is_default_dev_path(dev_path)) {
+        return -ENOTSUP;
+    }
+
+    const bool need_init = (g_runtime == nullptr);
+    if (need_init && npu_init() != 0) {
+        return -EIO;
+    }
+
+    auto* dev = new (std::nothrow) npu_device{};
+    if (!dev) {
+        if (need_init) {
+            npu_destroy();
+        }
+        return -ENOMEM;
+    }
+
+    dev->magic = kNpuDeviceMagic;
+    ++g_device_refcount;
+    if (need_init) {
+        g_runtime_owned_by_device_api = true;
+    }
+    *out_dev = dev;
+    return 0;
+}
+
+void npu_close(npu_device* dev) {
+    if (!valid_device(dev)) {
+        return;
+    }
+    dev->magic = 0;
+    delete dev;
+
+    if (g_device_refcount > 0) {
+        --g_device_refcount;
+    }
+    if (g_device_refcount == 0 && g_runtime_owned_by_device_api) {
+        g_runtime_owned_by_device_api = false;
+        npu_destroy();
     }
 }
 
@@ -1480,198 +1678,71 @@ uint32_t npu_decode_memory_size(void) {
     }
 }
 
-void npu_dma_mvin(void* host_ptr, uint32_t sram_addr, uint32_t col_num,
-                  uint32_t row_num, uint16_t sram_stride, uint32_t dram_stride,
-                  uint8_t precision, uint8_t input_type, bool dest, bool is_bias,
-                  bool is_quant, uint32_t quant_zero, uint16_t quant_scale,
-                  uint16_t quant_shift) {
+int npu_mem_dma_offset(const void* ptr, uint32_t* out_offset) {
     try {
-        MvinConfig cfg = {host_ptr, sram_addr, col_num, row_num, sram_stride,
-                          dram_stride, precision, input_type, dest, is_bias,
-                          is_quant, quant_zero, quant_scale, quant_shift};
-        runtime().run_mvin(cfg);
+        return dma_offset_for_ptr(ptr, out_offset);
     } catch (const std::exception& ex) {
-        report_exception("npu_dma_mvin", ex);
+        report_exception("npu_mem_dma_offset", ex);
+        return -EIO;
     }
 }
 
-void npu_dma_mvout(void* host_ptr, uint32_t sram_addr, uint32_t col_num,
-                   uint32_t row_num, uint16_t sram_stride, uint32_t dram_stride,
-                   uint8_t precision, uint8_t output_type, bool source,
-                   bool is_quant, uint32_t quant_zero, uint32_t scale_or_addr) {
-    try {
-        MvoutConfig cfg = {host_ptr, sram_addr, col_num, row_num, sram_stride,
-                           dram_stride, precision, output_type, source, is_quant,
-                           quant_zero, scale_or_addr, false};
-        runtime().run_mvout(cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_dma_mvout", ex);
+int npu_stream_gemv_run(npu_device* dev, const npu_stream_gemv_desc* desc,
+                        uint32_t timeout_ms) {
+    const int timeout_rc = validate_timeout_default_only(timeout_ms);
+    if (timeout_rc != 0) {
+        return timeout_rc;
     }
-}
-
-void npu_dma_mvin_async(uint32_t dma_id, const MvinConfig* cfg) {
-    try {
-        if (!cfg) {
-            throw std::runtime_error("MvinConfig pointer is null");
-        }
-        runtime().run_mvin_async(dma_id, *cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_dma_mvin_async", ex);
+    const int desc_rc = validate_stream_gemv_desc(dev, desc);
+    if (desc_rc != 0) {
+        return desc_rc;
     }
-}
-
-void npu_dma_mvout_async(uint32_t dma_id, const MvoutConfig* cfg) {
-    try {
-        if (!cfg) {
-            throw std::runtime_error("MvoutConfig pointer is null");
-        }
-        runtime().run_mvout_async(dma_id, *cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_dma_mvout_async", ex);
-    }
-}
-
-void npu_dma_wait_mvin(uint32_t dma_mask) {
-    try {
-        runtime().wait_mvin(dma_mask);
-    } catch (const std::exception& ex) {
-        report_exception("npu_dma_wait_mvin", ex);
-    }
-}
-
-void npu_dma_wait_mvout(uint32_t dma_mask) {
-    try {
-        runtime().wait_mvout(dma_mask);
-    } catch (const std::exception& ex) {
-        report_exception("npu_dma_wait_mvout", ex);
-    }
-}
-
-void npu_rope_lut_mvin(void* rope_table_base, uint16_t position) {
-    try {
-        runtime().run_mvin(make_rope_lut_mvin_config(rope_table_base, position));
-    } catch (const std::exception& ex) {
-        report_exception("npu_rope_lut_mvin", ex);
-    }
-}
-
-void npu_rope_lut_mvin_async(uint32_t dma_id, void* rope_table_base, uint16_t position) {
-    try {
-        runtime().run_mvin_async(dma_id, make_rope_lut_mvin_config(rope_table_base, position));
-    } catch (const std::exception& ex) {
-        report_exception("npu_rope_lut_mvin_async", ex);
-    }
-}
-
-void npu_matvec_run(uint32_t mat_addr, uint32_t vec_addr, uint16_t mat_width,
-                    uint16_t mat_height, uint16_t output_addr,
-                    uint16_t scale_addr) {
-    npu_matvec_mode_run(mat_addr, vec_addr, mat_width, mat_height, output_addr,
-                        scale_addr, NPU_GEMV_MODE_W4A16);
-}
-
-void npu_matvec_mode_run(uint32_t mat_addr, uint32_t vec_addr, uint16_t mat_width,
-                         uint16_t mat_height, uint16_t output_addr,
-                         uint16_t scale_addr, uint8_t gemv_mode) {
-    try {
-        MatvecConfig cfg = {};
-        cfg.mat_addr = mat_addr;
-        cfg.vec_addr = vec_addr;
-        cfg.mat_width = mat_width;
-        cfg.mat_height = mat_height;
-        cfg.output_addr = output_addr;
-        cfg.scale_addr = scale_addr;
-        cfg.gemv_mode = gemv_mode;
-        cfg.act_scale_addr = default_act_scale_addr(vec_addr, mat_width, gemv_mode);
-        runtime().run_matvec(cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_matvec_mode_run", ex);
-    }
-}
-
-void npu_matvec_silu_run(uint32_t mat_addr, uint32_t vec_addr, uint16_t mat_width,
-                         uint16_t mat_height, uint16_t output_addr,
-                         uint16_t scale_addr) {
-    try {
-        MatvecConfig cfg = {};
-        cfg.mat_addr = mat_addr;
-        cfg.vec_addr = vec_addr;
-        cfg.mat_width = mat_width;
-        cfg.mat_height = mat_height;
-        cfg.output_addr = output_addr;
-        cfg.scale_addr = scale_addr;
-        cfg.gemv_mode = NPU_GEMV_MODE_W4A16;
-        cfg.act_scale_addr = default_act_scale_addr(vec_addr, mat_width, cfg.gemv_mode);
-        cfg.decode_flow = make_matvec_silu_buffer_flow(mat_height);
-        runtime().run_matvec(cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_matvec_silu_run", ex);
-    }
-}
-
-uint64_t npu_decode_flow_make(uint8_t src0, uint8_t src1,
-                              uint8_t unary_op, uint8_t binary_op,
-                              uint8_t reduce_op, uint8_t dst,
-                              uint8_t src_buffer_id, uint8_t dst_buffer_id,
-                              uint16_t elem_count, uint16_t position) {
-    return make_decode_flow_value(src0, src1, unary_op, binary_op, reduce_op,
-                                  dst, src_buffer_id, dst_buffer_id,
-                                  elem_count, position);
-}
-
-void npu_matvec_decode_flow_run(uint32_t mat_addr, uint32_t vec_addr,
-                                uint16_t mat_width, uint16_t mat_height,
-                                uint16_t output_addr, uint16_t scale_addr,
-                                uint8_t gemv_mode, uint64_t decode_flow) {
-    try {
-        MatvecConfig cfg = {};
-        cfg.mat_addr = mat_addr;
-        cfg.vec_addr = vec_addr;
-        cfg.mat_width = mat_width;
-        cfg.mat_height = mat_height;
-        cfg.output_addr = output_addr;
-        cfg.scale_addr = scale_addr;
-        cfg.gemv_mode = gemv_mode;
-        cfg.act_scale_addr = default_act_scale_addr(vec_addr, mat_width, gemv_mode);
-        cfg.decode_flow = decode_flow;
-        runtime().run_matvec(cfg);
-    } catch (const std::exception& ex) {
-        report_exception("npu_matvec_decode_flow_run", ex);
-    }
-}
-
-void npu_gemv_pingpong_run(void* act_ptr, void* scale_ptr, void* weight_ptr,
-                           void* output_ptr, uint16_t m, uint16_t n) {
-    npu_gemv_pingpong_mode_precision_run(act_ptr, scale_ptr, weight_ptr,
-                                         output_ptr, m, n,
-                                         NPU_GEMV_MODE_W4A16, 1);
-}
-
-void npu_gemv_pingpong_mode_run(void* act_ptr, void* scale_ptr, void* weight_ptr,
-                                void* output_ptr, uint16_t m, uint16_t n,
-                                uint8_t gemv_mode) {
-    npu_gemv_pingpong_mode_precision_run(act_ptr, scale_ptr, weight_ptr,
-                                         output_ptr, m, n, gemv_mode, 1);
-}
-
-void npu_gemv_pingpong_mode_precision_run(void* act_ptr, void* scale_ptr,
-                                          void* weight_ptr, void* output_ptr,
-                                          uint16_t m, uint16_t n,
-                                          uint8_t gemv_mode,
-                                          uint8_t output_precision) {
     try {
         GemvPingPongConfig cfg = {};
-        cfg.act_ptr = act_ptr;
-        cfg.scale_ptr = scale_ptr;
-        cfg.weight_ptr = weight_ptr;
-        cfg.output_ptr = output_ptr;
-        cfg.m = m;
-        cfg.n = n;
-        cfg.gemv_mode = gemv_mode;
-        cfg.output_precision = output_precision;
-        runtime().run_gemv_pingpong(cfg);
+        cfg.act_ptr = const_cast<void*>(desc->act_ptr);
+        cfg.act_scale_ptr = const_cast<void*>(desc->act_scale_ptr);
+        cfg.act_scale2_ptr = const_cast<void*>(desc->act_scale2_ptr);
+        cfg.scale_ptr = const_cast<void*>(desc->weight_scale_ptr);
+        cfg.weight_ptr = const_cast<void*>(desc->weight_payload_ptr);
+        cfg.output_ptr = desc->output_ptr;
+        cfg.rope_lut_ptr = const_cast<void*>(desc->rope_lut_ptr);
+        cfg.m = desc->m;
+        cfg.n = desc->n;
+        cfg.gemv_mode = static_cast<uint8_t>(desc->mode);
+        cfg.output_precision = output_precision_to_hw(desc->output_precision);
+        cfg.enable_act_scale =
+            (desc->flags & NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE) != 0;
+        cfg.enable_act_scale2 =
+            (desc->flags & NPU_STREAM_GEMV_F_ENABLE_ACT_SCALE2) != 0;
+        cfg.decode_flow = stream_decode_flow_from_desc(*desc);
+        cfg.cache_cell_idx = kGemvStreamCacheInvalidateTag;
+        cfg.act_group_stride_bytes = desc->act_group_stride_bytes;
+        const uint16_t group_count = stream_group_count_or_default(*desc);
+        cfg.cached_group_enable =
+            group_count > 1 &&
+            (desc->role == NPU_STREAM_GEMV_ROLE_QK ||
+             desc->role == NPU_STREAM_GEMV_ROLE_PV);
+        runtime().run_gemv_stream(cfg,
+                                  desc->weight_row_tile_stride_bytes,
+                                  desc->weight_capacity_tokens);
+        return 0;
     } catch (const std::exception& ex) {
-        report_exception("npu_gemv_pingpong_mode_precision_run", ex);
+        report_exception("npu_stream_gemv_run", ex);
+        return -EIO;
+    }
+}
+
+int npu_stream_kv_scale_read(npu_device* dev, int is_v,
+                             npu_stream_kv_scale_result* out) {
+    if (!valid_device(dev) || !out) {
+        return -EINVAL;
+    }
+    try {
+        runtime().read_kv_scale(is_v != 0, out);
+        return 0;
+    } catch (const std::exception& ex) {
+        report_exception("npu_stream_kv_scale_read", ex);
+        return -EIO;
     }
 }
 

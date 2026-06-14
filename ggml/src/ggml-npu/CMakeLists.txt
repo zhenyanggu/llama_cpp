@@ -24,10 +24,7 @@ get_filename_component(LLAMA_CPP_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOL
 set(NPU_RUNTIME_ROOT "${LLAMA_CPP_ROOT}/npuruntime/kv260/runtime")
 set(GGML_NPU_VERSA_P_RUNTIME_ROOT "/mnt/c/vivado/VersaEdge/Versa_P/runtime" CACHE PATH "Versa_P Phase-1 runtime root")
 set(GGML_NPU_VERSA_P_DRIVER_ROOT "/mnt/c/vivado/VersaEdge/sw/kv260/driver" CACHE PATH "Versa_P KV260 driver UAPI root")
-set(GGML_NPU_DECODE_RUNTIME_DEFAULT_ROOT "/mnt/c/vivado/versa_decode/sw/kv260/runtime")
-if (NOT EXISTS "${GGML_NPU_DECODE_RUNTIME_DEFAULT_ROOT}/src/npu_runtime.cpp")
-    set(GGML_NPU_DECODE_RUNTIME_DEFAULT_ROOT "${LLAMA_CPP_ROOT}/npuruntime/kv260/decode_runtime")
-endif()
+set(GGML_NPU_DECODE_RUNTIME_DEFAULT_ROOT "${LLAMA_CPP_ROOT}/npuruntime/kv260/decode_runtime")
 set(GGML_NPU_DECODE_RUNTIME_ROOT "${GGML_NPU_DECODE_RUNTIME_DEFAULT_ROOT}" CACHE PATH "Versa decode runtime root")
 set(GGML_NPU_DECODE_DRIVER_ROOT "${GGML_NPU_DECODE_RUNTIME_ROOT}/include" CACHE PATH "Versa decode KV260 driver UAPI root")
 

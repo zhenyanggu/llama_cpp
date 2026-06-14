@@ -4558,6 +4558,167 @@ static std::string clip_log8pv_pv_diag_path() {
     return value == nullptr ? std::string() : std::string(value);
 }
 
+static std::string clip_log8pv_npu_compare_path() {
+    const char * value = std::getenv("AICAS_MMPROJ_LOG8PV_NPU_COMPARE_JSONL");
+    return value == nullptr ? std::string() : std::string(value);
+}
+
+static int clip_log8pv_env_i32(const char * name, int default_value) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return default_value;
+    }
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    return end != value ? static_cast<int>(parsed) : default_value;
+}
+
+static int32_t clip_log8pv_round_shift_signed_i64(int64_t value, uint32_t shift) {
+    if (shift == 0) {
+        if (value > std::numeric_limits<int32_t>::max()) {
+            return std::numeric_limits<int32_t>::max();
+        }
+        if (value < std::numeric_limits<int32_t>::min()) {
+            return std::numeric_limits<int32_t>::min();
+        }
+        return static_cast<int32_t>(value);
+    }
+    if (shift >= 63) {
+        return 0;
+    }
+    const int64_t half = INT64_C(1) << (shift - 1);
+    const int64_t adjusted = value < 0 ? value - half : value + half;
+    const int64_t shifted = adjusted >> shift;
+    if (shifted > std::numeric_limits<int32_t>::max()) {
+        return std::numeric_limits<int32_t>::max();
+    }
+    if (shifted < std::numeric_limits<int32_t>::min()) {
+        return std::numeric_limits<int32_t>::min();
+    }
+    return static_cast<int32_t>(shifted);
+}
+
+static int8_t clip_log8pv_hw_round_score_i8(int64_t dot, uint32_t gamma16_fix) {
+    constexpr uint32_t gamma_frac = 24;
+    const int64_t product = dot * static_cast<int64_t>(gamma16_fix);
+    const int64_t half = INT64_C(1) << (gamma_frac - 1);
+    if (product < 0) {
+        const int64_t rounded = ((-product) + half) >> gamma_frac;
+        return static_cast<int8_t>(rounded >= 128 ? -128 : -rounded);
+    }
+    const int64_t rounded = (product + half) >> gamma_frac;
+    return static_cast<int8_t>(rounded >= 128 ? 127 : rounded);
+}
+
+static uint8_t clip_log8pv_hw_distance_to_logp(int32_t distance) {
+    uint32_t d = static_cast<uint32_t>(std::max<int32_t>(0, distance));
+    d = std::min<uint32_t>(d, 255u);
+    const uint32_t scaled = (d * 254u + 128u) >> 8;
+    return static_cast<uint8_t>(255u - scaled);
+}
+
+static uint32_t clip_log8pv_msb_index_u32(uint32_t value) {
+    uint32_t idx = 0;
+    for (uint32_t bit = 0; bit < 32; ++bit) {
+        if (value & (UINT32_C(1) << bit)) {
+            idx = bit;
+        }
+    }
+    return idx;
+}
+
+static uint32_t clip_log8pv_normalize_q20(uint32_t value, uint32_t exp) {
+    if (value == 0) {
+        return 0;
+    }
+    if (exp >= 20) {
+        return (value >> (exp - 20u)) & 0x1fffffu;
+    }
+    return (value << (20u - exp)) & 0x1fffffu;
+}
+
+static void clip_log8pv_recip_approx(uint32_t den, bool & zero, uint32_t & mant, uint32_t & shift) {
+    if (den == 0) {
+        zero = true;
+        mant = 0;
+        shift = 0;
+        return;
+    }
+    constexpr uint32_t two_q20 = 2097152u;
+    constexpr uint32_t seed_a = 1480343u;
+    constexpr uint32_t seed_b = 493448u;
+    const uint32_t exp = clip_log8pv_msb_index_u32(den);
+    const uint32_t x = clip_log8pv_normalize_q20(den, exp);
+    const uint64_t bx = static_cast<uint64_t>(seed_b) * x;
+    const uint32_t bx_q20 = static_cast<uint32_t>(bx >> 20);
+    const uint32_t y0 = seed_a - bx_q20;
+    const uint64_t xy_product = static_cast<uint64_t>(x) * y0;
+    const uint32_t xy = static_cast<uint32_t>(xy_product >> 20) & 0x3fffffu;
+    const uint32_t term = two_q20 - xy;
+    const uint64_t y_product = static_cast<uint64_t>(y0) * term;
+    zero = false;
+    mant = static_cast<uint32_t>(y_product >> 20) & 0x1fffffu;
+    shift = exp + 20u;
+}
+
+struct clip_log8pv_npu_compare_stats {
+    uint64_t count = 0;
+    uint64_t mismatch = 0;
+    uint64_t mismatch_tol16 = 0;
+    uint64_t sat_qk = 0;
+    int64_t sum_abs = 0;
+    int32_t max_abs = 0;
+    int64_t first_index = -1;
+    int32_t first_npu = 0;
+    int32_t first_ref = 0;
+    int32_t min_ref = std::numeric_limits<int32_t>::max();
+    int32_t max_ref = std::numeric_limits<int32_t>::min();
+    int32_t min_npu = std::numeric_limits<int32_t>::max();
+    int32_t max_npu = std::numeric_limits<int32_t>::min();
+
+    void update(int64_t index, int32_t npu, int32_t ref) {
+        const int32_t diff = npu > ref ?
+            (npu - ref) :
+            (ref == std::numeric_limits<int32_t>::min() ? std::numeric_limits<int32_t>::max() : ref - npu);
+        ++count;
+        sum_abs += diff;
+        max_abs = std::max(max_abs, diff);
+        min_ref = std::min(min_ref, ref);
+        max_ref = std::max(max_ref, ref);
+        min_npu = std::min(min_npu, npu);
+        max_npu = std::max(max_npu, npu);
+        if (diff != 0) {
+            ++mismatch;
+            if (first_index < 0) {
+                first_index = index;
+                first_npu = npu;
+                first_ref = ref;
+            }
+        }
+        if (diff > 16) {
+            ++mismatch_tol16;
+        }
+    }
+
+    json to_json() const {
+        return {
+            {"count", count},
+            {"mismatch", mismatch},
+            {"mismatch_tol16", mismatch_tol16},
+            {"sat_qk", sat_qk},
+            {"mean_abs", count > 0 ? static_cast<double>(sum_abs) / static_cast<double>(count) : 0.0},
+            {"max_abs", max_abs},
+            {"first_index", first_index},
+            {"first_npu", first_npu},
+            {"first_ref", first_ref},
+            {"min_ref", count > 0 ? min_ref : 0},
+            {"max_ref", count > 0 ? max_ref : 0},
+            {"min_npu", count > 0 ? min_npu : 0},
+            {"max_npu", count > 0 ? max_npu : 0},
+        };
+    }
+};
+
 struct clip_log8pv_attention_host_profile {
     int64_t threshold_us = 0;
     int64_t q_quant_us = 0;
@@ -4639,6 +4800,165 @@ static void clip_log8pv_npu_profile_append(
         {"pipeline_group", host_profile.pipeline_group},
         {"pipeline_enabled", host_profile.pipeline_enabled},
     };
+    std::ofstream fout(path, std::ios::app | std::ios::binary);
+    if (fout.is_open()) {
+        fout << record.dump() << "\n";
+    }
+}
+
+static void clip_log8pv_npu_compare_append(
+        int layer,
+        int64_t head,
+        int64_t n_q,
+        int64_t n_k,
+        int64_t d_head,
+        uint32_t gamma16_fix,
+        const std::vector<int8_t> & q_code,
+        const std::vector<int8_t> & k_code,
+        const std::vector<int8_t> & vq,
+        const std::vector<int32_t> & npu_out,
+        int p_bits) {
+    const std::string path = clip_log8pv_npu_compare_path();
+    if (path.empty()) {
+        return;
+    }
+    const int filter_layer = clip_log8pv_env_i32("AICAS_MMPROJ_LOG8PV_NPU_COMPARE_LAYER", -1);
+    const int filter_head = clip_log8pv_env_i32("AICAS_MMPROJ_LOG8PV_NPU_COMPARE_HEAD", -1);
+    if ((filter_layer >= 0 && filter_layer != layer) || (filter_head >= 0 && filter_head != head)) {
+        return;
+    }
+    const int max_records = std::max(1, clip_log8pv_env_i32("AICAS_MMPROJ_LOG8PV_NPU_COMPARE_MAX_RECORDS", 1));
+    static std::atomic<int> records{0};
+    const int record_index = records.fetch_add(1, std::memory_order_relaxed);
+    if (record_index >= max_records) {
+        return;
+    }
+
+    std::vector<int32_t> ref_soft((size_t) n_q * d_head, 0);
+    std::vector<int32_t> ref_hw((size_t) n_q * d_head, 0);
+    std::vector<int32_t> score_soft((size_t) n_k);
+    std::vector<int8_t> score_hw((size_t) n_k);
+    std::vector<uint8_t> q_local((size_t) n_k);
+    std::vector<int32_t> m_tile((size_t) ((n_k + 64 - 1) / 64));
+    std::vector<int64_t> accum((size_t) d_head);
+    std::vector<int64_t> accum_hw((size_t) d_head);
+    clip_log8pv_npu_compare_stats soft_stats;
+    clip_log8pv_npu_compare_stats hw_stats;
+    int64_t row_l_min = std::numeric_limits<int64_t>::max();
+    int64_t row_l_max = 0;
+    uint32_t hw_den_min = std::numeric_limits<uint32_t>::max();
+    uint32_t hw_den_max = 0;
+    uint64_t hw_den_zero = 0;
+
+    for (int64_t iq = 0; iq < n_q; ++iq) {
+        int32_t m_global = std::numeric_limits<int32_t>::min();
+        int hw_m = -128;
+        for (int64_t ik0 = 0; ik0 < n_k; ik0 += 64) {
+            const int64_t ik1 = std::min<int64_t>(n_k, ik0 + 64);
+            int32_t mt = std::numeric_limits<int32_t>::min();
+            for (int64_t ik = ik0; ik < ik1; ++ik) {
+                int64_t dot = 0;
+                for (int64_t id = 0; id < d_head; ++id) {
+                    dot += static_cast<int32_t>(q_code[(size_t) (iq * d_head + id)]) *
+                        static_cast<int32_t>(k_code[(size_t) (ik * d_head + id)]);
+                }
+                const int64_t product_soft = static_cast<int64_t>(dot) * static_cast<int64_t>(gamma16_fix);
+                const int64_t sq_soft = (product_soft +
+                    (product_soft < 0 ? -(INT64_C(1) << 23) : (INT64_C(1) << 23))) >> 24;
+                score_soft[(size_t) ik] = static_cast<int32_t>(std::max<int64_t>(
+                            std::numeric_limits<int32_t>::min() + 1,
+                            std::min<int64_t>(std::numeric_limits<int32_t>::max(), sq_soft)));
+                const int8_t shw = clip_log8pv_hw_round_score_i8(dot, gamma16_fix);
+                score_hw[(size_t) ik] = shw;
+                if (static_cast<int64_t>(shw) != sq_soft) {
+                    ++hw_stats.sat_qk;
+                }
+                mt = std::max(mt, score_soft[(size_t) ik]);
+                m_global = std::max(m_global, score_soft[(size_t) ik]);
+                hw_m = std::max(hw_m, static_cast<int>(shw));
+            }
+            m_tile[(size_t) (ik0 / 64)] = mt;
+            for (int64_t ik = ik0; ik < ik1; ++ik) {
+                const int64_t d_local = static_cast<int64_t>(mt) - static_cast<int64_t>(score_soft[(size_t) ik]);
+                q_local[(size_t) ik] = d_local >= 255 ? 255 : static_cast<uint8_t>(std::max<int64_t>(0, d_local));
+            }
+        }
+
+        std::fill(accum.begin(), accum.end(), 0);
+        int64_t row_l = 0;
+        for (int64_t ik0 = 0; ik0 < n_k; ik0 += 64) {
+            const int64_t ik1 = std::min<int64_t>(n_k, ik0 + 64);
+            const int32_t mt = m_tile[(size_t) (ik0 / 64)];
+            const int64_t delta = static_cast<int64_t>(m_global) - static_cast<int64_t>(mt);
+            for (int64_t ik = ik0; ik < ik1; ++ik) {
+                const int64_t qg = static_cast<int64_t>(q_local[(size_t) ik]) + delta;
+                const uint16_t p = q_local[(size_t) ik] != 255 && qg < 255
+                    ? clip_log8pv_base2_p(static_cast<uint32_t>(qg), p_bits)
+                    : 0;
+                row_l += static_cast<int64_t>(p);
+                for (int64_t id = 0; id < d_head; ++id) {
+                    accum[(size_t) id] += static_cast<int64_t>(p) *
+                        static_cast<int64_t>(vq[(size_t) (ik * d_head + id)]);
+                }
+            }
+        }
+        row_l_min = std::min(row_l_min, row_l);
+        row_l_max = std::max(row_l_max, row_l);
+        for (int64_t id = 0; id < d_head; ++id) {
+            ref_soft[(size_t) iq * d_head + id] = row_l > 0
+                ? static_cast<int32_t>(std::llround(static_cast<double>(accum[(size_t) id]) / static_cast<double>(row_l)))
+                : 0;
+        }
+
+        uint32_t hw_den = 0;
+        std::fill(accum_hw.begin(), accum_hw.end(), 0);
+        for (int64_t ik = 0; ik < n_k; ++ik) {
+            const uint8_t code = clip_log8pv_hw_distance_to_logp(hw_m - static_cast<int>(score_hw[(size_t) ik]));
+            const uint16_t p = clip_log8pv_decode_u16(code, 16.0f, p_bits);
+            hw_den += p;
+            for (int64_t id = 0; id < d_head; ++id) {
+                accum_hw[(size_t) id] += static_cast<int64_t>(p) *
+                    static_cast<int64_t>(vq[(size_t) (ik * d_head + id)]);
+            }
+        }
+        hw_den_min = std::min(hw_den_min, hw_den);
+        hw_den_max = std::max(hw_den_max, hw_den);
+        bool zero = false;
+        uint32_t mant = 0;
+        uint32_t shift = 0;
+        clip_log8pv_recip_approx(hw_den, zero, mant, shift);
+        hw_den_zero += zero ? 1 : 0;
+        for (int64_t id = 0; id < d_head; ++id) {
+            ref_hw[(size_t) iq * d_head + id] = zero ? 0 :
+                clip_log8pv_round_shift_signed_i64(accum_hw[(size_t) id] * static_cast<int64_t>(mant), shift);
+        }
+    }
+
+    for (int64_t i = 0; i < n_q * d_head; ++i) {
+        soft_stats.update(i, npu_out[(size_t) i], ref_soft[(size_t) i]);
+        hw_stats.update(i, npu_out[(size_t) i], ref_hw[(size_t) i]);
+    }
+
+    json record = {
+        {"schema", "aicas.mmproj.log8pv_npu_compare.v1"},
+        {"record_index", record_index},
+        {"layer", layer},
+        {"head", head},
+        {"n_q", n_q},
+        {"n_k", n_k},
+        {"d_head", d_head},
+        {"gamma16_fix", gamma16_fix},
+        {"p_bits", p_bits},
+        {"row_l_min_soft", row_l_min == std::numeric_limits<int64_t>::max() ? 0 : row_l_min},
+        {"row_l_max_soft", row_l_max},
+        {"hw_den_min", hw_den_min == std::numeric_limits<uint32_t>::max() ? 0 : hw_den_min},
+        {"hw_den_max", hw_den_max},
+        {"hw_den_zero_rows", hw_den_zero},
+        {"npu_vs_cpu_soft", soft_stats.to_json()},
+        {"npu_vs_hw_model", hw_stats.to_json()},
+    };
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
     std::ofstream fout(path, std::ios::app | std::ios::binary);
     if (fout.is_open()) {
         fout << record.dump() << "\n";
@@ -5082,6 +5402,18 @@ static void clip_log8pv_attn_f32(
                         npu_host_profile.npu_call_wall_us += ggml_time_us() - npu_profile_t0;
                     }
                     if (npu_ok) {
+                        clip_log8pv_npu_compare_append(
+                                cfg->layer,
+                                ih,
+                                n_q,
+                                n_k,
+                                d_head,
+                                gamma16_fix,
+                                q_code,
+                                k_code,
+                                vq,
+                                npu_out,
+                                cfg->p_bits);
                         npu_profile_t0 = npu_host_profile_enabled ? ggml_time_us() : 0;
                         for (int64_t iq = 0; iq < n_q; ++iq) {
                             for (int64_t id = 0; id < d_head; ++id) {

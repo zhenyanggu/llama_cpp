@@ -10,6 +10,9 @@ from llama_server_client import (
     image_to_data_url,
 )
 
+DEFAULT_MAX_TOKENS = 1024
+DEFAULT_PRINT_RESPONSE_CHARS = 800
+
 LONG_PROMPT = """
 Act as an interdisciplinary expert combining the skills of a master art historian, a rigorous forensic image analyst, and a computational aesthetician. I am presenting you with a landscape painting. To thoroughly evaluate the visual data, you must execute a comprehensive, multi-layered analysis. Do not hallucinate details, but extract every possible piece of data from the image provided. You must not skip any section.
 Phase 1: Granular Visual Deconstruction
@@ -55,14 +58,45 @@ def parse_args():
         "--max-tokens",
         help="Maximum generated tokens for this throughput request.",
         type=int,
-        default=4096
+        default=DEFAULT_MAX_TOKENS,
     )
     parser.add_argument(
         "--prompt",
         help="Prompt text for this throughput request.",
         default=LONG_PROMPT
     )
+    parser.add_argument(
+        "--ignore-eos",
+        help="Ignore EOS and continue until max_tokens or context limit.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-ignore-eos",
+        dest="ignore_eos",
+        action="store_false",
+        help="Allow EOS to stop generation before --max-tokens.",
+    )
+    parser.add_argument(
+        "--no-cache-prompt",
+        help="Send cache_prompt=false for this request.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--print-response-chars",
+        help="Maximum response characters to print to stdout; JSON output keeps the full text. Use -1 to print all.",
+        type=int,
+        default=DEFAULT_PRINT_RESPONSE_CHARS,
+    )
+    parser.set_defaults(ignore_eos=True)
     return parser.parse_args()
+
+
+def preview_response_text(text, max_chars):
+    """Return a stdout-friendly preview while preserving full text elsewhere."""
+    if max_chars < 0 or len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars].rstrip()}\n... [truncated, {omitted} chars omitted]"
 
 
 def main():
@@ -74,6 +108,11 @@ def main():
         sys.exit(1)
 
     try:
+        print(
+            f"[throughput] Starting request: image={args.image}, max_tokens={args.max_tokens}, "
+            f"ignore_eos={args.ignore_eos}",
+            flush=True,
+        )
         messages_payload = [
             {
                 "role": "user",
@@ -100,12 +139,15 @@ def main():
             max_tokens=args.max_tokens,
             temperature=0.0,
             stream=False,
+            cache_prompt=False if args.no_cache_prompt else None,
+            ignore_eos=args.ignore_eos,
             timeout=args.request_timeout,
         )
+        print("[throughput] Request completed; parsing server timings", flush=True)
         
-        # Print the full response content
+        # Print only a short preview; the complete response is saved in JSON.
         full_response = extract_text_content(response)
-        print(full_response)
+        print(preview_response_text(full_response, args.print_response_chars))
         print("\n" + "--- Generation Finished ---")
         
         # Parse and print metrics from the response object

@@ -2329,11 +2329,7 @@ bool ggml_backend_npu_decode_w8a16_gemv_ex(
             (act_layout.act_bytes % NPU_DECODE_GEMV_DMA_ALIGN) != 0) {
         return fail("activation layout exceeds act buffer");
     }
-    const uint32_t max_block_rows = cached.max_block_rows;
-    const uint32_t max_row_tiles = npu_decode_ceil_div_u32(max_block_rows, NPU_DECODE_GEMV_M_TILE);
-    const uint32_t max_weight_bytes = max_row_tiles * cached.bytes_per_row_tile;
     const uint32_t scale_bytes_per_row_tile = cached.col_tiles * NPU_DECODE_GEMV_SCALE_TILE_BYTES;
-    const uint32_t max_scale_bytes = max_row_tiles * scale_bytes_per_row_tile;
     const uint64_t expected_scale_bytes =
         static_cast<uint64_t>(cached.group_count) * static_cast<uint64_t>(cached.row_tiles) *
         static_cast<uint64_t>(scale_bytes_per_row_tile);
@@ -2342,7 +2338,44 @@ bool ggml_backend_npu_decode_w8a16_gemv_ex(
     }
     const bool scale_cma_resident = cached.cma_scale != nullptr &&
         cached.cma_scale_bytes >= cached.packed_scale.size();
-    const bool use_pingpong = cma_resident && scale_cma_resident && npu_decode_w8a16_pingpong_enabled();
+    const bool stream_cma_path = npu_decode_stream_api_enabled() && cma_resident && scale_cma_resident;
+    auto gcd_u32 = [](uint32_t a, uint32_t b) {
+        while (b != 0) {
+            const uint32_t t = a % b;
+            a = b;
+            b = t;
+        }
+        return a;
+    };
+    auto w8_stream_block_rows = [&]() {
+        constexpr uint32_t stream_max_rows = 4096u;
+        constexpr uint32_t stream_weight_max_bytes = 4194240u;
+        uint32_t max_row_tiles = stream_max_rows / NPU_DECODE_GEMV_M_TILE;
+        if (cached.bytes_per_row_tile == 0 || scale_bytes_per_row_tile == 0) {
+            return 0u;
+        }
+        max_row_tiles = std::min<uint32_t>(
+                max_row_tiles,
+                stream_weight_max_bytes / cached.bytes_per_row_tile);
+        max_row_tiles = std::min<uint32_t>(
+                max_row_tiles,
+                (256u * 1024u) / scale_bytes_per_row_tile);
+        const uint32_t row_tile_align =
+            NPU_DECODE_GEMV_DMA_ALIGN / gcd_u32(scale_bytes_per_row_tile, NPU_DECODE_GEMV_DMA_ALIGN);
+        if (max_row_tiles < row_tile_align) {
+            return 0u;
+        }
+        max_row_tiles = (max_row_tiles / row_tile_align) * row_tile_align;
+        return max_row_tiles * NPU_DECODE_GEMV_M_TILE;
+    };
+    const uint32_t max_block_rows = stream_cma_path ? w8_stream_block_rows() : cached.max_block_rows;
+    if (max_block_rows == 0) {
+        return fail("invalid W8 stream block rows");
+    }
+    const uint32_t max_row_tiles = npu_decode_ceil_div_u32(max_block_rows, NPU_DECODE_GEMV_M_TILE);
+    const uint32_t max_weight_bytes = max_row_tiles * cached.bytes_per_row_tile;
+    const uint32_t max_scale_bytes = max_row_tiles * scale_bytes_per_row_tile;
+    const bool use_pingpong = !stream_cma_path && cma_resident && scale_cma_resident && npu_decode_w8a16_pingpong_enabled();
     const bool hw_f32_mvout = dst_type == GGML_TYPE_F32 && npu_decode_hw_f32_mvout_enabled();
     const uint8_t output_precision = npu_decode_mvout_precision(hw_f32_mvout);
     const uint32_t block_output_bytes = npu_decode_host_output_bytes(max_block_rows, hw_f32_mvout);

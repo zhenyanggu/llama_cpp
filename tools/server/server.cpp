@@ -2584,6 +2584,9 @@ struct server_context {
                 }
                 if (!any_processing) {
                     server_npu_decode_attention_zero_cache();
+                    if (!server_run_npu_overlay_switch_cmd("AICAS_NPU_PREFILL_SWITCH_CMD", "prefill")) {
+                        SRV_ERR("%s", "failed to switch NPU overlay back to prefill after request completion\n");
+                    }
                 }
                 queue_tasks.pop_deferred_task();
             };
@@ -4308,7 +4311,7 @@ struct server_context {
             const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
             const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
             if (collect_text_cpu_profile) {
-                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_TEXT_CPU_PROFILE_MODE"));
+                server_backend_cpu_profile_start(server_cpu_profile_mode_from_env("LLAMA_TEXT_CPU_PROFILE_MODE"));
             }
 
             const int ret = llama_decode(ctx, batch_view);

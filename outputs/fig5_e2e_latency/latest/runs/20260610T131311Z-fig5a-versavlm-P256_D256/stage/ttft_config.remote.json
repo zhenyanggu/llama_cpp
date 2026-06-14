@@ -1,0 +1,29 @@
+{
+  "server_url": "http://127.0.0.1:19091/v1",
+  "model": "smolvlm2-gguf",
+  "images": [
+    {
+      "name": "large",
+      "source": "test2.jpg"
+    },
+    {
+      "name": "small",
+      "source": "small.jpg"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "short",
+      "text": "Please describe what you see in this image concisely and mention the most important elements."
+    },
+    {
+      "name": "long",
+      "text": "Please perform a thorough visual analysis of the provided image. Begin by identifying and describing every object, person, and architectural or natural element visible, noting their spatial arrangement, relative sizes, and interactions. Examine the lighting conditions: identify the apparent light sources, direction, intensity, and the resulting highlights and shadows across different surfaces. Analyze the color palette, including dominant, accent, and background colors, and discuss how they contribute to the visual hierarchy and emotional impact of the scene. Describe the composition, noting the use of lines, frames, rule of thirds, symmetry, or asymmetry, and how these guide the viewer's attention. Evaluate the camera perspective, including angle, distance, and focus, and discuss the depth of field, foreground-midground-background relationships, and any visual layering techniques. Consider whether the image makes use of photographic or artistic principles such as leading lines, contrast, repetition, or negative space, and how they affect interpretation. Assess the mood, atmosphere, and any narrative subtext present, and relate them to the visual elements analyzed. Formulate a concluding interpretation that synthesizes all levels of analysis into a cohesive understanding of the image."
+    },
+    {
+      "name": "xlong",
+      "text": "Please conduct an exhaustive multi-faceted analysis of the provided image. You are to operate as a team of four specialized analysts whose findings must be synthesized into a single comprehensive report. Do not summarize prematurely; each section must be fully developed with detailed observations and evidence-based reasoning.\n\nSECTION 1: FORENSIC VISUAL DECONSTRUCTION\nCatalog every discrete entity in the image: humans with clothing details, poses, expressions, gestures, apparent demographics and relationships between them; animals by species, posture, and activity; natural elements including vegetation types, geological features, water bodies, sky conditions and cloud formations; architectural structures noting building materials, architectural styles, structural condition, fenestration patterns; and manufactured objects such as furniture, vehicles, signage, tools, electronics, and decorative items. For each entity specify its depth layer as foreground, midground, background, or transitional, and its apparent state as static, dynamic, intact, or damaged.\n\nSECTION 2: ILLUMINATION AND CHROMATIC ANALYSIS\nPerform a complete lighting audit. Identify every apparent or implied light source, both natural, based on sun position relative to the scene, skylight, and reflections, and artificial, noting type, color temperature, and wattage implied by brightness. Analyze the directionality of each source and its diffusion characteristics as hard versus soft shadows. Deconstruct the full color palette: list all dominant hues with approximate hex equivalents or descriptive names, identify accent colors, and note color harmonies as complementary, analogous, or triadic. Evaluate contrast ratios between adjacent regions, highlight clipping and shadow crushing, and the overall tonal range. Discuss how lighting and color interact to create depth cues, atmospheric perspective, material differentiation, and mood modulation.\n\nSECTION 3: COMPOSITIONAL ARCHITECTURE AND VISUAL GRAMMAR\nAnalyze the geometric structure of the image. Identify all major lines including horizon lines, leading lines, and implied lines formed by gazes or gestures, and classify them as diagonal, vertical, horizontal, curved, or converging. Locate vanishing points and reconstruct the perspective system as one-point, two-point, three-point, or atmospheric. Evaluate the use of the rule of thirds, golden ratio, triangular composition, radial balance, or any other formal compositional scheme. Identify framing devices such as archways, window frames, overhanging branches, or architectural elements, and discuss how they isolate or emphasize the subject. Analyze symmetry and asymmetry, visual weight distribution, and the hierarchy of focal points. Describe the predicted eye-path a typical viewer would follow, justifying each step with compositional evidence.\n\nSECTION 4: CONTEXTUAL AND SEMANTIC INTERPRETATION\nBased on all visible evidence, deduce the setting as urban, rural, indoor, outdoor, natural, staged, candid, and estimate the probable historical period with justification. Estimate the time of day, season, and weather conditions at the moment of image capture. If the image appears to reference any cultural, historical, or artistic contexts, identify them with specific reasoning. Interpret the emotional tone of the image as joyful, melancholic, tense, serene, or chaotic, and identify which specific visual elements most strongly contribute to that tone. Formulate a thesis regarding the intended message or purpose of the image, considering whether it serves documentary, artistic, commercial, or personal functions. Provide a closing synthesis that integrates the key insights from all four analytical dimensions into a unified interpretation of the image."
+    }
+  ],
+  "output": "ttft_eval_results.json"
+}

@@ -9,7 +9,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define REG_MER 0xC0U
+#define REG_MER 0x108U
 #define DEFAULT_SIZE (1U << 20)
 
 static uint64_t parse_size(const char *text, uint64_t fallback)

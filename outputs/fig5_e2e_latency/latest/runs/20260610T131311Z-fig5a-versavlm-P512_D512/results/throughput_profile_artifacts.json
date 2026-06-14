@@ -1,0 +1,45 @@
+{
+  "profile_kind": "aicas_semi_kv260_throughput_profile",
+  "metrics": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/throughput_metrics_profile.json",
+    "exists": true,
+    "bytes": 2312
+  },
+  "mtmd_prefill_summary": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/mtmd_prefill_summary.json",
+    "exists": true,
+    "bytes": 17020
+  },
+  "text_cpu_profile": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/text_cpu_profile.jsonl",
+    "exists": false,
+    "bytes": 0
+  },
+  "ggml_npu_profile": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/ggml_npu_profile.json",
+    "exists": false,
+    "bytes": 0
+  },
+  "ggml_npu_manifest": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/ggml_npu_profile_manifest.json",
+    "exists": false,
+    "bytes": 0
+  },
+  "ggml_npu_decode_profile": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/ggml_npu_decode_profile.jsonl",
+    "exists": false,
+    "bytes": 0
+  },
+  "decode_swiglu_ffn_compare": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/decode_swiglu_ffn_compare.jsonl",
+    "exists": false,
+    "bytes": 0
+  },
+  "npu_overlay_switch_profile": {
+    "path": "/home/ubuntu/aicas-semi/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/npu_overlay_switch_profile.jsonl",
+    "exists": true,
+    "bytes": 183
+  },
+  "npu_profile_level": "diagnostic",
+  "prefill_profile_mode": "summary"
+}

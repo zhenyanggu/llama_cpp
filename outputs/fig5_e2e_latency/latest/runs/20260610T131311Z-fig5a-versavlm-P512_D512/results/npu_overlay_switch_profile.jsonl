@@ -1,0 +1,1 @@
+{"profile_kind":"aicas_npu_overlay_switch","phase":"prefill","env_name":"AICAS_NPU_PREFILL_SWITCH_CMD","rc":0,"time_us":{"cleanup_runtime":45542,"xmutil_switch":47583,"total":93126}}

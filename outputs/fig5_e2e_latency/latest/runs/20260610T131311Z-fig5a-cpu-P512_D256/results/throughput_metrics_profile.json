@@ -1,0 +1,11 @@
+{
+    "prompt_tokens": 588,
+    "completion_tokens": 256,
+    "total_tokens": 844,
+    "prompt_ms": 97555.743,
+    "decode_ms": 54789.399,
+    "total_ms": 152345.142,
+    "prefill_speed_tps": 6.027323270963145,
+    "decode_speed_tps": 4.672436724483873,
+    "response_text": "The image depicts a long, straight road stretching into the distance under a dramatic sky filled with vibrant hues of red and orange. The road is surrounded by a vast expanse of flat land, punctuated by a few scattered trees and bushes. The sky is a canvas of clouds, their colors blending into a mesmerizing display of red, orange, and yellow. The perspective of the image is from the side of the road, looking towards the horizon, giving the viewer a sense of being on the road itself. The image is taken during sunset, as evidenced by the warm, golden light that bathes the scene. The overall atmosphere is one of tranquility and beauty, with the road serving as a pathway to the horizon. The image does not contain any discernible text. The layout, objects, colors, lighting, and any readable text are all accurately described, and the image is factual, ordered, and concise. The image is a clear representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual,"
+}

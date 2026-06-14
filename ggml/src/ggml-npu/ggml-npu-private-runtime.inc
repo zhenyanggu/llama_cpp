@@ -150,6 +150,7 @@ static bool npu_decode_w8a16_pingpong_enabled() {
 static void npu_decode_clear_w16a16_weight_cache();
 static void npu_decode_release_w16a16_runtime_cma();
 static void npu_decode_attention_clear_cache();
+static void npu_decode_attention_zero_cache();
 
 static bool npu_decode_require_active_overlay() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE");
@@ -508,11 +509,48 @@ struct npu_decode_gemv_profile_record {
     uint64_t pingpong_async_mvin_calls = 0;
     uint64_t mvout_calls = 0;
     std::string fallback_reason;
+    nlohmann::ordered_json extra_time_us = nlohmann::ordered_json::object();
+    nlohmann::ordered_json extra_calls = nlohmann::ordered_json::object();
+};
+
+struct npu_decode_profile_role_aggregate {
+    uint64_t records = 0;
+    uint64_t total_us = 0;
+    uint64_t setup_us = 0;
+    uint64_t validation_us = 0;
+    uint64_t layout_us = 0;
+    uint64_t preload_lookup_us = 0;
+    uint64_t overlay_ensure_us = 0;
+    uint64_t heap_update_us = 0;
+    uint64_t runtime_init_us = 0;
+    uint64_t memory_base_us = 0;
+    uint64_t alloc_us = 0;
+    uint64_t activation_preprocess_us = 0;
+    uint64_t host_copy_activation_us = 0;
+    uint64_t reset_us = 0;
+    uint64_t mvin_activation_us = 0;
+    uint64_t weight_preprocess_us = 0;
+    uint64_t host_copy_weight_us = 0;
+    uint64_t output_clear_us = 0;
+    uint64_t scale_mvin_us = 0;
+    uint64_t mvin_weight_us = 0;
+    uint64_t gemv_us = 0;
+    uint64_t pingpong_us = 0;
+    uint64_t pingpong_initial_mvin_us = 0;
+    uint64_t pingpong_prefetch_issue_us = 0;
+    uint64_t pingpong_prefetch_window_us = 0;
+    uint64_t pingpong_prefetch_wait_us = 0;
+    uint64_t pingpong_gemv_us = 0;
+    uint64_t pingpong_mvout_us = 0;
+    uint64_t mvout_us = 0;
+    uint64_t postprocess_us = 0;
+    uint64_t cleanup_us = 0;
 };
 
 struct npu_decode_gemv_profile_cache {
     std::mutex mutex;
     std::vector<npu_decode_gemv_profile_record> records;
+    std::map<std::string, npu_decode_profile_role_aggregate> role_aggregates;
     bool atexit_registered = false;
 };
 
@@ -605,8 +643,13 @@ static const char * npu_decode_profile_path() {
     return path != nullptr && path[0] != '\0' ? path : nullptr;
 }
 
+static const char * npu_decode_profile_aggregate_path() {
+    const char * path = std::getenv("GGML_NPU_DECODE_PROFILE_AGG_JSON");
+    return path != nullptr && path[0] != '\0' ? path : nullptr;
+}
+
 static bool npu_decode_profile_enabled() {
-    return npu_decode_profile_path() != nullptr;
+    return npu_decode_profile_path() != nullptr || npu_decode_profile_aggregate_path() != nullptr;
 }
 
 static size_t npu_decode_profile_flush_records() {
@@ -772,6 +815,12 @@ static nlohmann::ordered_json npu_decode_profile_to_json(const npu_decode_gemv_p
     if (!record.fallback_reason.empty()) {
         payload["fallback_reason"] = record.fallback_reason;
     }
+    if (!record.extra_time_us.empty()) {
+        payload["extra_time_us"] = record.extra_time_us;
+    }
+    if (!record.extra_calls.empty()) {
+        payload["extra_calls"] = record.extra_calls;
+    }
 
     return payload;
 }
@@ -792,25 +841,133 @@ static void npu_decode_profile_append(
     }
 }
 
-static void npu_decode_profile_flush() {
-    const char * path = npu_decode_profile_path();
-    npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
-    std::vector<npu_decode_gemv_profile_record> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(cache.mutex);
-        snapshot.swap(cache.records);
-    }
+static void npu_decode_profile_accumulate_role(
+        std::map<std::string, npu_decode_profile_role_aggregate> & aggregates,
+        const npu_decode_gemv_profile_record & record) {
+    const std::string role = record.op_role.empty() ? "decode_gemv" : record.op_role;
+    npu_decode_profile_role_aggregate & dst = aggregates[role];
+    dst.records += 1;
+    dst.total_us += record.total_us;
+    dst.setup_us += record.setup_us;
+    dst.validation_us += record.validation_us;
+    dst.layout_us += record.layout_us;
+    dst.preload_lookup_us += record.preload_lookup_us;
+    dst.overlay_ensure_us += record.overlay_ensure_us;
+    dst.heap_update_us += record.heap_update_us;
+    dst.runtime_init_us += record.runtime_init_us;
+    dst.memory_base_us += record.memory_base_us;
+    dst.alloc_us += record.alloc_us;
+    dst.activation_preprocess_us += record.activation_preprocess_us;
+    dst.host_copy_activation_us += record.host_copy_activation_us;
+    dst.reset_us += record.reset_us;
+    dst.mvin_activation_us += record.mvin_activation_us;
+    dst.weight_preprocess_us += record.weight_preprocess_us;
+    dst.host_copy_weight_us += record.host_copy_weight_us;
+    dst.output_clear_us += record.output_clear_us;
+    dst.scale_mvin_us += record.scale_mvin_us;
+    dst.mvin_weight_us += record.mvin_weight_us;
+    dst.gemv_us += record.gemv_us;
+    dst.pingpong_us += record.pingpong_us;
+    dst.pingpong_initial_mvin_us += record.pingpong_initial_mvin_us;
+    dst.pingpong_prefetch_issue_us += record.pingpong_prefetch_issue_us;
+    dst.pingpong_prefetch_window_us += record.pingpong_prefetch_window_us;
+    dst.pingpong_prefetch_wait_us += record.pingpong_prefetch_wait_us;
+    dst.pingpong_gemv_us += record.pingpong_gemv_us;
+    dst.pingpong_mvout_us += record.pingpong_mvout_us;
+    dst.mvout_us += record.mvout_us;
+    dst.postprocess_us += record.postprocess_us;
+    dst.cleanup_us += record.cleanup_us;
+}
 
-    if (path == nullptr || snapshot.empty()) {
+static void npu_decode_profile_write_aggregate(
+        const char * path,
+        const std::map<std::string, npu_decode_profile_role_aggregate> & aggregates) {
+    if (path == nullptr || aggregates.empty()) {
         return;
     }
 
-    npu_decode_profile_append(path, snapshot);
+    nlohmann::ordered_json roles = nlohmann::ordered_json::array();
+    uint64_t total_records = 0;
+    uint64_t total_us = 0;
+    for (const auto & kv : aggregates) {
+        const npu_decode_profile_role_aggregate & a = kv.second;
+        total_records += a.records;
+        total_us += a.total_us;
+        roles.push_back({
+            {"op_role", kv.first},
+            {"records", a.records},
+            {"time_us", {
+                {"total", a.total_us},
+                {"setup", a.setup_us},
+                {"validation", a.validation_us},
+                {"layout", a.layout_us},
+                {"preload_lookup", a.preload_lookup_us},
+                {"overlay_ensure", a.overlay_ensure_us},
+                {"heap_update", a.heap_update_us},
+                {"runtime_init", a.runtime_init_us},
+                {"memory_base", a.memory_base_us},
+                {"alloc", a.alloc_us},
+                {"activation_preprocess", a.activation_preprocess_us},
+                {"host_copy_activation", a.host_copy_activation_us},
+                {"reset", a.reset_us},
+                {"mvin_activation", a.mvin_activation_us},
+                {"weight_preprocess", a.weight_preprocess_us},
+                {"host_copy_weight", a.host_copy_weight_us},
+                {"output_clear", a.output_clear_us},
+                {"scale_mvin", a.scale_mvin_us},
+                {"mvin_weight", a.mvin_weight_us},
+                {"gemv", a.gemv_us},
+                {"pingpong", a.pingpong_us},
+                {"pingpong_initial_mvin", a.pingpong_initial_mvin_us},
+                {"pingpong_prefetch_issue", a.pingpong_prefetch_issue_us},
+                {"pingpong_prefetch_window", a.pingpong_prefetch_window_us},
+                {"pingpong_prefetch_wait", a.pingpong_prefetch_wait_us},
+                {"pingpong_gemv", a.pingpong_gemv_us},
+                {"pingpong_mvout", a.pingpong_mvout_us},
+                {"mvout", a.mvout_us},
+                {"postprocess", a.postprocess_us},
+                {"cleanup", a.cleanup_us},
+            }},
+        });
+    }
+
+    nlohmann::ordered_json payload = {
+        {"profile_kind", "aicas_decode_role_aggregate_profile"},
+        {"timing_unit", "us"},
+        {"note", "Low-overhead decode profile aggregated by op_role; per-op JSONL records are omitted unless GGML_NPU_DECODE_PROFILE_JSONL is also set."},
+        {"total_records", total_records},
+        {"total_us", total_us},
+        {"roles", std::move(roles)},
+    };
+
+    std::ofstream out(path, std::ios::trunc);
+    if (out.good()) {
+        out << payload.dump(2) << '\n';
+    }
+}
+
+static void npu_decode_profile_flush() {
+    const char * path = npu_decode_profile_path();
+    const char * aggregate_path = npu_decode_profile_aggregate_path();
+    npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
+    std::vector<npu_decode_gemv_profile_record> snapshot;
+    std::map<std::string, npu_decode_profile_role_aggregate> aggregate_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        snapshot.swap(cache.records);
+        aggregate_snapshot = cache.role_aggregates;
+    }
+
+    if (path != nullptr && !snapshot.empty()) {
+        npu_decode_profile_append(path, snapshot);
+    }
+    npu_decode_profile_write_aggregate(aggregate_path, aggregate_snapshot);
 }
 
 static void npu_decode_profile_write(const npu_decode_gemv_profile_record & record) {
     npu_decode_gemv_profile_cache & cache = npu_decode_profile_cache();
     const char * path = npu_decode_profile_path();
+    const char * aggregate_path = npu_decode_profile_aggregate_path();
     std::vector<npu_decode_gemv_profile_record> snapshot;
     {
         std::lock_guard<std::mutex> lock(cache.mutex);
@@ -818,7 +975,12 @@ static void npu_decode_profile_write(const npu_decode_gemv_profile_record & reco
             std::atexit(npu_decode_profile_flush);
             cache.atexit_registered = true;
         }
-        cache.records.push_back(record);
+        if (aggregate_path != nullptr) {
+            npu_decode_profile_accumulate_role(cache.role_aggregates, record);
+        }
+        if (path != nullptr) {
+            cache.records.push_back(record);
+        }
         if (path != nullptr && cache.records.size() >= npu_decode_profile_flush_records()) {
             snapshot.swap(cache.records);
         }
@@ -1088,6 +1250,20 @@ static int npu_decode_stream_gemv(
         return -1;
     }
     return npu_stream_gemv_run(dev, &desc, 0);
+}
+
+static int npu_decode_stream_kv_scale_read(
+        const char * op_name,
+        bool is_v,
+        kv260_stream_kv_scale_result * out) {
+    if (npu_stream_kv_scale_read == nullptr) {
+        return -1;
+    }
+    npu_device * dev = npu_decode_stream_ensure_device(op_name);
+    if (dev == nullptr) {
+        return -1;
+    }
+    return npu_stream_kv_scale_read(dev, is_v ? 1 : 0, out);
 }
 
 template<typename... Args>

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import time
 
 from llama_server_client import (
     DEFAULT_BASE_URL,
@@ -42,7 +43,64 @@ def parse_args():
     parser.add_argument("--request-retries", type=int, default=2)
     parser.add_argument("--retry-delay", type=float, default=2.0)
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument("--max-tokens", type=int, default=100)
+    parser.add_argument(
+        "--cache-prompt",
+        dest="cache_prompt",
+        action="store_true",
+        help="Send cache_prompt=true for accuracy requests.",
+    )
+    parser.add_argument(
+        "--no-cache-prompt",
+        dest="cache_prompt",
+        action="store_false",
+        help="Send cache_prompt=false for accuracy requests.",
+    )
+    parser.set_defaults(cache_prompt=None)
     return parser.parse_args()
+
+
+def prediction_matches(item):
+    if item.get("predict", 0) == 0:
+        return 0
+
+    dataset_name = item["dataset_name"]
+    answers = item["answers"]
+    predict = item["predict"]
+
+    if dataset_name == "HME100k":
+        if type(answers) == list:
+            for answer in answers:
+                answer_norm = answer.strip().replace("\n", " ").replace(" ", "")
+                predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
+                if answer_norm in predict_norm:
+                    return 1
+        else:
+            answer_norm = answers.strip().replace("\n", " ").replace(" ", "")
+            predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
+            if answer_norm in predict_norm:
+                return 1
+    else:
+        if type(answers) == list:
+            for answer in answers:
+                answer_norm = answer.lower().strip().replace("\n", " ")
+                predict_norm = predict.lower().strip().replace("\n", " ")
+                if answer_norm in predict_norm:
+                    return 1
+        else:
+            answer_norm = answers.lower().strip().replace("\n", " ")
+            predict_norm = predict.lower().strip().replace("\n", " ")
+            if answer_norm in predict_norm:
+                return 1
+
+    return 0
+
+
+def preview_text(value, limit=80):
+    value = str(value).replace("\n", " ").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 OCRBench_score = {
     "Regular Text Recognition": 0,
@@ -137,17 +195,30 @@ if __name__ == "__main__":
     request_retries = int(getattr(args, "request_retries", 2))
     retry_delay = float(getattr(args, "retry_delay", 2.0))
     progress_every = int(getattr(args, "progress_every", 10))
+    max_tokens = int(getattr(args, "max_tokens", 100))
+    cache_prompt = getattr(args, "cache_prompt", None)
+    total_items = len(data)
+    correct_so_far = 0
+    completed_items = 0
+    eval_start = time.perf_counter()
+
+    print(f"[acc] Starting accuracy evaluation: samples={total_items}, max_tokens={max_tokens}", flush=True)
 
     for i in range(len(data)):
-        if progress_every > 0 and (i == 0 or i == len(data) - 1 or (i + 1) % progress_every == 0):
-            print(f"[{i + 1}/{len(data)}] {data[i]['image_path']}")
-
         img_path = os.path.join(args.image_folder, data[i]["image_path"])
         qs = data[i]["question"]
 
         if not os.path.exists(img_path):
             print(f"Warning: Image not found, skipping: {img_path}")
             data[i]["predict"] = f"ERROR: Image not found at {img_path}"
+            data[i]["result"] = 0
+            completed_items += 1
+            elapsed_s = time.perf_counter() - eval_start
+            print(
+                f"[acc] {completed_items}/{total_items} result=0 correct={correct_so_far}/{completed_items} "
+                f"elapsed={elapsed_s:.1f}s image={data[i]['image_path']} status=missing-image",
+                flush=True,
+            )
             continue
 
         try:
@@ -175,8 +246,9 @@ if __name__ == "__main__":
                         base_url=base_url,
                         model=model,
                         messages=messages_payload,
-                        max_tokens=100,
+                        max_tokens=max_tokens,
                         temperature=0.0,
+                        cache_prompt=cache_prompt,
                         timeout=request_timeout,
                     )
                     data[i]["predict"] = extract_text_content(response)
@@ -191,44 +263,20 @@ if __name__ == "__main__":
             print(f"Error processing {img_path}: {e}")
             data[i]["predict"] = f"API_ERROR: {e}" # Record the error in the data
 
+        data[i]["result"] = prediction_matches(data[i])
+        completed_items += 1
+        correct_so_far += int(data[i]["result"] == 1)
+        elapsed_s = time.perf_counter() - eval_start
+        print(
+            f"[acc] {completed_items}/{total_items} result={data[i]['result']} "
+            f"correct={correct_so_far}/{completed_items} elapsed={elapsed_s:.1f}s "
+            f"image={data[i]['image_path']} type={data[i].get('type', '')} "
+            f"dataset={data[i].get('dataset_name', '')} predict=\"{preview_text(data[i].get('predict', ''))}\"",
+            flush=True,
+        )
+
     for i in range(len(data)):
-        data_type = data[i]["type"]
-        dataset_name = data[i]["dataset_name"]
-        answers = data[i]["answers"]
-
-        if data[i].get("predict", 0) == 0:
-            continue
-
-        predict = data[i]["predict"]
-        data[i]["result"] = 0 # Default to incorrect
-
-        if dataset_name == "HME100k":
-            if type(answers) == list:
-                for j in range(len(answers)):
-                    answer = answers[j].strip().replace("\n", " ").replace(" ", "")
-                    predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
-                    if answer in predict_norm:
-                        data[i]["result"] = 1
-                        break # Mark as correct and stop checking other answers
-            else:
-                answers = answers.strip().replace("\n", " ").replace(" ", "")
-                predict_norm = predict.strip().replace("\n", " ").replace(" ", "")
-                if answers in predict_norm:
-                    data[i]["result"] = 1
-        else:
-            # Standard comparison (lowercase, stripped)
-            if type(answers) == list:
-                for j in range(len(answers)):
-                    answer = answers[j].lower().strip().replace("\n", " ")
-                    predict_norm = predict.lower().strip().replace("\n", " ")
-                    if answer in predict_norm:
-                        data[i]["result"] = 1
-                        break # Mark as correct and stop checking other answers
-            else:
-                answers = answers.lower().strip().replace("\n", " ")
-                predict_norm = predict.lower().strip().replace("\n", " ")
-                if answers in predict_norm:
-                    data[i]["result"] = 1
+        data[i]["result"] = prediction_matches(data[i])
 
     # Save the final JSON with 'predict' and 'result' fields
     output_path = args.output

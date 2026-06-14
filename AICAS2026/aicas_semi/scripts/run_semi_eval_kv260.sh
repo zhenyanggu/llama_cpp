@@ -21,23 +21,23 @@ Options:
                                 (default: docs/aicas-current-best-config.json)
   --model <path>                Text model GGUF path
   --mmproj <path>               mmproj GGUF path
-  --overlay-app <name>          Prefill overlay app to load (default: prefill_generic_189998_noprof_explore2_0603_app)
-  --decode-overlay-app <name>   Decode overlay app for W4A16/W8A16 GEMV (default: decode_aggressive_200m_0604_rtlcheck_app)
+  --overlay-app <name>          Prefill overlay app to load (default: prefill_190m_qkpipe_20260608_0206_app)
+  --decode-overlay-app <name>   Decode overlay app for W4A16/W8A16 GEMV (default: dec_200m_latest_0609a_app)
   --decode-overlay-dir <path>   Local decode overlay directory
-  --generic-fastpath            Use generic prefill/decode apps
+  --generic-fastpath            Use generic prefill/decode apps (default)
   --overlay-switch-mode <mode>  Overlay switch mode: fast|loadapp (default: fast)
   --remote-npu-driver-ko <path> Use an existing board-side npu_kv260.ko instead of staging local driver
   --prefill-bitstream-fw <path> FPGA manager firmware path for generic prefill
   --decode-bitstream-fw <path>  FPGA manager firmware path for generic decode
-  --decode-npu                  Enable decode AWQ W4A16 NPU offload and overlay switching
-  --no-decode-npu               Disable decode AWQ W4A16 NPU offload and overlay switching
+  --decode-npu                  Enable decode AWQ NPU offload and overlay switching (default)
+  --no-decode-npu               Disable decode AWQ NPU offload and overlay switching
   --sudo-password <password>    Board sudo password (default: 123456)
   --port <port>                 llama-server port (default: 8080)
   --threads <n>                 llama-server threads (default: 4)
   --ubatch-size <n>             llama-server physical ubatch size (default: 1024)
   --cache-type-k <type>         llama-server K cache type (default: q8_0)
   --cache-type-v <type>         llama-server V cache type (default: q8_0)
-  --flash-attn <on|off|auto>    llama-server flash attention mode (default: auto)
+  --flash-attn <on|off|auto>    llama-server flash attention mode (default: on)
   --ctx-size <n>                llama-server context size
   --mtmd-backend-device <name>  MTMD_BACKEND_DEVICE for mmproj (default: NPU)
   --alias <name>                Model alias (default: smolvlm2-gguf)
@@ -45,23 +45,40 @@ Options:
   --run-id <id>                 Override run id
   --run-acc                     Run accuracy
   --skip-acc                    Skip accuracy and run throughput/energy/ttft only (default)
+  --acc-only                    Run only acc_eval.py, skipping throughput/energy/ttft/merge
+  --acc-max-tokens <n>          Max generated tokens for accuracy requests (default: 100)
+  --acc-cache-prompt            Send cache_prompt=true in accuracy requests
+  --acc-no-cache-prompt         Send cache_prompt=false in accuracy requests
   --throughput-only             Run only throughput_eval.py, skipping acc/energy/ttft/merge
-  --throughput-max-tokens <n>   Max generated tokens for throughput-only (default: 4096)
+  --throughput-max-tokens <n>   Max generated tokens for throughput-only (default: 1024)
+  --throughput-ignore-eos       Ignore EOS in throughput-only requests (default)
   --energy-only                 Run only energy_eval.py, skipping acc/throughput/ttft/merge
-  --energy-max-tokens <n>       Max generated tokens for energy_eval.py (default: 128)
+  --energy-max-tokens <n>       Max generated tokens for energy_eval.py (default: 1024)
   --correctness-only            Run a short token-limited image generation sanity check only
   --correctness-max-tokens <n>  Max generated tokens for correctness-only (default: 1)
+  --correctness-image <path>    Image for correctness-only (default: code/test2.jpg)
   --correctness-prompt <text>   Prompt for correctness-only
+  --correctness-prompt-2 <text> Prompt override for the second correctness request
+  --correctness-image-2 <path>  Image override for the second correctness request
+  --correctness-ignore-eos      Ignore EOS in correctness-only requests
+  --correctness-repeat <n>      Repeat correctness request in one server process (default: 1)
+  --correctness-no-cache-prompt Send cache_prompt=false in correctness-only requests
   --ttft-only                   Run only ttft_eval_multiprompt.py, skipping acc/throughput/energy/merge
+  --roofline-only               Run roofline_eval.py latency samples only
+  --roofline-repeats <n>        Repeats per roofline workload (default: 3)
+  --roofline-text-tokens <n>    Exact text-only prefill token count (default: 512)
+  --roofline-decode-tokens <n>  Decode tokens for per-token average (default: 128)
+  --roofline-workloads <list>   Comma list of workloads (default: all)
   --run-throughput-profile      Run an extra profiled throughput pass after normal eval
   --throughput-profile-only     Only run the profiled throughput pass
   --throughput-profile-max-tokens <n>
-                                Max generated tokens for the profiled pass (default: 4096)
+                                Max generated tokens for the profiled pass (default: 1024)
   --throughput-profile-prompt <text>
                                 Prompt for profiled pass (default: throughput_eval.py LONG_PROMPT)
-  --prefill-profile-mode <mode> Profile overhead mode: summary|aggregate|diagnostic (default: summary;
+  --prefill-profile-mode <mode> Profile overhead mode: summary|aggregate|semantic|diagnostic (default: summary;
                                 diagnostic is high-overhead and not recommended for perf runs)
   --decode-profile              Record decode NPU profile JSONL without enabling prefill/CPU profiling
+  --decode-profile-aggregate    Record low-overhead decode NPU role aggregate JSON
   --npu-profile-level <level>   GGML_NPU_PROFILE_LEVEL for profile pass (default: diagnostic)
   --no-profile-compare          Disable extra decode CPU/NPU compare during profile pass
   --npu-shape-table <path>      Optional GGML_NPU_SHAPE_TABLE_JSON file for text W8A8 GEMM fast path
@@ -84,6 +101,9 @@ Options:
   --server-env <KEY=VALUE>      Add an environment assignment to llama-server; repeatable
   --require-mmproj-bfp8m-npu    Require mmproj BFP8-M attention to use the NPU raw GEMM path
   --acc-sample-mode <mode>      available|official (default: available)
+  --acc-sample-seed <seed>      Seed for available-mode 30-sample accuracy set (default: 12345)
+  --acc-sample-limit <n>        Limit generated available-mode accuracy samples
+  --stop-after-throughput       Stop after acc + throughput, skipping energy/ttft/merge
   --force-sync-shared           Re-upload shared assets even if same-size files exist
   --power-path <path>           Board hwmon path
   --sample-hz <hz>              Energy sampling rate
@@ -97,12 +117,12 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CODE_DIR="$REPO_DIR/AICAS2026/aicas_semi/code"
 DEFAULT_NPU_SHAPE_TABLE="$REPO_DIR/AICAS2026/aicas_semi/config/semi_npu_shapes.json"
 DEFAULT_BEST_CONFIG_JSON="$REPO_DIR/docs/aicas-current-best-config.json"
-VERSA_PREFILL_OVERLAY_DIR="/mnt/c/vivado/KV260/out/prefill_generic_189998_noprof_explore2_0603_app"
-DEFAULT_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/decode_aggressive_200m_0604_rtlcheck_app"
+VERSA_PREFILL_OVERLAY_DIR="/mnt/c/vivado/KV260/out/prefill_190m_qkpipe_20260608_0206_app"
+DEFAULT_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/dec_200m_latest_0609a_app"
 GENERIC_PREFILL_OVERLAY_DIR="$VERSA_PREFILL_OVERLAY_DIR"
-GENERIC_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/decode_aggressive_200m_0604_rtlcheck_app"
-GENERIC_PREFILL_FW_DEFAULT="xilinx/prefill_generic_189998_noprof_explore2_0603_app/prefill_generic_189998_noprof_explore2_0603.bit.bin"
-GENERIC_DECODE_FW_DEFAULT="xilinx/decode_aggressive_200m_0604_rtlcheck_app/decode_aggressive_200m_0604_rtlcheck.bit.bin"
+GENERIC_DECODE_OVERLAY_DIR="/mnt/c/vivado/KV260/out/dec_200m_latest_0609a_app"
+GENERIC_PREFILL_FW_DEFAULT="xilinx/prefill_190m_qkpipe_20260608_0206_app/prefill_190m_qkpipe_20260608_0206.bit.bin"
+GENERIC_DECODE_FW_DEFAULT="xilinx/dec_200m_latest_0609a_app/dec_200m_latest_0609a.bit.bin"
 NPU_DRIVER_KO="$REPO_DIR/npuruntime/kv260/driver/npu_kv260.ko"
 NPU_DRIVER_MAX_BUFFER_MB="${NPU_DRIVER_MAX_BUFFER_MB:-1500}"
 
@@ -122,47 +142,63 @@ TEXT_PREFILL_LOG8PV_CALIB_PATH=""
 MMPROJ_LOG8PV_CALIB_PATH=""
 MODEL_EXPLICIT=0
 MMPROJ_EXPLICIT=0
-OVERLAY_APP="prefill_generic_189998_noprof_explore2_0603_app"
-DECODE_OVERLAY_APP="decode_aggressive_200m_0604_rtlcheck_app"
+OVERLAY_APP="prefill_190m_qkpipe_20260608_0206_app"
+DECODE_OVERLAY_APP="dec_200m_latest_0609a_app"
 DECODE_OVERLAY_DIR="$DEFAULT_DECODE_OVERLAY_DIR"
 OVERLAY_APP_EXPLICIT=0
 DECODE_OVERLAY_APP_EXPLICIT=0
 DECODE_OVERLAY_DIR_EXPLICIT=0
-GENERIC_FASTPATH=0
+GENERIC_FASTPATH=1
 NPU_OVERLAY_SWITCH_MODE="fast"
 REMOTE_NPU_DRIVER_KO_OVERRIDE=""
 GENERIC_PREFILL_FW="$GENERIC_PREFILL_FW_DEFAULT"
 GENERIC_DECODE_FW="$GENERIC_DECODE_FW_DEFAULT"
 GENERIC_PREFILL_FW_EXPLICIT=0
 GENERIC_DECODE_FW_EXPLICIT=0
-DECODE_NPU=0
+DECODE_NPU=1
 SUDO_PASSWORD="${BOARD_SUDO_PASSWORD:-123456}"
 PORT="8080"
 THREADS="4"
 UBATCH_SIZE="1024"
 CACHE_TYPE_K="q8_0"
 CACHE_TYPE_V="q8_0"
-FLASH_ATTN="auto"
+FLASH_ATTN="on"
 CTX_SIZE=""
 MTMD_BACKEND_DEVICE="NPU"
 MODEL_ALIAS="smolvlm2-gguf"
 OUTPUT_ROOT="$REPO_DIR/AICAS2026/aicas_semi/results/kv260"
 RUN_ID=""
 RUN_ACC=0
+RUN_ACC_ONLY=0
+ACC_MAX_TOKENS="100"
+ACC_CACHE_PROMPT=""
 RUN_THROUGHPUT_ONLY=0
-THROUGHPUT_MAX_TOKENS="4096"
+THROUGHPUT_MAX_TOKENS="1024"
+THROUGHPUT_IGNORE_EOS=1
 RUN_ENERGY_ONLY=0
-ENERGY_MAX_TOKENS="128"
+ENERGY_MAX_TOKENS="1024"
 RUN_CORRECTNESS_ONLY=0
 CORRECTNESS_MAX_TOKENS="1"
+CORRECTNESS_IMAGE=""
 CORRECTNESS_PROMPT="Please describe the image concisely and accurately."
+CORRECTNESS_PROMPT_2=""
+CORRECTNESS_IMAGE_2=""
+CORRECTNESS_IGNORE_EOS=0
+CORRECTNESS_REPEAT=1
+CORRECTNESS_NO_CACHE_PROMPT=0
 RUN_TTFT_ONLY=0
+RUN_ROOFLINE_ONLY=0
+ROOFLINE_REPEATS=3
+ROOFLINE_TEXT_TOKENS=512
+ROOFLINE_DECODE_TOKENS=128
+ROOFLINE_WORKLOADS="image_mmproj,text_prefill_512,text_decode_128avg"
 RUN_THROUGHPUT_PROFILE=0
 THROUGHPUT_PROFILE_ONLY=0
-THROUGHPUT_PROFILE_MAX_TOKENS="4096"
+THROUGHPUT_PROFILE_MAX_TOKENS="1024"
 THROUGHPUT_PROFILE_PROMPT=""
 PREFILL_PROFILE_MODE="summary"
 DECODE_PROFILE=0
+DECODE_PROFILE_AGGREGATE=0
 NPU_PROFILE_LEVEL="diagnostic"
 PROFILE_COMPARE=1
 NPU_SHAPE_TABLE=""
@@ -180,6 +216,9 @@ MERGE_PREFILL_TRACE=0
 TTFT_CACHE_PROMPT=0
 NPU_TEXT_PREFILL_DYNAMIC=1
 ACC_SAMPLE_MODE="available"
+ACC_SAMPLE_SEED="12345"
+ACC_SAMPLE_LIMIT=""
+STOP_AFTER_THROUGHPUT=0
 FORCE_SYNC_SHARED=0
 POWER_PATH="/sys/class/hwmon/hwmon2/power1_input"
 SAMPLE_HZ="100"
@@ -228,20 +267,37 @@ while [ $# -gt 0 ]; do
     --run-id) RUN_ID="$2"; shift 2 ;;
     --run-acc) RUN_ACC=1; shift ;;
     --skip-acc) RUN_ACC=0; shift ;;
+    --acc-only) RUN_ACC=1; RUN_ACC_ONLY=1; shift ;;
+    --acc-max-tokens) ACC_MAX_TOKENS="$2"; shift 2 ;;
+    --acc-cache-prompt) ACC_CACHE_PROMPT="--acc-cache-prompt"; shift ;;
+    --acc-no-cache-prompt) ACC_CACHE_PROMPT="--acc-no-cache-prompt"; shift ;;
     --throughput-only) RUN_THROUGHPUT_ONLY=1; shift ;;
     --throughput-max-tokens) THROUGHPUT_MAX_TOKENS="$2"; shift 2 ;;
+    --throughput-ignore-eos) THROUGHPUT_IGNORE_EOS=1; shift ;;
     --energy-only) RUN_ENERGY_ONLY=1; shift ;;
     --energy-max-tokens) ENERGY_MAX_TOKENS="$2"; shift 2 ;;
     --correctness-only) RUN_CORRECTNESS_ONLY=1; shift ;;
     --correctness-max-tokens) CORRECTNESS_MAX_TOKENS="$2"; shift 2 ;;
+    --correctness-image) CORRECTNESS_IMAGE="$2"; shift 2 ;;
     --correctness-prompt) CORRECTNESS_PROMPT="$2"; shift 2 ;;
+    --correctness-prompt-2) CORRECTNESS_PROMPT_2="$2"; shift 2 ;;
+    --correctness-image-2) CORRECTNESS_IMAGE_2="$2"; shift 2 ;;
+    --correctness-ignore-eos) CORRECTNESS_IGNORE_EOS=1; shift ;;
+    --correctness-repeat) CORRECTNESS_REPEAT="$2"; shift 2 ;;
+    --correctness-no-cache-prompt) CORRECTNESS_NO_CACHE_PROMPT=1; shift ;;
     --ttft-only) RUN_TTFT_ONLY=1; shift ;;
+    --roofline-only) RUN_ROOFLINE_ONLY=1; shift ;;
+    --roofline-repeats) ROOFLINE_REPEATS="$2"; shift 2 ;;
+    --roofline-text-tokens) ROOFLINE_TEXT_TOKENS="$2"; shift 2 ;;
+    --roofline-decode-tokens) ROOFLINE_DECODE_TOKENS="$2"; shift 2 ;;
+    --roofline-workloads) ROOFLINE_WORKLOADS="$2"; shift 2 ;;
     --run-throughput-profile) RUN_THROUGHPUT_PROFILE=1; shift ;;
     --throughput-profile-only) RUN_THROUGHPUT_PROFILE=1; THROUGHPUT_PROFILE_ONLY=1; shift ;;
     --throughput-profile-max-tokens) THROUGHPUT_PROFILE_MAX_TOKENS="$2"; shift 2 ;;
     --throughput-profile-prompt) THROUGHPUT_PROFILE_PROMPT="$2"; shift 2 ;;
     --prefill-profile-mode) PREFILL_PROFILE_MODE="$2"; shift 2 ;;
     --decode-profile) DECODE_PROFILE=1; shift ;;
+    --decode-profile-aggregate) DECODE_PROFILE_AGGREGATE=1; shift ;;
     --npu-profile-level) NPU_PROFILE_LEVEL="$2"; shift 2 ;;
     --no-profile-compare) PROFILE_COMPARE=0; shift ;;
     --npu-shape-table) NPU_SHAPE_TABLE="$2"; shift 2 ;;
@@ -274,6 +330,9 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --acc-sample-mode) ACC_SAMPLE_MODE="$2"; shift 2 ;;
+    --acc-sample-seed) ACC_SAMPLE_SEED="$2"; shift 2 ;;
+    --acc-sample-limit) ACC_SAMPLE_LIMIT="$2"; shift 2 ;;
+    --stop-after-throughput) STOP_AFTER_THROUGHPUT=1; shift ;;
     --force-sync-shared) FORCE_SYNC_SHARED=1; shift ;;
     --power-path) POWER_PATH="$2"; shift 2 ;;
     --sample-hz) SAMPLE_HZ="$2"; shift 2 ;;
@@ -349,10 +408,10 @@ PY
 load_best_config_json
 if [ "$GENERIC_FASTPATH" -eq 1 ]; then
   if [ "$OVERLAY_APP_EXPLICIT" -ne 1 ]; then
-    OVERLAY_APP="prefill_generic_189998_noprof_explore2_0603_app"
+    OVERLAY_APP="prefill_190m_qkpipe_20260608_0206_app"
   fi
   if [ "$DECODE_OVERLAY_APP_EXPLICIT" -ne 1 ]; then
-    DECODE_OVERLAY_APP="decode_aggressive_200m_0604_rtlcheck_app"
+    DECODE_OVERLAY_APP="dec_200m_latest_0609a_app"
   fi
   if [ "$DECODE_OVERLAY_DIR_EXPLICIT" -ne 1 ]; then
     if [ "$DECODE_OVERLAY_APP_EXPLICIT" -eq 1 ]; then
@@ -393,6 +452,24 @@ case "$ACC_SAMPLE_MODE" in
     exit 1
     ;;
 esac
+if ! [[ "$ACC_SAMPLE_SEED" =~ ^[0-9]+$ ]]; then
+  echo "--acc-sample-seed must be a non-negative integer" >&2
+  exit 1
+fi
+if [ -n "$ACC_SAMPLE_LIMIT" ]; then
+  case "$ACC_SAMPLE_LIMIT" in
+    ''|*[!0-9]*)
+      echo "--acc-sample-limit must be a positive integer" >&2
+      exit 1
+      ;;
+    *)
+      if [ "$ACC_SAMPLE_LIMIT" -le 0 ]; then
+        echo "--acc-sample-limit must be a positive integer" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
 
 case "$NPU_OVERLAY_SWITCH_MODE" in
   fast|loadapp) ;;
@@ -403,9 +480,9 @@ case "$NPU_OVERLAY_SWITCH_MODE" in
 esac
 
 case "$PREFILL_PROFILE_MODE" in
-  summary|aggregate|diagnostic) ;;
+  summary|aggregate|semantic|diagnostic) ;;
   *)
-    echo "--prefill-profile-mode must be one of: summary, aggregate, diagnostic" >&2
+    echo "--prefill-profile-mode must be one of: summary, aggregate, semantic, diagnostic" >&2
     exit 1
     ;;
 esac
@@ -439,6 +516,32 @@ case "$CORRECTNESS_MAX_TOKENS" in
     ;;
 esac
 
+case "$CORRECTNESS_REPEAT" in
+  ''|*[!0-9]*)
+    echo "--correctness-repeat must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$CORRECTNESS_REPEAT" -le 0 ]; then
+      echo "--correctness-repeat must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$ACC_MAX_TOKENS" in
+  ''|*[!0-9]*)
+    echo "--acc-max-tokens must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$ACC_MAX_TOKENS" -le 0 ]; then
+      echo "--acc-max-tokens must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 case "$THROUGHPUT_MAX_TOKENS" in
   ''|*[!0-9]*)
     echo "--throughput-max-tokens must be a positive integer" >&2
@@ -447,6 +550,45 @@ case "$THROUGHPUT_MAX_TOKENS" in
   *)
     if [ "$THROUGHPUT_MAX_TOKENS" -le 0 ]; then
       echo "--throughput-max-tokens must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$ROOFLINE_REPEATS" in
+  ''|*[!0-9]*)
+    echo "--roofline-repeats must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$ROOFLINE_REPEATS" -le 0 ]; then
+      echo "--roofline-repeats must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$ROOFLINE_TEXT_TOKENS" in
+  ''|*[!0-9]*)
+    echo "--roofline-text-tokens must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$ROOFLINE_TEXT_TOKENS" -le 0 ]; then
+      echo "--roofline-text-tokens must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "$ROOFLINE_DECODE_TOKENS" in
+  ''|*[!0-9]*)
+    echo "--roofline-decode-tokens must be a positive integer" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$ROOFLINE_DECODE_TOKENS" -le 0 ]; then
+      echo "--roofline-decode-tokens must be a positive integer" >&2
       exit 1
     fi
     ;;
@@ -482,8 +624,20 @@ fi
 if [ -n "$MMPROJ_LOG8PV_CALIB_PATH" ]; then
   MMPROJ_LOG8PV_CALIB_PATH="$(realpath "$MMPROJ_LOG8PV_CALIB_PATH")"
 fi
+if [ -n "$CORRECTNESS_IMAGE" ]; then
+  CORRECTNESS_IMAGE="$(realpath "$CORRECTNESS_IMAGE")"
+fi
+if [ -n "$CORRECTNESS_IMAGE_2" ]; then
+  CORRECTNESS_IMAGE_2="$(realpath "$CORRECTNESS_IMAGE_2")"
+fi
 [ -f "$MODEL_PATH" ] || { echo "Model not found: $MODEL_PATH" >&2; exit 1; }
 [ -f "$MMPROJ_PATH" ] || { echo "mmproj not found: $MMPROJ_PATH" >&2; exit 1; }
+if [ -n "$CORRECTNESS_IMAGE" ]; then
+  [ -f "$CORRECTNESS_IMAGE" ] || { echo "Correctness image not found: $CORRECTNESS_IMAGE" >&2; exit 1; }
+fi
+if [ -n "$CORRECTNESS_IMAGE_2" ]; then
+  [ -f "$CORRECTNESS_IMAGE_2" ] || { echo "Second correctness image not found: $CORRECTNESS_IMAGE_2" >&2; exit 1; }
+fi
 if [ -n "$TEXT_PREFILL_LOG8PV_CALIB_PATH" ]; then
   [ -f "$TEXT_PREFILL_LOG8PV_CALIB_PATH" ] || { echo "Text log8PV calibration not found: $TEXT_PREFILL_LOG8PV_CALIB_PATH" >&2; exit 1; }
 fi
@@ -492,6 +646,7 @@ if [ -n "$MMPROJ_LOG8PV_CALIB_PATH" ]; then
 fi
 THROUGHPUT_PROFILE_PROMPT_B64="$(printf '%s' "$THROUGHPUT_PROFILE_PROMPT" | base64 -w0)"
 CORRECTNESS_PROMPT_B64="$(printf '%s' "$CORRECTNESS_PROMPT" | base64 -w0)"
+CORRECTNESS_PROMPT_2_B64="$(printf '%s' "$CORRECTNESS_PROMPT_2" | base64 -w0)"
 if [ -n "$NPU_SHAPE_TABLE" ]; then
   NPU_SHAPE_TABLE="$(realpath "$NPU_SHAPE_TABLE")"
 fi
@@ -545,6 +700,7 @@ REMOTE_TEXT_CPU_PROFILE="$REMOTE_RESULTS_DIR/text_cpu_profile.jsonl"
 REMOTE_NPU_PROFILE_JSON="$REMOTE_RESULTS_DIR/ggml_npu_profile.json"
 REMOTE_NPU_PROFILE_MANIFEST="$REMOTE_RESULTS_DIR/ggml_npu_profile_manifest.json"
 REMOTE_NPU_DECODE_PROFILE_JSONL="$REMOTE_RESULTS_DIR/ggml_npu_decode_profile.jsonl"
+REMOTE_NPU_DECODE_PROFILE_AGG_JSON="$REMOTE_RESULTS_DIR/ggml_npu_decode_profile_aggregate.json"
 REMOTE_LOG8PV_ATTN_PROFILE_JSONL="$REMOTE_RESULTS_DIR/log8pv_attention_npu_profile.jsonl"
 REMOTE_FUSED_FFN_COMPARE_JSONL="$REMOTE_RESULTS_DIR/decode_swiglu_ffn_compare.jsonl"
 REMOTE_NPU_OVERLAY_PROFILE_JSONL="$REMOTE_RESULTS_DIR/npu_overlay_switch_profile.jsonl"
@@ -685,7 +841,13 @@ prepare_ttft_assets() {
   local small_image="$LOCAL_STAGE_DIR/small.jpg"
   local ttft_config="$LOCAL_STAGE_DIR/ttft_config.remote.json"
 
+  if [ -n "$CORRECTNESS_IMAGE" ]; then
+    cp "$CORRECTNESS_IMAGE" "$LOCAL_STAGE_DIR/correctness_image.jpg"
+  fi
   cp "$CODE_DIR/test2.jpg" "$LOCAL_STAGE_DIR/test2.jpg"
+  if [ -n "$CORRECTNESS_IMAGE_2" ]; then
+    cp "$CORRECTNESS_IMAGE_2" "$LOCAL_STAGE_DIR/correctness_image_2.jpg"
+  fi
 
   if python3 - "$CODE_DIR/test2.jpg" "$small_image" <<'PY'
 import sys
@@ -753,15 +915,15 @@ prepare_acc_sample() {
   fi
 
   REMOTE_SAMPLE_JSON="$REMOTE_DATA_DIR/sample_30_available.json"
-  python3 - "$REPO_DIR/AICAS/FullTest.json" "$REPO_DIR/AICAS2026/V3/payload/data/images" "$LOCAL_STAGE_DIR/sample_30_available.json" <<'PY'
+  python3 - "$REPO_DIR/AICAS/FullTest.json" "$REPO_DIR/AICAS2026/V3/payload/data/images" "$LOCAL_STAGE_DIR/sample_30_available.json" "$ACC_SAMPLE_SEED" "$ACC_SAMPLE_LIMIT" <<'PY'
 import json
 import os
 import random
 import sys
 from collections import defaultdict
 
-full_test_path, image_root, output_path = sys.argv[1:4]
-random.seed(12345)
+full_test_path, image_root, output_path, sample_seed, sample_limit = sys.argv[1:6]
+random.seed(int(sample_seed))
 
 targets = [
     ("Regular Text Recognition", 3),
@@ -790,6 +952,9 @@ for type_name, target_count in targets:
     if len(available) < target_count:
         raise SystemExit(f"Not enough available samples for {type_name}: need {target_count}, have {len(available)}")
     selected.extend(random.sample(available, target_count))
+
+if sample_limit:
+    selected = selected[:int(sample_limit)]
 
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(selected, handle, ensure_ascii=False, indent=2)
@@ -829,6 +994,12 @@ stage_remote_tree() {
 
   scp "${SSH_OPTS[@]}" "$CODE_DIR/"*.py "$TARGET:$REMOTE_CODE_DIR/"
   scp "${SSH_OPTS[@]}" "$LOCAL_STAGE_DIR/test2.jpg" "$LOCAL_STAGE_DIR/small.jpg" "$LOCAL_STAGE_DIR/ttft_config.remote.json" "$TARGET:$REMOTE_CODE_DIR/"
+  if [ -n "$CORRECTNESS_IMAGE" ]; then
+    scp "${SSH_OPTS[@]}" "$LOCAL_STAGE_DIR/correctness_image.jpg" "$TARGET:$REMOTE_CODE_DIR/"
+  fi
+  if [ -n "$CORRECTNESS_IMAGE_2" ]; then
+    scp "${SSH_OPTS[@]}" "$LOCAL_STAGE_DIR/correctness_image_2.jpg" "$TARGET:$REMOTE_CODE_DIR/"
+  fi
   scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/run_semi_eval.sh" "$TARGET:$REMOTE_RUN_DIR/"
   if [ -n "$NPU_SHAPE_TABLE" ]; then
     scp "${SSH_OPTS[@]}" "$NPU_SHAPE_TABLE" "$TARGET:$REMOTE_NPU_SHAPE_TABLE"
@@ -902,7 +1073,7 @@ run_remote_eval() {
   local decode_awq_hw_f32_mvout="${AICAS_TEXT_DECODE_AWQ_HW_F32_MVOUT:-1}"
   local decode_profile_flush_records="${GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS:-100000}"
 
-  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' NPU_DRIVER_MAX_BUFFER_MB='$NPU_DRIVER_MAX_BUFFER_MB' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' GENERIC_FASTPATH='$GENERIC_FASTPATH' NPU_OVERLAY_SWITCH_MODE='$NPU_OVERLAY_SWITCH_MODE' GENERIC_PREFILL_FW='$GENERIC_PREFILL_FW' GENERIC_DECODE_FW='$GENERIC_DECODE_FW' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' CTX_SIZE='$CTX_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' THROUGHPUT_MAX_TOKENS='$THROUGHPUT_MAX_TOKENS' RUN_ENERGY_ONLY='$RUN_ENERGY_ONLY' ENERGY_MAX_TOKENS='$ENERGY_MAX_TOKENS' RUN_CORRECTNESS_ONLY='$RUN_CORRECTNESS_ONLY' CORRECTNESS_MAX_TOKENS='$CORRECTNESS_MAX_TOKENS' CORRECTNESS_PROMPT_B64='$CORRECTNESS_PROMPT_B64' RUN_TTFT_ONLY='$RUN_TTFT_ONLY' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' DECODE_PROFILE='$DECODE_PROFILE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' PROFILE_COMPARE='$PROFILE_COMPARE' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_LOG8PV_ATTN_PROFILE_JSONL='$REMOTE_LOG8PV_ATTN_PROFILE_JSONL' REMOTE_FUSED_FFN_COMPARE_JSONL='$REMOTE_FUSED_FFN_COMPARE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' NPU_WAIT_POLICY='$NPU_WAIT_POLICY' NPU_WAIT_TRACE='$NPU_WAIT_TRACE' REMOTE_NPU_WAIT_TRACE='$REMOTE_NPU_WAIT_TRACE' REMOTE_NPU_WAIT_POLICY_JSON='$REMOTE_NPU_WAIT_POLICY_JSON' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' MERGE_PREFILL_TRACE='$MERGE_PREFILL_TRACE' TTFT_CACHE_PROMPT='$TTFT_CACHE_PROMPT' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' DECODE_AWQ_PRELOAD_CMA='$decode_awq_preload_cma' DECODE_AWQ_PINGPONG='$decode_awq_pingpong' DECODE_AWQ_HW_F32_MVOUT='$decode_awq_hw_f32_mvout' DECODE_PROFILE_FLUSH_RECORDS='$decode_profile_flush_records' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
+  ssh "${SSH_OPTS[@]}" "$TARGET" "RUN_DIR='$REMOTE_RUN_DIR' REMOTE_LIB_DIR='$REMOTE_LIB_DIR' REMOTE_MODEL='$REMOTE_MODEL' REMOTE_MMPROJ='$REMOTE_MMPROJ' REMOTE_NPU_DRIVER_KO='$REMOTE_NPU_DRIVER_KO' NPU_DRIVER_MAX_BUFFER_MB='$NPU_DRIVER_MAX_BUFFER_MB' SUDO_PASSWORD='$SUDO_PASSWORD' OVERLAY_APP='$OVERLAY_APP' DECODE_NPU='$DECODE_NPU' DECODE_OVERLAY_APP='$DECODE_OVERLAY_APP' GENERIC_FASTPATH='$GENERIC_FASTPATH' NPU_OVERLAY_SWITCH_MODE='$NPU_OVERLAY_SWITCH_MODE' GENERIC_PREFILL_FW='$GENERIC_PREFILL_FW' GENERIC_DECODE_FW='$GENERIC_DECODE_FW' REMOTE_NPU_OVERLAY_SWITCH='$REMOTE_NPU_OVERLAY_SWITCH' PORT='$PORT' THREADS='$THREADS' UBATCH_SIZE='$UBATCH_SIZE' CACHE_TYPE_K='$CACHE_TYPE_K' CACHE_TYPE_V='$CACHE_TYPE_V' FLASH_ATTN='$FLASH_ATTN' CTX_SIZE='$CTX_SIZE' MTMD_BACKEND_DEVICE='$MTMD_BACKEND_DEVICE' MODEL_ALIAS='$MODEL_ALIAS' POWER_PATH='$POWER_PATH' SAMPLE_HZ='$SAMPLE_HZ' RUN_ACC_ONLY='$RUN_ACC_ONLY' ACC_MAX_TOKENS='$ACC_MAX_TOKENS' ACC_CACHE_PROMPT='$ACC_CACHE_PROMPT' RUN_THROUGHPUT_ONLY='$RUN_THROUGHPUT_ONLY' THROUGHPUT_MAX_TOKENS='$THROUGHPUT_MAX_TOKENS' THROUGHPUT_IGNORE_EOS='$THROUGHPUT_IGNORE_EOS' RUN_ENERGY_ONLY='$RUN_ENERGY_ONLY' ENERGY_MAX_TOKENS='$ENERGY_MAX_TOKENS' RUN_CORRECTNESS_ONLY='$RUN_CORRECTNESS_ONLY' CORRECTNESS_MAX_TOKENS='$CORRECTNESS_MAX_TOKENS' CORRECTNESS_IGNORE_EOS='$CORRECTNESS_IGNORE_EOS' CORRECTNESS_REPEAT='$CORRECTNESS_REPEAT' CORRECTNESS_NO_CACHE_PROMPT='$CORRECTNESS_NO_CACHE_PROMPT' CORRECTNESS_PROMPT_B64='$CORRECTNESS_PROMPT_B64' CORRECTNESS_PROMPT_2_B64='$CORRECTNESS_PROMPT_2_B64' CORRECTNESS_IMAGE='$CORRECTNESS_IMAGE' CORRECTNESS_IMAGE_2='$CORRECTNESS_IMAGE_2' RUN_TTFT_ONLY='$RUN_TTFT_ONLY' RUN_ROOFLINE_ONLY='$RUN_ROOFLINE_ONLY' ROOFLINE_REPEATS='$ROOFLINE_REPEATS' ROOFLINE_TEXT_TOKENS='$ROOFLINE_TEXT_TOKENS' ROOFLINE_DECODE_TOKENS='$ROOFLINE_DECODE_TOKENS' ROOFLINE_WORKLOADS='$ROOFLINE_WORKLOADS' RUN_THROUGHPUT_PROFILE='$RUN_THROUGHPUT_PROFILE' THROUGHPUT_PROFILE_ONLY='$THROUGHPUT_PROFILE_ONLY' THROUGHPUT_PROFILE_MAX_TOKENS='$THROUGHPUT_PROFILE_MAX_TOKENS' THROUGHPUT_PROFILE_PROMPT_B64='$THROUGHPUT_PROFILE_PROMPT_B64' PREFILL_PROFILE_MODE='$PREFILL_PROFILE_MODE' DECODE_PROFILE='$DECODE_PROFILE' DECODE_PROFILE_AGGREGATE='$DECODE_PROFILE_AGGREGATE' NPU_PROFILE_LEVEL='$NPU_PROFILE_LEVEL' PROFILE_COMPARE='$PROFILE_COMPARE' REMOTE_THROUGHPUT_PROFILE_METRICS='$REMOTE_THROUGHPUT_PROFILE_METRICS' REMOTE_THROUGHPUT_PROFILE_ARTIFACTS='$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS' REMOTE_MTMD_SUMMARY='$REMOTE_MTMD_SUMMARY' REMOTE_TEXT_CPU_PROFILE='$REMOTE_TEXT_CPU_PROFILE' REMOTE_NPU_PROFILE_JSON='$REMOTE_NPU_PROFILE_JSON' REMOTE_NPU_PROFILE_MANIFEST='$REMOTE_NPU_PROFILE_MANIFEST' REMOTE_NPU_DECODE_PROFILE_JSONL='$REMOTE_NPU_DECODE_PROFILE_JSONL' REMOTE_NPU_DECODE_PROFILE_AGG_JSON='$REMOTE_NPU_DECODE_PROFILE_AGG_JSON' REMOTE_LOG8PV_ATTN_PROFILE_JSONL='$REMOTE_LOG8PV_ATTN_PROFILE_JSONL' REMOTE_FUSED_FFN_COMPARE_JSONL='$REMOTE_FUSED_FFN_COMPARE_JSONL' REMOTE_NPU_OVERLAY_PROFILE_JSONL='$REMOTE_NPU_OVERLAY_PROFILE_JSONL' REMOTE_PROFILE_SERVER_LOG='$REMOTE_PROFILE_SERVER_LOG' REMOTE_NPU_SHAPE_TABLE='$REMOTE_NPU_SHAPE_TABLE' NPU_SHAPE_RECORD='$NPU_SHAPE_RECORD' NPU_PRELOAD_WEIGHTS='$NPU_PRELOAD_WEIGHTS' REMOTE_NPU_SHAPE_RECORD='$REMOTE_NPU_SHAPE_RECORD' NPU_WAIT_POLICY='$NPU_WAIT_POLICY' NPU_WAIT_TRACE='$NPU_WAIT_TRACE' REMOTE_NPU_WAIT_TRACE='$REMOTE_NPU_WAIT_TRACE' REMOTE_NPU_WAIT_POLICY_JSON='$REMOTE_NPU_WAIT_POLICY_JSON' TRACE_UBATCH='$TRACE_UBATCH' REMOTE_UBATCH_TRACE='$REMOTE_UBATCH_TRACE' MERGE_PREFILL='$MERGE_PREFILL' MERGE_PREFILL_TRACE='$MERGE_PREFILL_TRACE' TTFT_CACHE_PROMPT='$TTFT_CACHE_PROMPT' STOP_AFTER_THROUGHPUT='$STOP_AFTER_THROUGHPUT' NPU_TEXT_PREFILL_DYNAMIC='$NPU_TEXT_PREFILL_DYNAMIC' DECODE_AWQ_PRELOAD_CMA='$decode_awq_preload_cma' DECODE_AWQ_PINGPONG='$decode_awq_pingpong' DECODE_AWQ_HW_F32_MVOUT='$decode_awq_hw_f32_mvout' DECODE_PROFILE_FLUSH_RECORDS='$decode_profile_flush_records' NPU_RUNTIME_ENV_EXTRA_B64='$npu_runtime_env_extra_b64' BEST_CONFIG_ENV='$BEST_CONFIG_ENV' bash -s" <<EOF
 set -euo pipefail
 
 cd "\$RUN_DIR"
@@ -910,6 +1081,7 @@ rm -f server.log server.pid
 mkdir -p results
 THROUGHPUT_PROFILE_PROMPT="\$(printf '%s' "\$THROUGHPUT_PROFILE_PROMPT_B64" | base64 -d)"
 CORRECTNESS_PROMPT="\$(printf '%s' "\$CORRECTNESS_PROMPT_B64" | base64 -d)"
+CORRECTNESS_PROMPT_2="\$(printf '%s' "\$CORRECTNESS_PROMPT_2_B64" | base64 -d)"
 
 cleanup() {
   if [ -f server.pid ]; then
@@ -1085,7 +1257,20 @@ stop_server() {
     fi
     rm -f server.pid
   fi
-  echo "\$SUDO_PASSWORD" | sudo -S pkill -f "./llama-server --host 127.0.0.1 --port \$PORT" >/dev/null 2>&1 || true
+  local server_pids
+  server_pids="\$(pgrep -f "llama-server --host 127\\.0\\.0\\.1 --port \$PORT" 2>/dev/null || true)"
+  if [ -n "\$server_pids" ]; then
+    echo "\$SUDO_PASSWORD" | sudo -S kill \$server_pids >/dev/null 2>&1 || true
+    for _ in \$(seq 1 40); do
+      server_pids="\$(pgrep -f "llama-server --host 127\\.0\\.0\\.1 --port \$PORT" 2>/dev/null || true)"
+      [ -z "\$server_pids" ] && break
+      sleep 0.25
+    done
+    server_pids="\$(pgrep -f "llama-server --host 127\\.0\\.0\\.1 --port \$PORT" 2>/dev/null || true)"
+    if [ -n "\$server_pids" ]; then
+      echo "\$SUDO_PASSWORD" | sudo -S kill -9 \$server_pids >/dev/null 2>&1 || true
+    fi
+  fi
 }
 
 start_server() {
@@ -1107,7 +1292,7 @@ start_server() {
   fi
   local text_prefill_env="LLAMA_MTMD_MERGE_PREFILL='\$MERGE_PREFILL' LLAMA_MTMD_MERGE_PREFILL_TRACE='\$MERGE_PREFILL_TRACE' GGML_NPU_TEXT_PREFILL_DYNAMIC='\$NPU_TEXT_PREFILL_DYNAMIC'"
   if [ "\$DECODE_NPU" = "1" ]; then
-    decode_overlay_env="AICAS_TEXT_DECODE_AWQ_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_GEMV_ONLY=1 AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=1 AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD_CMA='\$DECODE_AWQ_PRELOAD_CMA' AICAS_TEXT_DECODE_AWQ_PINGPONG='\$DECODE_AWQ_PINGPONG' AICAS_TEXT_DECODE_AWQ_HW_F32_MVOUT='\$DECODE_AWQ_HW_F32_MVOUT' AICAS_NPU_PREFILL_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" NPU_DRIVER_MAX_BUFFER_MB=\"\$NPU_DRIVER_MAX_BUFFER_MB\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$OVERLAY_APP\"' AICAS_NPU_DECODE_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" NPU_DRIVER_MAX_BUFFER_MB=\"\$NPU_DRIVER_MAX_BUFFER_MB\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$DECODE_OVERLAY_APP\"'"
+    decode_overlay_env="AICAS_TEXT_DECODE_AWQ_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_GEMV_ONLY=0 AICAS_TEXT_DECODE_AWQ_FUSED_FFN_NPU=1 AICAS_TEXT_DECODE_ATTN_NPU=1 AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=1 AICAS_TEXT_DECODE_ATTN_NPU_CPU_ROPE=0 AICAS_TEXT_DECODE_ATTN_NPU_HW_KV_QUANT=1 AICAS_TEXT_DECODE_ATTN_NPU_PV_SCALE_BOOST_LOG2=0 AICAS_TEXT_DECODE_ATTN_NPU_PV_SCALE_BOOST_FOLD_O=0 AICAS_TEXT_DECODE_AWQ_NPU_PRELOAD_CMA='\$DECODE_AWQ_PRELOAD_CMA' AICAS_TEXT_DECODE_AWQ_PINGPONG='\$DECODE_AWQ_PINGPONG' AICAS_TEXT_DECODE_AWQ_HW_F32_MVOUT='\$DECODE_AWQ_HW_F32_MVOUT' AICAS_NPU_PREFILL_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" NPU_DRIVER_MAX_BUFFER_MB=\"\$NPU_DRIVER_MAX_BUFFER_MB\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$OVERLAY_APP\"' AICAS_NPU_DECODE_SWITCH_CMD='SUDO_PASSWORD=\"\$SUDO_PASSWORD\" REMOTE_NPU_DRIVER_KO=\"\$REMOTE_NPU_DRIVER_KO\" NPU_DRIVER_MAX_BUFFER_MB=\"\$NPU_DRIVER_MAX_BUFFER_MB\" GENERIC_PREFILL_APP=\"\$OVERLAY_APP\" GENERIC_DECODE_APP=\"\$DECODE_OVERLAY_APP\" GENERIC_PREFILL_FW=\"\$GENERIC_PREFILL_FW\" GENERIC_DECODE_FW=\"\$GENERIC_DECODE_FW\" \"\$REMOTE_NPU_OVERLAY_SWITCH\" \"\$DECODE_OVERLAY_APP\"'"
     if [ "\$RUN_CORRECTNESS_ONLY" = "1" ] || { [ "\$enable_profile" = "1" ] && [ "\$PROFILE_COMPARE" = "1" ]; }; then
       rm -f "\$REMOTE_FUSED_FFN_COMPARE_JSONL"
       fused_ffn_compare_env="AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE=1 AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_LIMIT=1 AICAS_TEXT_DECODE_AWQ_FUSED_FFN_COMPARE_JSONL='\$REMOTE_FUSED_FFN_COMPARE_JSONL'"
@@ -1127,16 +1312,24 @@ start_server() {
     rm -f "\$REMOTE_NPU_SHAPE_RECORD"
     npu_shape_env="\$npu_shape_env GGML_NPU_SHAPE_RECORD_JSON='\$REMOTE_NPU_SHAPE_RECORD' GGML_NPU_PROFILE_TILING_SEARCH=1"
   fi
-  if [ "\$enable_profile" = "1" ] || [ "\$DECODE_PROFILE" = "1" ]; then
-    rm -f "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_LOG8PV_ATTN_PROFILE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL"
+  if [ "\$enable_profile" = "1" ] || [ "\$DECODE_PROFILE" = "1" ] || [ "\$DECODE_PROFILE_AGGREGATE" = "1" ]; then
+    rm -f "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_NPU_DECODE_PROFILE_AGG_JSON" "\$REMOTE_LOG8PV_ATTN_PROFILE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL"
   fi
   if [ "\$DECODE_PROFILE" = "1" ]; then
     profile_env="\$profile_env GGML_NPU_DECODE_PROFILE_JSONL='\$REMOTE_NPU_DECODE_PROFILE_JSONL' GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS='\$DECODE_PROFILE_FLUSH_RECORDS'"
   fi
+  if [ "\$DECODE_PROFILE_AGGREGATE" = "1" ]; then
+    profile_env="\$profile_env GGML_NPU_DECODE_PROFILE_AGG_JSON='\$REMOTE_NPU_DECODE_PROFILE_AGG_JSON'"
+  fi
   if [ "\$enable_profile" = "1" ]; then
-    profile_env="\$profile_env LLAMA_MTMD_PREFILL_SUMMARY_JSON='\$REMOTE_MTMD_SUMMARY' AICAS_LOG8PV_NPU_PROFILE_JSONL='\$REMOTE_LOG8PV_ATTN_PROFILE_JSONL' AICAS_NPU_OVERLAY_PROFILE_JSONL='\$REMOTE_NPU_OVERLAY_PROFILE_JSONL'"
+    profile_env="\$profile_env LLAMA_MTMD_PREFILL_SUMMARY_JSON='\$REMOTE_MTMD_SUMMARY' AICAS_NPU_OVERLAY_PROFILE_JSONL='\$REMOTE_NPU_OVERLAY_PROFILE_JSONL'"
+    if [ "\$PREFILL_PROFILE_MODE" != "semantic" ]; then
+      profile_env="\$profile_env AICAS_LOG8PV_NPU_PROFILE_JSONL='\$REMOTE_LOG8PV_ATTN_PROFILE_JSONL'"
+    fi
     if [ "\$PREFILL_PROFILE_MODE" = "aggregate" ]; then
       profile_env="\$profile_env LLAMA_MTMD_CPU_OP_PROFILE=aggregate LLAMA_TEXT_CPU_PROFILE_JSON='\$REMOTE_TEXT_CPU_PROFILE' LLAMA_TEXT_CPU_PROFILE_MODE=aggregate GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL=aggregate"
+    elif [ "\$PREFILL_PROFILE_MODE" = "semantic" ]; then
+      profile_env="\$profile_env LLAMA_MTMD_CPU_OP_PROFILE=semantic LLAMA_TEXT_CPU_PROFILE_JSON='\$REMOTE_TEXT_CPU_PROFILE' LLAMA_TEXT_CPU_PROFILE_MODE=semantic GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL=aggregate"
     elif [ "\$PREFILL_PROFILE_MODE" = "diagnostic" ]; then
       # Diagnostic prefill profiling is intentionally high-overhead and should not be used for performance measurements.
       profile_env="\$profile_env LLAMA_MTMD_CPU_OP_PROFILE=1 LLAMA_TEXT_CPU_PROFILE_JSON='\$REMOTE_TEXT_CPU_PROFILE' GGML_NPU_PROFILE_JSON='\$REMOTE_NPU_PROFILE_JSON' GGML_NPU_PROFILE_MANIFEST_JSON='\$REMOTE_NPU_PROFILE_MANIFEST' GGML_NPU_PROFILE_LEVEL='\$NPU_PROFILE_LEVEL' GGML_NPU_DECODE_PROFILE_JSONL='\$REMOTE_NPU_DECODE_PROFILE_JSONL' GGML_NPU_DECODE_PROFILE_FLUSH_RECORDS='\$DECODE_PROFILE_FLUSH_RECORDS'"
@@ -1166,6 +1359,15 @@ start_server() {
   fi
 
   bash -lc "cd '\$RUN_DIR' && env LD_LIBRARY_PATH='\$REMOTE_LIB_DIR:\${LD_LIBRARY_PATH:-}' MTMD_BACKEND_DEVICE='\$MTMD_BACKEND_DEVICE' \$npu_runtime_env \$text_prefill_env \$decode_overlay_env \$best_config_env \$npu_shape_env \$profile_env \$fused_ffn_compare_env \$ubatch_trace_env \$wait_env ./llama-server --host 127.0.0.1 --port '\$PORT' --alias '\$MODEL_ALIAS' -m '\$REMOTE_MODEL' --mmproj '\$REMOTE_MMPROJ' --cache-type-k '\$CACHE_TYPE_K' --cache-type-v '\$CACHE_TYPE_V' --flash-attn '\$FLASH_ATTN' \$ctx_arg -t '\$THREADS' --ubatch-size '\$UBATCH_SIZE' \$log_disable_arg --no-warmup > '\$log_path' 2>&1 & echo \\\$! > server.pid"
+  for _ in \$(seq 1 40); do
+    local server_pid
+    server_pid="\$(pgrep -f "llama-server --host 127\\.0\\.0\\.1 --port \$PORT" 2>/dev/null | head -n1 || true)"
+    if [ -n "\$server_pid" ]; then
+      printf '%s\n' "\$server_pid" > server.pid
+      break
+    fi
+    sleep 0.25
+  done
 
   if ! wait_ready; then
     tail -n 120 "\$log_path" >&2 || true
@@ -1174,30 +1376,98 @@ start_server() {
   fi
 }
 
-if [ "\$RUN_CORRECTNESS_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+if [ "\$RUN_ROOFLINE_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
   start_server server.log 0
 
-  correctness_cmd=(python3 "\$RUN_DIR/code/throughput_eval.py" \
-    -i "\$RUN_DIR/code/test2.jpg" \
-    -o "\$RUN_DIR/results/correctness_metrics.json" \
-    --base-url "http://127.0.0.1:\$PORT/v1" \
-    --model "\$MODEL_ALIAS" \
-    --max-tokens "\$CORRECTNESS_MAX_TOKENS")
-  if [ -n "\$CORRECTNESS_PROMPT" ]; then
-    correctness_cmd+=(--prompt "\$CORRECTNESS_PROMPT")
-  fi
-  "\${correctness_cmd[@]}"
+  mkdir -p "\$RUN_DIR/results/roofline_latency"
+  roofline_workloads="\$(printf '%s' "\$ROOFLINE_WORKLOADS" | tr ',' ' ')"
+  for workload in \$roofline_workloads; do
+    case "\$workload" in
+      image_mmproj|text_prefill_512|text_decode_128avg) ;;
+      *)
+        echo "Unknown roofline workload: \$workload" >&2
+        stop_server
+        exit 2
+        ;;
+    esac
+    for repeat in \$(seq 1 "\$ROOFLINE_REPEATS"); do
+      max_tokens=1
+      if [ "\$workload" = "text_decode_128avg" ]; then
+        max_tokens="\$ROOFLINE_DECODE_TOKENS"
+      fi
+      echo "[roofline] workload=\$workload repeat=\$repeat/\$ROOFLINE_REPEATS max_tokens=\$max_tokens"
+      python3 "\$RUN_DIR/code/roofline_eval.py" \
+        --workload "\$workload" \
+        --base-url "http://127.0.0.1:\$PORT/v1" \
+        --model "\$MODEL_ALIAS" \
+        --image "\$RUN_DIR/code/test2.jpg" \
+        --target-prompt-tokens "\$ROOFLINE_TEXT_TOKENS" \
+        --max-tokens "\$max_tokens" \
+        --ignore-eos \
+        --no-cache-prompt \
+        -o "\$RUN_DIR/results/roofline_latency/\${workload}_r\${repeat}.json"
+    done
+  done
+
+  stop_server
+elif [ "\$RUN_CORRECTNESS_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
+  start_server server.log 0
+
+  for correctness_index in \$(seq 1 "\$CORRECTNESS_REPEAT"); do
+    if [ "\$CORRECTNESS_REPEAT" -eq 1 ]; then
+      correctness_output="\$RUN_DIR/results/correctness_metrics.json"
+    else
+      correctness_output="\$RUN_DIR/results/correctness_metrics_\${correctness_index}.json"
+    fi
+    correctness_image="\$RUN_DIR/code/test2.jpg"
+    if [ -n "\$CORRECTNESS_IMAGE" ]; then
+      correctness_image="\$RUN_DIR/code/correctness_image.jpg"
+    fi
+    correctness_prompt="\$CORRECTNESS_PROMPT"
+    if [ "\$correctness_index" -eq 2 ]; then
+      if [ -n "\$CORRECTNESS_IMAGE_2" ]; then
+        correctness_image="\$RUN_DIR/code/correctness_image_2.jpg"
+      fi
+      if [ -n "\$CORRECTNESS_PROMPT_2" ]; then
+        correctness_prompt="\$CORRECTNESS_PROMPT_2"
+      fi
+    fi
+    correctness_cmd=(python3 "\$RUN_DIR/code/throughput_eval.py" \
+      -i "\$correctness_image" \
+      -o "\$correctness_output" \
+      --base-url "http://127.0.0.1:\$PORT/v1" \
+      --model "\$MODEL_ALIAS" \
+      --max-tokens "\$CORRECTNESS_MAX_TOKENS")
+    if [ -n "\$correctness_prompt" ]; then
+      correctness_cmd+=(--prompt "\$correctness_prompt")
+    fi
+    if [ "\$CORRECTNESS_IGNORE_EOS" = "1" ]; then
+      correctness_cmd+=(--ignore-eos)
+    fi
+    if [ "\$CORRECTNESS_NO_CACHE_PROMPT" = "1" ]; then
+      correctness_cmd+=(--no-cache-prompt)
+    fi
+    echo "[correctness] request \$correctness_index/\$CORRECTNESS_REPEAT -> \$correctness_output"
+    "\${correctness_cmd[@]}"
+    if [ "\$correctness_index" -eq 1 ] && [ "\$CORRECTNESS_REPEAT" -gt 1 ]; then
+      cp "\$correctness_output" "\$RUN_DIR/results/correctness_metrics.json"
+    fi
+  done
 
   stop_server
 elif [ "\$RUN_THROUGHPUT_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
   start_server server.log 0
 
-  python3 "\$RUN_DIR/code/throughput_eval.py" \
+  throughput_cmd=(python3 "\$RUN_DIR/code/throughput_eval.py" \
     -i "\$RUN_DIR/code/test2.jpg" \
     -o "\$RUN_DIR/results/throughput_metrics.json" \
     --base-url "http://127.0.0.1:\$PORT/v1" \
     --model "\$MODEL_ALIAS" \
-    --max-tokens "\$THROUGHPUT_MAX_TOKENS"
+    --max-tokens "\$THROUGHPUT_MAX_TOKENS")
+  if [ "\$THROUGHPUT_IGNORE_EOS" = "1" ]; then
+    throughput_cmd+=(--ignore-eos)
+  fi
+  "\${throughput_cmd[@]}"
 
   stop_server
 elif [ "\$RUN_ENERGY_ONLY" = "1" ] && [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
@@ -1258,6 +1528,10 @@ elif [ "\$THROUGHPUT_PROFILE_ONLY" -ne 1 ]; then
     --model "\$MODEL_ALIAS" \
     --power-path "\$POWER_PATH" \
     --sample-hz "\$SAMPLE_HZ" \
+    \$( [ "\$RUN_ACC_ONLY" = "1" ] && printf '%s ' --acc-only ) \
+    \$( [ "\$STOP_AFTER_THROUGHPUT" = "1" ] && printf '%s ' --stop-after-throughput ) \
+    --acc-max-tokens "\$ACC_MAX_TOKENS" \
+    \${ACC_CACHE_PROMPT:+\$ACC_CACHE_PROMPT} \
     $remote_acc_flag \
     $remote_sample_flag \
     $remote_acc_ori_flag \
@@ -1272,7 +1546,8 @@ if [ "\$RUN_THROUGHPUT_PROFILE" -eq 1 ]; then
     -o "\$REMOTE_THROUGHPUT_PROFILE_METRICS" \
     --base-url "http://127.0.0.1:\$PORT/v1" \
     --model "\$MODEL_ALIAS" \
-    --max-tokens "\$THROUGHPUT_PROFILE_MAX_TOKENS")
+    --max-tokens "\$THROUGHPUT_PROFILE_MAX_TOKENS" \
+    --ignore-eos)
   if [ -n "\$THROUGHPUT_PROFILE_PROMPT" ]; then
     profile_eval_cmd+=(--prompt "\$THROUGHPUT_PROFILE_PROMPT")
   fi
@@ -1280,18 +1555,18 @@ if [ "\$RUN_THROUGHPUT_PROFILE" -eq 1 ]; then
 
   stop_server
   for _ in \$(seq 1 40); do
-    if [ -f "\$REMOTE_NPU_DECODE_PROFILE_JSONL" ]; then
+    if [ -f "\$REMOTE_NPU_DECODE_PROFILE_JSONL" ] || [ -f "\$REMOTE_NPU_DECODE_PROFILE_AGG_JSON" ]; then
       break
     fi
     sleep 0.25
   done
 
-  python3 - "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_FUSED_FFN_COMPARE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL" "\$NPU_PROFILE_LEVEL" "\$PREFILL_PROFILE_MODE" <<'PY'
+  python3 - "\$REMOTE_THROUGHPUT_PROFILE_ARTIFACTS" "\$REMOTE_THROUGHPUT_PROFILE_METRICS" "\$REMOTE_MTMD_SUMMARY" "\$REMOTE_TEXT_CPU_PROFILE" "\$REMOTE_NPU_PROFILE_JSON" "\$REMOTE_NPU_PROFILE_MANIFEST" "\$REMOTE_NPU_DECODE_PROFILE_JSONL" "\$REMOTE_NPU_DECODE_PROFILE_AGG_JSON" "\$REMOTE_FUSED_FFN_COMPARE_JSONL" "\$REMOTE_NPU_OVERLAY_PROFILE_JSONL" "\$NPU_PROFILE_LEVEL" "\$PREFILL_PROFILE_MODE" <<'PY'
 import json
 import os
 import sys
 
-out_path, metrics_path, mtmd_path, text_cpu_path, npu_path, manifest_path, decode_path, fused_ffn_path, overlay_path, npu_level, prefill_mode = sys.argv[1:12]
+out_path, metrics_path, mtmd_path, text_cpu_path, npu_path, manifest_path, decode_path, decode_agg_path, fused_ffn_path, overlay_path, npu_level, prefill_mode = sys.argv[1:13]
 
 def info(path):
     return {
@@ -1308,6 +1583,7 @@ payload = {
     "ggml_npu_profile": info(npu_path),
     "ggml_npu_manifest": info(manifest_path),
     "ggml_npu_decode_profile": info(decode_path),
+    "ggml_npu_decode_profile_aggregate": info(decode_agg_path),
     "decode_swiglu_ffn_compare": info(fused_ffn_path),
     "npu_overlay_switch_profile": info(overlay_path),
     "npu_profile_level": npu_level,

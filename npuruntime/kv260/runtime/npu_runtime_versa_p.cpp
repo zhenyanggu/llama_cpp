@@ -1468,6 +1468,318 @@ bool npu_attention_log8pv_run_group(
             (void) cur_a_bank;
         }
 
+#if 0
+        struct AttentionChunkItem {
+            uint32_t g = 0;
+            uint32_t chunk_start = 0;
+            uint32_t rows = 0;
+            uint32_t chunk_idx = 0;
+            uint32_t linear_idx = 0;
+            uint8_t q_bank = 0;
+            uint8_t o_bank = 0;
+        };
+
+        std::vector<AttentionChunkItem> attention_items;
+        attention_items.reserve((size_t) group_size *
+                ((exec_rows + chunk_rows_max - 1u) / chunk_rows_max));
+        uint32_t linear_idx = 0;
+        for (uint32_t g = 0; g < group_size; ++g) {
+            for (uint32_t chunk_start = exec_start, chunk_idx = 0;
+                    chunk_start < exec_end;
+                    chunk_start += chunk_rows_max, ++chunk_idx, ++linear_idx) {
+                AttentionChunkItem item = {};
+                item.g = g;
+                item.chunk_start = chunk_start;
+                item.rows = std::min(chunk_rows_max, exec_end - chunk_start);
+                item.chunk_idx = chunk_idx;
+                item.linear_idx = linear_idx;
+                item.q_bank = static_cast<uint8_t>(g & 1u);
+                item.o_bank = static_cast<uint8_t>(linear_idx & 1u);
+                attention_items.push_back(item);
+            }
+        }
+
+        auto prepare_q_host = [&](uint32_t g) {
+            std::fill(q_padded.begin(), q_padded.end(), 0);
+            const int8_t * q_src = q_group + (size_t) g * q_rows * 64u;
+            for (uint32_t row = 0; row < q_rows; ++row) {
+                std::memcpy(q_padded.data() + (size_t) (q_row_start + row) * 64u,
+                            q_src + (size_t) row * 64u,
+                            64u);
+            }
+            std::memcpy(q_buf.vaddr, q_padded.data(), q_bytes);
+            (void) versa_p_sync_for_device(dev, q_buf.vaddr, q_bytes);
+        };
+
+        auto make_q_desc = [&](uint8_t q_bank) {
+            versa_p_mvin_a_desc q_desc = {};
+            q_desc.dram_base = q_buf.dma_addr;
+            q_desc.dram_row_stride_bytes = 64u;
+            q_desc.m = checked_u16(padded_tokens, "padded_tokens");
+            q_desc.k = 64;
+            q_desc.a_bank = q_bank;
+            return q_desc;
+        };
+
+        std::vector<uint8_t> q_ready(group_size, 0);
+        std::vector<uint8_t> q_mvin_started(group_size, 0);
+        std::vector<std::chrono::steady_clock::time_point> q_mvin_start(group_size);
+
+        auto start_q_mvin_async = [&](uint32_t g) -> int {
+            if (q_ready[g] || q_mvin_started[g]) {
+                return VERSA_P_OK;
+            }
+            prepare_q_host(g);
+            versa_p_mvin_a_desc q_desc = make_q_desc(static_cast<uint8_t>(g & 1u));
+            q_mvin_start[g] = std::chrono::steady_clock::now();
+            const int start_rc = versa_p_start_mvin_a(dev, &q_desc);
+            if (start_rc == VERSA_P_OK) {
+                q_mvin_started[g] = 1;
+            }
+            return start_rc;
+        };
+
+        auto wait_q_mvin = [&](uint32_t g) -> int {
+            if (q_ready[g]) {
+                return VERSA_P_OK;
+            }
+            uint64_t q_elapsed = 0;
+            int wait_rc = VERSA_P_OK;
+            if (q_mvin_started[g]) {
+                wait_rc = versa_p_wait(dev, VERSA_P_API_MVIN_A, timeout_ms);
+                q_elapsed = elapsed_ns(q_mvin_start[g]) / 1000u;
+            } else {
+                prepare_q_host(g);
+                versa_p_mvin_a_desc q_desc = make_q_desc(static_cast<uint8_t>(g & 1u));
+                wait_rc = timed_call(&q_elapsed, [&]() {
+                    return versa_p_mvin_a(dev, &q_desc, timeout_ms);
+                });
+            }
+            if (wait_rc == VERSA_P_OK) {
+                q_ready[g] = 1;
+                q_mvin_started[g] = 0;
+                add_profile(g, &npu_log8pv_attention_profile::mvin_q_us, q_elapsed);
+            }
+            return wait_rc;
+        };
+
+        auto maybe_prefetch_next_group_q = [&](uint32_t item_idx) -> int {
+            const AttentionChunkItem & item = attention_items[item_idx];
+            if (item_idx + 1u >= attention_items.size()) {
+                return VERSA_P_OK;
+            }
+            const AttentionChunkItem & next = attention_items[item_idx + 1u];
+            if (next.g == item.g) {
+                return VERSA_P_OK;
+            }
+            return start_q_mvin_async(next.g);
+        };
+
+        rc = wait_q_mvin(attention_items[0].g);
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+        rc = start_qk(dev, attention_items[0].chunk_start, attention_items[0].rows,
+                attention_items[0].q_bank, attention_w_bank, attention_items[0].o_bank,
+                gamma16_fix_group[attention_items[0].g]);
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+
+        for (uint32_t i = 0; i < attention_items.size(); ++i) {
+            const AttentionChunkItem & item = attention_items[i];
+            rc = maybe_prefetch_next_group_q(i);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+
+            elapsed = 0;
+            rc = wait_timed(&elapsed, VERSA_P_API_GEMM_I8);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+            add_profile(item.g, &npu_log8pv_attention_profile::qk_us, elapsed);
+
+            const uint32_t logp_offset =
+                item.g * logp_bytes_one + (item.chunk_start - exec_start) * padded_tokens;
+            const auto mvout_start = std::chrono::steady_clock::now();
+            rc = start_logp_mvout(
+                    dev,
+                    logp_buf.dma_addr + logp_offset,
+                    item.chunk_start,
+                    item.rows,
+                    item.o_bank);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+
+            if (i + 1u < attention_items.size()) {
+                const AttentionChunkItem & next = attention_items[i + 1u];
+                if (next.g != item.g) {
+                    rc = wait_q_mvin(next.g);
+                    if (rc != VERSA_P_OK) {
+                        cleanup();
+                        return false;
+                    }
+                }
+                rc = start_qk(dev, next.chunk_start, next.rows,
+                        next.q_bank, attention_w_bank, next.o_bank,
+                        gamma16_fix_group[next.g]);
+                if (rc != VERSA_P_OK) {
+                    cleanup();
+                    return false;
+                }
+            }
+
+            uint64_t mvout_wait_elapsed = 0;
+            rc = wait_timed(&mvout_wait_elapsed, VERSA_P_API_MVOUT);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+            const uint64_t mvout_elapsed = elapsed_ns(mvout_start) / 1000u;
+            add_profile(item.g, &npu_log8pv_attention_profile::logp_mvout_us, mvout_elapsed);
+            if (i + 1u < attention_items.size()) {
+                add_profile(item.g, &npu_log8pv_attention_profile::qk_overlap_us,
+                        std::min(elapsed, mvout_elapsed));
+            }
+            (void) versa_p_sync_for_device(
+                    dev,
+                    static_cast<uint8_t *>(logp_buf.vaddr) + logp_offset,
+                    (size_t) item.rows * padded_tokens);
+        }
+
+        versa_p_mvin_w_desc v_desc = {};
+        v_desc.dram_base = v_buf.dma_addr;
+        v_desc.k = checked_u16(padded_tokens, "padded_tokens");
+        v_desc.n = 64;
+        v_desc.w_bank = attention_w_bank;
+        elapsed = 0;
+        rc = timed_call(&elapsed, [&]() {
+            return versa_p_mvin_w(dev, &v_desc, timeout_ms);
+        });
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+        add_profile(0, &npu_log8pv_attention_profile::mvin_v_us, elapsed);
+
+        std::vector<std::chrono::steady_clock::time_point> p_mvin_start(attention_items.size());
+        auto logp_offset_for = [&](const AttentionChunkItem & item) {
+            return item.g * logp_bytes_one + (item.chunk_start - exec_start) * padded_tokens;
+        };
+        auto p_bank_for = [&](uint32_t item_idx) {
+            return static_cast<uint8_t>(item_idx & 1u);
+        };
+        auto start_p_mvin_for = [&](uint32_t item_idx) -> int {
+            const AttentionChunkItem & item = attention_items[item_idx];
+            p_mvin_start[item_idx] = std::chrono::steady_clock::now();
+            return start_mvin_p(
+                    dev,
+                    logp_buf.dma_addr + logp_offset_for(item),
+                    item.rows,
+                    p_bank_for(item_idx));
+        };
+        auto wait_p_mvin_for = [&](uint32_t item_idx) -> int {
+            const int wait_rc = versa_p_wait(dev, VERSA_P_API_MVIN_A, timeout_ms);
+            if (wait_rc == VERSA_P_OK) {
+                const AttentionChunkItem & item = attention_items[item_idx];
+                add_profile(item.g, &npu_log8pv_attention_profile::mvin_p_us,
+                        elapsed_ns(p_mvin_start[item_idx]) / 1000u);
+            }
+            return wait_rc;
+        };
+        auto copy_output_for = [&](const AttentionChunkItem & item) {
+            int32_t * output = output_group + (size_t) item.g * q_rows * output_stride_elems;
+            copy_chunk_output(dev, out_buf, item.chunk_start, item.rows, output);
+        };
+
+        rc = start_p_mvin_for(0);
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+        rc = wait_p_mvin_for(0);
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+        rc = start_pv(dev, attention_items[0].rows, p_bank_for(0),
+                attention_w_bank, attention_items[0].o_bank);
+        if (rc != VERSA_P_OK) {
+            cleanup();
+            return false;
+        }
+        if (attention_items.size() > 1u) {
+            rc = start_p_mvin_for(1);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+        }
+
+        for (uint32_t i = 0; i < attention_items.size(); ++i) {
+            const AttentionChunkItem & item = attention_items[i];
+            elapsed = 0;
+            rc = wait_timed(&elapsed, VERSA_P_API_GEMM_I8);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+            add_profile(item.g, &npu_log8pv_attention_profile::pv_us, elapsed);
+
+            const auto mvout_start = std::chrono::steady_clock::now();
+            rc = start_pv_mvout(dev, out_buf, item.rows, item.o_bank);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+
+            uint64_t mvin_elapsed = 0;
+            if (i + 1u < attention_items.size()) {
+                rc = wait_p_mvin_for(i + 1u);
+                if (rc != VERSA_P_OK) {
+                    cleanup();
+                    return false;
+                }
+                const AttentionChunkItem & next = attention_items[i + 1u];
+                rc = start_pv(dev, next.rows, p_bank_for(i + 1u),
+                        attention_w_bank, next.o_bank);
+                if (rc != VERSA_P_OK) {
+                    cleanup();
+                    return false;
+                }
+                if (i + 2u < attention_items.size()) {
+                    rc = start_p_mvin_for(i + 2u);
+                    if (rc != VERSA_P_OK) {
+                        cleanup();
+                        return false;
+                    }
+                }
+                mvin_elapsed = elapsed_ns(p_mvin_start[i + 1u]) / 1000u;
+            }
+
+            uint64_t mvout_wait_elapsed = 0;
+            rc = wait_timed(&mvout_wait_elapsed, VERSA_P_API_MVOUT);
+            if (rc != VERSA_P_OK) {
+                cleanup();
+                return false;
+            }
+            const uint64_t mvout_elapsed = elapsed_ns(mvout_start) / 1000u;
+            add_profile(item.g, &npu_log8pv_attention_profile::pv_mvout_us, mvout_elapsed);
+            if (i + 1u < attention_items.size()) {
+                add_profile(item.g, &npu_log8pv_attention_profile::pv_overlap_us,
+                        std::min(mvin_elapsed, elapsed + mvout_elapsed));
+            }
+            copy_output_for(item);
+        }
+#endif
+
         const uint64_t group_total_us = elapsed_ns(group_total_start) / 1000u;
         if (profile_group != nullptr) {
             for (uint32_t g = 0; g < group_size; ++g) {

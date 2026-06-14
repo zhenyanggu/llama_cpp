@@ -1,0 +1,531 @@
+{
+  "profile_kind": "llama_server_mtmd_prefill_summary",
+  "timing_unit": "us",
+  "slot_id": 0,
+  "task_id": 0,
+  "prompt_tokens_processed": 340,
+  "prefill_total_us": 16625166,
+  "mmproj": {
+    "has_media": true,
+    "merged_prefill": true,
+    "merged_tokens": 340,
+    "text_tokens": 276,
+    "media_chunk_count": 1,
+    "image_chunk_count": 1,
+    "audio_chunk_count": 0,
+    "media_tokens": 64,
+    "media_positions": 64,
+    "encode_us": 6115812,
+    "decode_us": 0,
+    "merged_decode_us": 10418524,
+    "total_chunk_us": 6115812,
+    "encode_details": [
+      {
+        "profile_kind": "mmproj_encode_light_summary",
+        "timing_unit": "us",
+        "instrumentation": "phase_wall_time_plus_graph_assignment",
+        "note": "Phase timings use wall clock around coarse mmproj steps. Graph categories are scheduled-node counts and bytes, not exact CPU operator runtime.",
+        "known_profile_overhead_us": 1312,
+        "phases": {
+          "build_graph_us": 1079,
+          "alloc_graph_us": 2433,
+          "set_inputs_us": 12618,
+          "graph_compute_us": 6097671,
+          "output_readback_us": 111,
+          "total_observed_us": 6115234
+        },
+        "graph": {
+          "profile_kind": "mmproj_non_intrusive_graph_summary",
+          "instrumentation": "graph_assignment_no_eval_callback",
+          "note": "Counts and byte sizes describe scheduled graph nodes, not per-node runtime. No eval callback is installed for this summary.",
+          "node_count": 394,
+          "by_backend": [
+            {
+              "name": "npu",
+              "node_count": 217,
+              "elements": 226553856,
+              "bytes": 906215424
+            },
+            {
+              "name": "cpu",
+              "node_count": 177,
+              "elements": 167313408,
+              "bytes": 669253632
+            }
+          ],
+          "by_operator_category": [
+            {
+              "name": "MUL_MAT_NPU",
+              "node_count": 73,
+              "elements": 84996096,
+              "bytes": 339984384
+            },
+            {
+              "name": "ADD_NPU",
+              "node_count": 72,
+              "elements": 84934656,
+              "bytes": 339738624
+            },
+            {
+              "name": "ELEMENTWISE_CPU",
+              "node_count": 76,
+              "elements": 59768832,
+              "bytes": 239075328
+            },
+            {
+              "name": "LAYOUT_CPU",
+              "node_count": 50,
+              "elements": 39124992,
+              "bytes": 156499968
+            },
+            {
+              "name": "ACTIVATION_CPU",
+              "node_count": 12,
+              "elements": 37748736,
+              "bytes": 150994944
+            },
+            {
+              "name": "PERMUTE_NPU",
+              "node_count": 36,
+              "elements": 28311552,
+              "bytes": 113246208
+            },
+            {
+              "name": "RESHAPE_NPU",
+              "node_count": 36,
+              "elements": 28311552,
+              "bytes": 113246208
+            },
+            {
+              "name": "NORM_CPU",
+              "node_count": 25,
+              "elements": 19660800,
+              "bytes": 78643200
+            },
+            {
+              "name": "MAP_CUSTOM3_CPU",
+              "node_count": 12,
+              "elements": 9437184,
+              "bytes": 37748736
+            },
+            {
+              "name": "IM2COL_CPU",
+              "node_count": 1,
+              "elements": 786432,
+              "bytes": 3145728
+            },
+            {
+              "name": "MUL_MAT_CPU",
+              "node_count": 1,
+              "elements": 786432,
+              "bytes": 3145728
+            }
+          ],
+          "cpu_operator_categories": [
+            {
+              "name": "ELEMENTWISE_CPU",
+              "node_count": 76,
+              "elements": 59768832,
+              "bytes": 239075328
+            },
+            {
+              "name": "LAYOUT_CPU",
+              "node_count": 50,
+              "elements": 39124992,
+              "bytes": 156499968
+            },
+            {
+              "name": "ACTIVATION_CPU",
+              "node_count": 12,
+              "elements": 37748736,
+              "bytes": 150994944
+            },
+            {
+              "name": "NORM_CPU",
+              "node_count": 25,
+              "elements": 19660800,
+              "bytes": 78643200
+            },
+            {
+              "name": "MAP_CUSTOM3_CPU",
+              "node_count": 12,
+              "elements": 9437184,
+              "bytes": 37748736
+            },
+            {
+              "name": "IM2COL_CPU",
+              "node_count": 1,
+              "elements": 786432,
+              "bytes": 3145728
+            },
+            {
+              "name": "MUL_MAT_CPU",
+              "node_count": 1,
+              "elements": 786432,
+              "bytes": 3145728
+            }
+          ],
+          "cpu_mul_mat_signatures": [
+            {
+              "src0": {
+                "name": " (reshaped)",
+                "operator_name": "RESHAPE",
+                "type": "f32",
+                "is_quantized": false,
+                "shape": [
+                  768,
+                  1024,
+                  1,
+                  1
+                ]
+              },
+              "src1": {
+                "name": "v.patch_embd.weight (reshaped)",
+                "operator_name": "RESHAPE",
+                "type": "f32",
+                "is_quantized": false,
+                "shape": [
+                  768,
+                  768,
+                  1,
+                  1
+                ]
+              },
+              "dst": {
+                "name": "node_3",
+                "operator_name": "MUL_MAT",
+                "type": "f32",
+                "is_quantized": false,
+                "shape": [
+                  1024,
+                  768,
+                  1,
+                  1
+                ]
+              },
+              "node_count": 1,
+              "elements": 786432,
+              "bytes": 3145728,
+              "example_node_names": [
+                "node_3"
+              ]
+            }
+          ],
+          "npu_operator_categories": [
+            {
+              "name": "MUL_MAT_NPU",
+              "node_count": 73,
+              "elements": 84996096,
+              "bytes": 339984384
+            },
+            {
+              "name": "ADD_NPU",
+              "node_count": 72,
+              "elements": 84934656,
+              "bytes": 339738624
+            },
+            {
+              "name": "PERMUTE_NPU",
+              "node_count": 36,
+              "elements": 28311552,
+              "bytes": 113246208
+            },
+            {
+              "name": "RESHAPE_NPU",
+              "node_count": 36,
+              "elements": 28311552,
+              "bytes": 113246208
+            }
+          ]
+        },
+        "bfp8m_npu": {
+          "qk_custom_calls": 0,
+          "pv_custom_calls": 0,
+          "qk_raw_gemm_calls": 0,
+          "pv_raw_gemm_calls": 0,
+          "fallback_calls": 0,
+          "total_custom_us": 0,
+          "qk_total_custom_us": 0,
+          "pv_total_custom_us": 0,
+          "a_scale_quant_us": 0,
+          "b_scale_quant_us": 0,
+          "npu_pack_us": 0,
+          "raw_gemm_us": 0,
+          "postprocess_us": 0,
+          "cpu_accum_us": 0,
+          "raw_acc_bytes": 0
+        }
+      }
+    ],
+    "cpu_backend_profile_details": [],
+    "normalized_operator_profile": {
+      "profile_kind": "llama_server_normalized_operator_profile",
+      "timing_unit": "us",
+      "classification": "custom_cpu_backend_wrappers_as_npu_related_ops",
+      "note": "Raw CPU backend profile is preserved separately. CUSTOM is reported as an NPU attention wrapper; MAP_CUSTOM3 is reported as an NPU custom GEMM wrapper because these nodes are CPU-backend entry points for NPU-related custom paths.",
+      "raw_cpu_backend_total_us": 0,
+      "npu_wrapped_node_wall_us": 0,
+      "cpu_backend_non_npu_us": 0,
+      "by_kind": []
+    }
+  },
+  "npu": {
+    "used_npu": true,
+    "node_count": 73,
+    "exec_tile_count": 928,
+    "weight_pack_count": 496,
+    "bias_pack_count": 648,
+    "gemm_calls": 928,
+    "gemm_plan_calls": 928,
+    "dma_out_calls": 652,
+    "postprocess_calls": 145,
+    "dma_in_activation_calls": 472,
+    "dma_in_weight_calls": 928,
+    "dma_in_bias_calls": 145,
+    "dma_in_pair_calls": 652,
+    "spm_activation_reuse_hits": 855,
+    "spm_weight_reuse_hits": 276,
+    "dma_in_activation_bytes": 163577856,
+    "dma_in_weight_bytes": 181665792,
+    "acc_readback_bytes": 339984384,
+    "output_write_bytes": 339984384,
+    "w_pingpong_enabled": true,
+    "w_prefetch_calls": 276,
+    "w_prefetch_hits": 276,
+    "w_prefetch_conflicts": 0,
+    "w_prefetch_wait_us": 14864,
+    "w_prefetch_hidden_candidate_us": 233541,
+    "full_pingpong_enabled": true,
+    "full_pingpong_nodes": 73,
+    "a_prefetch_enabled": true,
+    "a_prefetch_enabled_nodes": 73,
+    "o_overlap_enabled": true,
+    "o_overlap_enabled_nodes": 73,
+    "full_output_cma_active": true,
+    "full_output_cma_nodes": 73,
+    "a_prefetch_calls": 399,
+    "a_prefetch_hits": 399,
+    "a_prefetch_conflicts": 0,
+    "a_prefetch_wait_us": 6354,
+    "a_prefetch_hidden_candidate_us": 327495,
+    "o_mvout_async_calls": 652,
+    "o_mvout_wait_us": 26393,
+    "o_mvout_hidden_candidate_us": 684247,
+    "raw_acc_mvout_nodes": 0,
+    "raw_acc_mvout_tiles": 0,
+    "total_node_us": 1589010,
+    "accounted_us": 2219799,
+    "unaccounted_us": 0,
+    "accounted_share_pct": 139.6969811391999,
+    "activation_pack_us": 195590,
+    "activation_pack_async_us": 586531,
+    "activation_pack_wait_us": 195590,
+    "activation_pack_async_jobs": 232,
+    "activation_pack_async_hits": 855,
+    "host_copy_activation_us": 13131,
+    "act_cma_copy_cpu_us": 76246,
+    "act_cma_copy_dma_us": 0,
+    "act_cma_copy_hidden_candidate_us": 63115,
+    "act_cma_copy_cpu_calls": 472,
+    "act_cma_copy_dma_calls": 0,
+    "host_copy_weight_us": 71315,
+    "bias_prepare_us": 8357,
+    "postprocess_us": 343980,
+    "runtime_total_us": 853155,
+    "runtime_dma_in_us": 137378,
+    "runtime_compute_us": 690734,
+    "runtime_compute_exclusive_us": 690734,
+    "runtime_dma_out_us": 25042,
+    "runtime_layout_us": 1552025,
+    "runtime_layout_exclusive_us": 1552025,
+    "runtime_wait_irq_us": 0,
+    "runtime_compute_calls": 928,
+    "runtime_gemm_plan_calls": 928,
+    "runtime_mvin_calls": 2197,
+    "runtime_mvout_calls": 652,
+    "dma_in_activation_us": 0,
+    "dma_in_weight_us": 0,
+    "dma_in_bias_us": 5216,
+    "dma_in_pair_us": 120291
+  },
+  "text_prefill": {
+    "decode_us": 10418524,
+    "tokens": 340,
+    "text_tokens": 276,
+    "media_tokens": 64,
+    "npu": {
+      "used_npu": true,
+      "node_count": 221,
+      "exec_tile_count": 1876,
+      "weight_pack_count": 1186,
+      "bias_pack_count": 0,
+      "gemm_calls": 1876,
+      "gemm_plan_calls": 1876,
+      "dma_out_calls": 1504,
+      "postprocess_calls": 411,
+      "dma_in_activation_calls": 876,
+      "dma_in_weight_calls": 1812,
+      "dma_in_bias_calls": 411,
+      "dma_in_pair_calls": 1440,
+      "spm_activation_reuse_hits": 1655,
+      "spm_weight_reuse_hits": 436,
+      "dma_in_activation_bytes": 169945600,
+      "dma_in_weight_bytes": 518553600,
+      "acc_readback_bytes": 380723200,
+      "output_write_bytes": 367744000,
+      "w_pingpong_enabled": true,
+      "w_prefetch_calls": 372,
+      "w_prefetch_hits": 372,
+      "w_prefetch_conflicts": 112,
+      "w_prefetch_wait_us": 12038,
+      "w_prefetch_hidden_candidate_us": 247148,
+      "full_pingpong_enabled": true,
+      "full_pingpong_nodes": 221,
+      "a_prefetch_enabled": true,
+      "a_prefetch_enabled_nodes": 221,
+      "o_overlap_enabled": true,
+      "o_overlap_enabled_nodes": 221,
+      "full_output_cma_active": true,
+      "full_output_cma_nodes": 221,
+      "a_prefetch_calls": 655,
+      "a_prefetch_hits": 655,
+      "a_prefetch_conflicts": 0,
+      "a_prefetch_wait_us": 2254,
+      "a_prefetch_hidden_candidate_us": 409980,
+      "o_mvout_async_calls": 1504,
+      "o_mvout_wait_us": 52307,
+      "o_mvout_hidden_candidate_us": 1090258,
+      "raw_acc_mvout_nodes": 0,
+      "raw_acc_mvout_tiles": 0,
+      "total_node_us": 2580902,
+      "accounted_us": 3569537,
+      "unaccounted_us": 0,
+      "accounted_share_pct": 138.3057938658655,
+      "activation_pack_us": 464286,
+      "activation_pack_async_us": 603266,
+      "activation_pack_wait_us": 464286,
+      "activation_pack_async_jobs": 504,
+      "activation_pack_async_hits": 1655,
+      "host_copy_activation_us": 29213,
+      "act_cma_copy_cpu_us": 86026,
+      "act_cma_copy_dma_us": 0,
+      "act_cma_copy_hidden_candidate_us": 56813,
+      "act_cma_copy_cpu_calls": 876,
+      "act_cma_copy_dma_calls": 0,
+      "host_copy_weight_us": 168027,
+      "bias_prepare_us": 21581,
+      "postprocess_us": 376999,
+      "runtime_total_us": 1294539,
+      "runtime_dma_in_us": 284319,
+      "runtime_compute_us": 961093,
+      "runtime_compute_exclusive_us": 961093,
+      "runtime_dma_out_us": 49127,
+      "runtime_layout_us": 2493444,
+      "runtime_layout_exclusive_us": 2493444,
+      "runtime_wait_irq_us": 0,
+      "runtime_compute_calls": 1876,
+      "runtime_gemm_plan_calls": 1876,
+      "runtime_mvin_calls": 4603,
+      "runtime_mvout_calls": 1504,
+      "dma_in_activation_us": 0,
+      "dma_in_weight_us": 0,
+      "dma_in_bias_us": 35110,
+      "dma_in_pair_us": 286719
+    },
+    "normalized_operator_profile": {
+      "profile_kind": "llama_server_normalized_operator_profile",
+      "timing_unit": "us",
+      "classification": "custom_cpu_backend_wrappers_as_npu_related_ops",
+      "note": "Raw CPU backend profile is preserved separately. CUSTOM is reported as an NPU attention wrapper; MAP_CUSTOM3 is reported as an NPU custom GEMM wrapper because these nodes are CPU-backend entry points for NPU-related custom paths.",
+      "raw_cpu_backend_total_us": 0,
+      "npu_wrapped_node_wall_us": 0,
+      "cpu_backend_non_npu_us": 0,
+      "by_kind": []
+    },
+    "derived": {
+      "npu_host_us": 1060106,
+      "npu_total_node_us": 2580902,
+      "npu_wrapper_cpu_wall_us": 0,
+      "npu_related_wall_us": 2580902,
+      "raw_residual_cpu_or_other_us": 7837622,
+      "residual_cpu_or_other_us": 7837622
+    }
+  },
+  "derived": {
+    "npu_host_us": 632373,
+    "npu_total_node_us": 1589010,
+    "npu_wrapper_cpu_wall_us": 0,
+    "npu_related_wall_us": 1589010,
+    "mmproj_raw_residual_cpu_us": 4526802,
+    "mmproj_residual_cpu_us": 4526802,
+    "mmproj_residual_cpu_detail": {
+      "kind": "non_intrusive_phase_timing_and_graph_categories",
+      "note": "This splits the residual by coarse mmproj phases and CPU backend categories. CUSTOM/MAP_CUSTOM3 wrapper nodes are also reported in normalized_operator_profile as NPU-related wrappers, so mmproj_residual_cpu_us excludes them while mmproj_raw_residual_cpu_us keeps the old raw residual.",
+      "known_profile_overhead_us": 1312,
+      "phase_wall_time_us": {
+        "alloc_graph_us": 2433,
+        "build_graph_us": 1079,
+        "graph_compute_us": 6097671,
+        "output_readback_us": 111,
+        "set_inputs_us": 12618,
+        "total_observed_us": 6115234
+      },
+      "cpu_operator_categories": [
+        {
+          "name": "ELEMENTWISE_CPU",
+          "node_count": 76,
+          "elements": 59768832,
+          "bytes": 239075328
+        },
+        {
+          "name": "LAYOUT_CPU",
+          "node_count": 50,
+          "elements": 39124992,
+          "bytes": 156499968
+        },
+        {
+          "name": "ACTIVATION_CPU",
+          "node_count": 12,
+          "elements": 37748736,
+          "bytes": 150994944
+        },
+        {
+          "name": "NORM_CPU",
+          "node_count": 25,
+          "elements": 19660800,
+          "bytes": 78643200
+        },
+        {
+          "name": "MAP_CUSTOM3_CPU",
+          "node_count": 12,
+          "elements": 9437184,
+          "bytes": 37748736
+        },
+        {
+          "name": "IM2COL_CPU",
+          "node_count": 1,
+          "elements": 786432,
+          "bytes": 3145728
+        },
+        {
+          "name": "MUL_MAT_CPU",
+          "node_count": 1,
+          "elements": 786432,
+          "bytes": 3145728
+        }
+      ],
+      "cpu_backend_operator_categories": [],
+      "normalized_operator_profile": {
+        "profile_kind": "llama_server_normalized_operator_profile",
+        "timing_unit": "us",
+        "classification": "custom_cpu_backend_wrappers_as_npu_related_ops",
+        "note": "Raw CPU backend profile is preserved separately. CUSTOM is reported as an NPU attention wrapper; MAP_CUSTOM3 is reported as an NPU custom GEMM wrapper because these nodes are CPU-backend entry points for NPU-related custom paths.",
+        "raw_cpu_backend_total_us": 0,
+        "npu_wrapped_node_wall_us": 0,
+        "cpu_backend_non_npu_us": 0,
+        "by_kind": []
+      }
+    },
+    "prefill_minus_mmproj_us": 10509354
+  }
+}

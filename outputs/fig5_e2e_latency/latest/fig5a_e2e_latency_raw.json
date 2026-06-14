@@ -1,0 +1,573 @@
+{
+  "schema": "aicas.fig5a_e2e_latency.raw.v1",
+  "generated_at": "2026-06-10T13:40:50.297377+00:00",
+  "metadata": {
+    "repo": "/home/gugugu/work/llama.cpp-kv260-20260407",
+    "git_commit": "cf7ba790be9ce73b353b366f5be3d432d53312d1",
+    "git_status_short": " M AICAS2026/aicas_semi/code/acc_eval.py\n M AICAS2026/aicas_semi/code/energy_eval.py\n M AICAS2026/aicas_semi/code/throughput_eval.py\n M AICAS2026/aicas_semi/scripts/run_semi_eval.sh\n M AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh\n M docs/aicas-current-best-config.json\n M ggml/src/ggml-npu/CMakeLists.txt\n M ggml/src/ggml-npu/ggml-npu-api-decode-ffn-attn.inc\n M ggml/src/ggml-npu/ggml-npu-api-decode-linear.inc\n M ggml/src/ggml-npu/ggml-npu-private-decode-helpers.inc\n M ggml/src/ggml-npu/ggml-npu-private-runtime.inc\n M ggml/src/ggml-npu/ggml-npu.cpp\n M npuruntime/kv260/decode_runtime/Makefile\n M npuruntime/kv260/decode_runtime/include/npu_kv260_uapi.h\n D npuruntime/kv260/decode_runtime/include/npu_regs.h\n D npuruntime/kv260/decode_runtime/include/npu_regs_compat.h\n M npuruntime/kv260/decode_runtime/include/npu_runtime.h\n M npuruntime/kv260/decode_runtime/src/npu_runtime.cpp\n D npuruntime/kv260/decode_runtime/tests/decode_attention_14flow_test.cpp\n D npuruntime/kv260/decode_runtime/tests/decode_flow_test.cpp\n D npuruntime/kv260/decode_runtime/tests/gemv_modes_test.cpp\n D npuruntime/kv260/decode_runtime/tests/gemv_w4a16_test.cpp\n D npuruntime/kv260/decode_runtime/tests/mmio_irq_bench_test.cpp\n D npuruntime/kv260/decode_runtime/tests/mvin_bandwidth_test.cpp\n M npuruntime/kv260/decode_runtime/tests/runtime_init_test.cpp\n M npuruntime/kv260/decode_runtime/tests/smoke_test.c\n M tools/mtmd/clip.cpp\n?? AICAS2026/aicas_semi/code/roofline_eval.py\n?? AICAS2026/aicas_semi/scripts/analyze_roofline.py\n?? AICAS2026/aicas_semi/scripts/run_acc_seed_sweep_kv260.sh\n?? AICAS2026/aicas_semi/scripts/run_roofline_kv260.sh\n?? AICAS2026/submission/\n?? docs/development/kv260-attention-qk-pv-rtl-debug-prompt.md\n?? docs/development/kv260-decode-stream-api-gaps.md\n?? npuruntime/kv260/decode_runtime/SNAPSHOT.md\n?? npuruntime/kv260/decode_runtime/src/npu_regs.h\n?? npuruntime/kv260/decode_runtime/src/npu_regs_compat.h\n?? npuruntime/kv260/decode_runtime/tests/decode_full_stream_perf_test.cpp\n?? npuruntime/kv260/decode_runtime/tests/ffn_swiglu_actscale_test.cpp\n?? npuruntime/kv260/decode_runtime/tests/runtime_api_contract_test.cpp\n?? npuruntime/kv260/decode_runtime/tests/stream_attn_pv_dump_repro_test.cpp\n?? npuruntime/kv260/decode_runtime/tests/stream_gemv_api_test.cpp\n?? npuruntime/kv260/decode_runtime/tests/stream_gemv_perf_test.cpp\n?? outputs/\n?? scripts/fig5_e2e_latency/",
+    "cpu_model": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf",
+    "cpu_mmproj": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf",
+    "versavlm_model": "/home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf",
+    "versavlm_mmproj": "/home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf",
+    "image": "/home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/code/test2.jpg",
+    "best_config_json": "/home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json",
+    "cpu_best_config_json": "",
+    "warmup_runs": 0,
+    "measure_runs": 1,
+    "command_templates": {
+      "cpu": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server --best-config-json '' --model /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf --mmproj /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-cpu-P256_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19090 --threads 4 --ubatch-size 1024 --cache-type-k f16 --cache-type-v f16 --flash-attn auto --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device CPU --no-decode-npu --no-npu-shape-table --no-npu-preload-weights --server-env MTMD_BACKEND_DEVICE=CPU --server-env AICAS_TEXT_PREFILL_LOG8PV_NPU=0 --server-env AICAS_MMPROJ_LOG8PV_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=0 --server-env AICAS_TEXT_DECODE_ATTN_NPU=0 --server-env AICAS_TEXT_LM_HEAD_W8A16_NPU=0 --server-env GGML_NPU_TEXT_PREFILL_DYNAMIC=0 --server-env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=0",
+      "versavlm": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server --best-config-json /home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json --model /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf --mmproj /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-versavlm-P256_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19091 --threads 4 --ubatch-size 1024 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device NPU --decode-npu --npu-text-prefill-dynamic --npu-preload-weights"
+    },
+    "notes": [
+      "Measurements use llama-server response timings: timings.prompt_ms as prefill_ms and timings.predicted_ms as decode_ms.",
+      "Image/text prefill split uses mtmd_prefill_summary.json: image_ms = mmproj.encode_us / 1000 and text_prefill_ms = mmproj.merged_decode_us / 1000.",
+      "For CPU official FP16 runs where mtmd does not emit merged_decode_us, text_prefill_ms falls back to prompt_ms - image_ms and the raw JSON records prefill_split_source.",
+      "prefill_split_residual_ms records prompt_ms - image_ms - text_prefill_ms; this is usually coarse timing overhead/accounting difference.",
+      "Model load time is excluded because each measured request is sent after llama-server is already ready.",
+      "A fixed image is included in every request; prompt_tokens_actual is taken from server usage and may include multimodal/template tokens.",
+      "Each case/system is measured once through the semi wrapper throughput-profile-only path; no averaging is performed.",
+      "CPU uses the official FP16 baseline model/mmproj from docs/aicas-current-best-config.json official_fp16_baseline and passes an empty best-config JSON to avoid quantized/NPU env injection.",
+      "VersaVLM uses the current best quantized model/mmproj plus the semi-test default prefill/decode overlays."
+    ]
+  },
+  "prompts": {
+    "P256_D256": {
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.",
+      "tokenizer_count": 262,
+      "target": 256
+    },
+    "P256_D512": {
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.",
+      "tokenizer_count": 262,
+      "target": 256
+    },
+    "P512_D256": {
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.",
+      "tokenizer_count": 510,
+      "target": 512
+    },
+    "P512_D512": {
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.",
+      "tokenizer_count": 510,
+      "target": 512
+    }
+  },
+  "cases": {
+    "P256_D256": {
+      "prompt_tokens_target": 256,
+      "decode_tokens_target": 256,
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.",
+      "systems": {
+        "cpu": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server --best-config-json '' --model /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf --mmproj /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-cpu-P256_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19090 --threads 4 --ubatch-size 1024 --cache-type-k f16 --cache-type-v f16 --flash-attn auto --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device CPU --no-decode-npu --no-npu-shape-table --no-npu-preload-weights --server-env MTMD_BACKEND_DEVICE=CPU --server-env AICAS_TEXT_PREFILL_LOG8PV_NPU=0 --server-env AICAS_MMPROJ_LOG8PV_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=0 --server-env AICAS_TEXT_DECODE_ATTN_NPU=0 --server-env AICAS_TEXT_LM_HEAD_W8A16_NPU=0 --server-env GGML_NPU_TEXT_PREFILL_DYNAMIC=0 --server-env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=0",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-cpu-P256_D256.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D256",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 340,
+              "completion_tokens": 256,
+              "total_tokens": 596,
+              "prompt_ms": 73442.983,
+              "decode_ms": 47995.045,
+              "total_ms": 121438.02799999999,
+              "prefill_speed_tps": 4.629441590083562,
+              "decode_speed_tps": 5.3338839457281475,
+              "response_text": "The image depicts a long, straight road stretching into the distance, flanked by a vast expanse of flat land. The sky above is a vibrant mix of red and orange hues, suggesting a sunset or sunrise. The road is flanked by a line of trees on either side, their leaves rustling in the gentle breeze. The landscape is devoid of any human activity, creating a sense of tranquility and isolation. The image is taken from a high vantage point, providing a panoramic view of the road and the surrounding landscape. The colors in the image are predominantly red and orange, with the sky adding a touch of blue. The image does not contain any discernible text. The layout of the road is straight and uninterrupted, with no visible landmarks or other objects in the immediate vicinity. The image does not provide any information about the time of day or the weather conditions. The image is a serene and picturesque representation of a rural landscape at sunset or sunrise. The image does not contain any text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D256/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D256/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D256/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 44222.78,
+              "text_prefill_ms": 29220.202999999994,
+              "prefill_split_residual_ms": 0.0,
+              "prefill_split_source": "mtmd.mmproj.encode_us + prompt_ms_minus_image_ms_fallback",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 73442983,
+                "prompt_tokens_processed": 340,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": null,
+                  "text_tokens": null,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 44222780,
+                  "merged_decode_us": null,
+                  "total_chunk_us": 49227052
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 44222.78,
+            "text_prefill_ms": 29220.202999999994,
+            "prefill_ms": 73442.983,
+            "decode_ms": 47995.045,
+            "total_ms": 121438.02799999999,
+            "prefill_split_residual_ms": 0.0,
+            "tokens_prompt_actual": 340,
+            "tokens_decode_actual": 256
+          },
+          "path_verification": {
+            "system": "cpu",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D256/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=9c2101d509338ed13c4e6330737b19f85fa05359, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": false,
+            "log_contains_cpu_backend": true,
+            "log_contains_npu_backend": false
+          }
+        },
+        "versavlm": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server --best-config-json /home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json --model /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf --mmproj /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-versavlm-P256_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19091 --threads 4 --ubatch-size 1024 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device NPU --decode-npu --npu-text-prefill-dynamic --npu-preload-weights",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-versavlm-P256_D256.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D256",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 340,
+              "completion_tokens": 256,
+              "total_tokens": 596,
+              "prompt_ms": 16625.166,
+              "decode_ms": 14638.352,
+              "total_ms": 31263.518000000004,
+              "prefill_speed_tps": 20.45092361784538,
+              "decode_speed_tps": 17.488307426956258,
+              "response_text": "The image captures a breathtaking landscape under a dramatic sky. A solitary dirt road, devoid of human presence, cuts through the vast expanse of flat land. The road, a stark contrast to the horizon, is flanked by a line of tall, golden wheat-colored trees. The sky above is painted in hues of crimson and orange, suggesting the arrival of dawn. The image is taken from a distance, giving the viewer a sense of being enveloped by the sky's fiery hues. The image is devoid of any discernible text or readable objects. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D256/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D256/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D256/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 6115.812,
+              "text_prefill_ms": 10418.524,
+              "prefill_split_residual_ms": 90.83000000000175,
+              "prefill_split_source": "mtmd.mmproj.encode_us + mtmd.mmproj.merged_decode_us",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 16625166,
+                "prompt_tokens_processed": 340,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": true,
+                  "text_tokens": 276,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 6115812,
+                  "merged_decode_us": 10418524,
+                  "total_chunk_us": 6115812
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 6115.812,
+            "text_prefill_ms": 10418.524,
+            "prefill_ms": 16625.166,
+            "decode_ms": 14638.352,
+            "total_ms": 31263.518000000004,
+            "prefill_split_residual_ms": 90.83000000000175,
+            "tokens_prompt_actual": 340,
+            "tokens_decode_actual": 256
+          },
+          "path_verification": {
+            "system": "versavlm",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D256/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=8e6deb60f2c190776da91fd7941ef32fc447674d, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": true,
+            "log_contains_cpu_backend": false,
+            "log_contains_npu_backend": true
+          }
+        }
+      }
+    },
+    "P256_D512": {
+      "prompt_tokens_target": 256,
+      "decode_tokens_target": 512,
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.",
+      "systems": {
+        "cpu": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server --best-config-json '' --model /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf --mmproj /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-cpu-P256_D512 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19100 --threads 4 --ubatch-size 1024 --cache-type-k f16 --cache-type-v f16 --flash-attn auto --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 512 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device CPU --no-decode-npu --no-npu-shape-table --no-npu-preload-weights --server-env MTMD_BACKEND_DEVICE=CPU --server-env AICAS_TEXT_PREFILL_LOG8PV_NPU=0 --server-env AICAS_MMPROJ_LOG8PV_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=0 --server-env AICAS_TEXT_DECODE_ATTN_NPU=0 --server-env AICAS_TEXT_LM_HEAD_W8A16_NPU=0 --server-env GGML_NPU_TEXT_PREFILL_DYNAMIC=0 --server-env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=0",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-cpu-P256_D512.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D512",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 340,
+              "completion_tokens": 512,
+              "total_tokens": 852,
+              "prompt_ms": 72948.986,
+              "decode_ms": 103070.811,
+              "total_ms": 176019.79700000002,
+              "prefill_speed_tps": 4.660791309696888,
+              "decode_speed_tps": 4.9674587308719245,
+              "response_text": "The image depicts a long, straight road stretching into the distance, flanked by a vast expanse of flat land. The sky above is a vibrant mix of red and orange hues, suggesting a sunset or sunrise. The road is flanked by a line of trees on either side, their leaves rustling in the gentle breeze. The landscape is devoid of any human activity, creating a sense of tranquility and isolation. The image is taken from a high vantage point, providing a panoramic view of the road and the surrounding landscape. The colors in the image are predominantly red and orange, with the sky adding a touch of blue. The image does not contain any discernible text. The layout of the road is straight and uninterrupted, with no visible landmarks or other objects in the immediate vicinity. The image does not provide any information about the time of day or the weather conditions. The image is a serene and picturesque representation of a rural landscape at sunset or sunrise. The image does not contain any text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape. The image does not contain any discernible text or identifiable objects. The image is a high-resolution photograph, with a clear and sharp focus on the road and the surrounding landscape.",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D512/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D512/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D512/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 42675.036,
+              "text_prefill_ms": 30273.950000000004,
+              "prefill_split_residual_ms": 0.0,
+              "prefill_split_source": "mtmd.mmproj.encode_us + prompt_ms_minus_image_ms_fallback",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 72948986,
+                "prompt_tokens_processed": 340,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": null,
+                  "text_tokens": null,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 42675036,
+                  "merged_decode_us": null,
+                  "total_chunk_us": 47903918
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 42675.036,
+            "text_prefill_ms": 30273.950000000004,
+            "prefill_ms": 72948.986,
+            "decode_ms": 103070.811,
+            "total_ms": 176019.79700000002,
+            "prefill_split_residual_ms": 0.0,
+            "tokens_prompt_actual": 340,
+            "tokens_decode_actual": 512
+          },
+          "path_verification": {
+            "system": "cpu",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P256_D512/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=9c2101d509338ed13c4e6330737b19f85fa05359, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": false,
+            "log_contains_cpu_backend": true,
+            "log_contains_npu_backend": false
+          }
+        },
+        "versavlm": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server --best-config-json /home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json --model /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf --mmproj /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-versavlm-P256_D512 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19101 --threads 4 --ubatch-size 1024 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 512 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device NPU --decode-npu --npu-text-prefill-dynamic --npu-preload-weights",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-versavlm-P256_D512.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D512",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 340,
+              "completion_tokens": 512,
+              "total_tokens": 852,
+              "prompt_ms": 15949.118,
+              "decode_ms": 30735.871,
+              "total_ms": 46684.989,
+              "prefill_speed_tps": 21.31779324725041,
+              "decode_speed_tps": 16.658060544306682,
+              "response_text": "The image captures a breathtaking landscape under a dramatic sky. A solitary dirt road, devoid of human presence, cuts through the vast expanse of flat land. The road, a stark contrast to the horizon, is flanked by a line of tall, golden wheat-colored trees. The sky above is painted in hues of crimson and orange, suggesting the arrival of dawn. The image is taken from a distance, giving the viewer a sense of being enveloped by the sky's fiery hues. The image is devoid of any discernible text or readable objects. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the journey of the road, the journey of the sun, and the journey of the sky. The image is devoid of any discernible objects or readable text. The image captures a moment of stillness, where the viewer is invited to imagine the",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D512/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D512/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D512/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 6148.005,
+              "text_prefill_ms": 9691.434,
+              "prefill_split_residual_ms": 109.6790000000019,
+              "prefill_split_source": "mtmd.mmproj.encode_us + mtmd.mmproj.merged_decode_us",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 15949118,
+                "prompt_tokens_processed": 340,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": true,
+                  "text_tokens": 276,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 6148005,
+                  "merged_decode_us": 9691434,
+                  "total_chunk_us": 6148005
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 6148.005,
+            "text_prefill_ms": 9691.434,
+            "prefill_ms": 15949.118,
+            "decode_ms": 30735.871,
+            "total_ms": 46684.989,
+            "prefill_split_residual_ms": 109.6790000000019,
+            "tokens_prompt_actual": 340,
+            "tokens_decode_actual": 512
+          },
+          "path_verification": {
+            "system": "versavlm",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P256_D512/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=8e6deb60f2c190776da91fd7941ef32fc447674d, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": true,
+            "log_contains_cpu_backend": false,
+            "log_contains_npu_backend": true
+          }
+        }
+      }
+    },
+    "P512_D256": {
+      "prompt_tokens_target": 512,
+      "decode_tokens_target": 256,
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.",
+      "systems": {
+        "cpu": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server --best-config-json '' --model /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf --mmproj /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-cpu-P512_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19110 --threads 4 --ubatch-size 1024 --cache-type-k f16 --cache-type-v f16 --flash-attn auto --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device CPU --no-decode-npu --no-npu-shape-table --no-npu-preload-weights --server-env MTMD_BACKEND_DEVICE=CPU --server-env AICAS_TEXT_PREFILL_LOG8PV_NPU=0 --server-env AICAS_MMPROJ_LOG8PV_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=0 --server-env AICAS_TEXT_DECODE_ATTN_NPU=0 --server-env AICAS_TEXT_LM_HEAD_W8A16_NPU=0 --server-env GGML_NPU_TEXT_PREFILL_DYNAMIC=0 --server-env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=0",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-cpu-P512_D256.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D256",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 588,
+              "completion_tokens": 256,
+              "total_tokens": 844,
+              "prompt_ms": 97555.743,
+              "decode_ms": 54789.399,
+              "total_ms": 152345.142,
+              "prefill_speed_tps": 6.027323270963145,
+              "decode_speed_tps": 4.672436724483873,
+              "response_text": "The image depicts a long, straight road stretching into the distance under a dramatic sky filled with vibrant hues of red and orange. The road is surrounded by a vast expanse of flat land, punctuated by a few scattered trees and bushes. The sky is a canvas of clouds, their colors blending into a mesmerizing display of red, orange, and yellow. The perspective of the image is from the side of the road, looking towards the horizon, giving the viewer a sense of being on the road itself. The image is taken during sunset, as evidenced by the warm, golden light that bathes the scene. The overall atmosphere is one of tranquility and beauty, with the road serving as a pathway to the horizon. The image does not contain any discernible text. The layout, objects, colors, lighting, and any readable text are all accurately described, and the image is factual, ordered, and concise. The image is a clear representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual,",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D256/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D256/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D256/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 42693.541,
+              "text_prefill_ms": 54862.202000000005,
+              "prefill_split_residual_ms": 0.0,
+              "prefill_split_source": "mtmd.mmproj.encode_us + prompt_ms_minus_image_ms_fallback",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 97555743,
+                "prompt_tokens_processed": 588,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": null,
+                  "text_tokens": null,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 42693541,
+                  "merged_decode_us": null,
+                  "total_chunk_us": 47552628
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 42693.541,
+            "text_prefill_ms": 54862.202000000005,
+            "prefill_ms": 97555.743,
+            "decode_ms": 54789.399,
+            "total_ms": 152345.142,
+            "prefill_split_residual_ms": 0.0,
+            "tokens_prompt_actual": 588,
+            "tokens_decode_actual": 256
+          },
+          "path_verification": {
+            "system": "cpu",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D256/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=9c2101d509338ed13c4e6330737b19f85fa05359, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": false,
+            "log_contains_cpu_backend": true,
+            "log_contains_npu_backend": false
+          }
+        },
+        "versavlm": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server --best-config-json /home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json --model /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf --mmproj /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-versavlm-P512_D256 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19111 --threads 4 --ubatch-size 1024 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 256 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device NPU --decode-npu --npu-text-prefill-dynamic --npu-preload-weights",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-versavlm-P512_D256.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D256",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 588,
+              "completion_tokens": 256,
+              "total_tokens": 844,
+              "prompt_ms": 16790.354,
+              "decode_ms": 15935.9,
+              "total_ms": 32726.254,
+              "prefill_speed_tps": 35.02010737831972,
+              "decode_speed_tps": 16.064357833570742,
+              "response_text": "The image captures a breathtaking landscape under a dramatic sky. A solitary dirt road cuts through the vast expanse of flat, grassy fields, its edges blurred by the curvature of the horizon. The horizon itself is a stark contrast to the sky, painted in hues of crimson and gold. Above, the sky is painted in hues of crimson and gold, with clouds that mirror the sky's vibrant colors. The image is taken from a distance, allowing the viewer to appreciate the vastness of the landscape. The road, devoid of any discernible objects or characters, serves as a stark contrast to the sky. The image captures the essence of a journey through the open fields, leaving no doubt as to the vastness of the horizon. The image is devoid of any discernible text or identifiable objects. The image is a testament to the vastness of nature, and the endless possibilities that lie beyond our perception. The image is devoid of any discernible text or identifiable objects. The image is a testament to the vastness of nature, and the endless possibilities that lie beyond our perception. The image is devoid of any discernible text or identifiable objects. The image is devoid of any discernible objects or identifiable text. The image is devoid of any discernible text or identifiable objects. The",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D256/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D256/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D256/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 6143.872,
+              "text_prefill_ms": 10546.283,
+              "prefill_split_residual_ms": 100.19900000000052,
+              "prefill_split_source": "mtmd.mmproj.encode_us + mtmd.mmproj.merged_decode_us",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 16790354,
+                "prompt_tokens_processed": 588,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": true,
+                  "text_tokens": 524,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 6143872,
+                  "merged_decode_us": 10546283,
+                  "total_chunk_us": 6143872
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 6143.872,
+            "text_prefill_ms": 10546.283,
+            "prefill_ms": 16790.354,
+            "decode_ms": 15935.9,
+            "total_ms": 32726.254,
+            "prefill_split_residual_ms": 100.19900000000052,
+            "tokens_prompt_actual": 588,
+            "tokens_decode_actual": 256
+          },
+          "path_verification": {
+            "system": "versavlm",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D256/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=8e6deb60f2c190776da91fd7941ef32fc447674d, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": true,
+            "log_contains_cpu_backend": false,
+            "log_contains_npu_backend": true
+          }
+        }
+      }
+    },
+    "P512_D512": {
+      "prompt_tokens_target": 512,
+      "decode_tokens_target": 512,
+      "prompt": "You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.",
+      "systems": {
+        "cpu": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server --best-config-json '' --model /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/SmolVLM2-500M-Video-Instruct-f16.gguf --mmproj /home/gugugu/work/llama.cpp-kv260-20260407/AICAS/gguf/mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-cpu-P512_D512 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19120 --threads 4 --ubatch-size 1024 --cache-type-k f16 --cache-type-v f16 --flash-attn auto --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 512 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device CPU --no-decode-npu --no-npu-shape-table --no-npu-preload-weights --server-env MTMD_BACKEND_DEVICE=CPU --server-env AICAS_TEXT_PREFILL_LOG8PV_NPU=0 --server-env AICAS_MMPROJ_LOG8PV_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU=0 --server-env AICAS_TEXT_DECODE_AWQ_NPU_REQUIRE_ACTIVE=0 --server-env AICAS_TEXT_DECODE_ATTN_NPU=0 --server-env AICAS_TEXT_LM_HEAD_W8A16_NPU=0 --server-env GGML_NPU_TEXT_PREFILL_DYNAMIC=0 --server-env GGML_NPU_PRELOAD_WEIGHTS_ON_LOAD=0",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-cpu-P512_D512.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D512",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 588,
+              "completion_tokens": 512,
+              "total_tokens": 1100,
+              "prompt_ms": 97471.307,
+              "decode_ms": 119969.192,
+              "total_ms": 217440.499,
+              "prefill_speed_tps": 6.032544531284473,
+              "decode_speed_tps": 4.267762343518993,
+              "response_text": "The image depicts a long, straight road stretching into the distance under a dramatic sky filled with vibrant hues of red and orange. The road is surrounded by a vast expanse of flat land, punctuated by a few scattered trees and bushes. The sky is a canvas of clouds, their colors blending into a mesmerizing display of red, orange, and yellow. The perspective of the image is from the side of the road, looking towards the horizon, giving the viewer a sense of being on the road itself. The image is taken during sunset, as evidenced by the warm, golden light that bathes the scene. The overall atmosphere is one of tranquility and beauty, with the road serving as a pathway to the horizon. The image does not contain any discernible text. The layout, objects, colors, lighting, and any readable text are all accurately described, and the image is factual, ordered, and concise. The image is a clear representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any unsupported assumptions, and the details are accurately described. The image is a factual, ordered, and concise representation of a scenic landscape under a dramatic sky. The image does not contain any ambiguity, and the details are clear and unambiguous. The image is",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D512/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D512/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D512/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 42475.565,
+              "text_prefill_ms": 54995.742,
+              "prefill_split_residual_ms": 0.0,
+              "prefill_split_source": "mtmd.mmproj.encode_us + prompt_ms_minus_image_ms_fallback",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 97471307,
+                "prompt_tokens_processed": 588,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": null,
+                  "text_tokens": null,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 42475565,
+                  "merged_decode_us": null,
+                  "total_chunk_us": 47297046
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 42475.565,
+            "text_prefill_ms": 54995.742,
+            "prefill_ms": 97471.307,
+            "decode_ms": 119969.192,
+            "total_ms": 217440.499,
+            "prefill_split_residual_ms": 0.0,
+            "tokens_prompt_actual": 588,
+            "tokens_decode_actual": 512
+          },
+          "path_verification": {
+            "system": "cpu",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-cpu-P512_D512/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-cpu/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=9c2101d509338ed13c4e6330737b19f85fa05359, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": false,
+            "log_contains_cpu_backend": true,
+            "log_contains_npu_backend": false
+          }
+        },
+        "versavlm": {
+          "command": "bash /home/gugugu/work/llama.cpp-kv260-20260407/AICAS2026/aicas_semi/scripts/run_semi_eval_kv260.sh --skip-build --server-bin /home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server --best-config-json /home/gugugu/work/llama.cpp-kv260-20260407/docs/aicas-current-best-config.json --model /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/text_awq/calib16-a0_12-g128-sym-lmhead/text_sq_a05_decode_awq_sym_lmhead_calib16_a0_12_g128_scale_f16.gguf --mmproj /home/gugugu/work/model-quant/AICAS/output/group128-hparam-search/mmproj_sq/a0_7-minmax-per_channel/mmproj.gguf --output-dir /home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs --run-id 20260610T131311Z-fig5a-versavlm-P512_D512 --host 192.168.0.10 --user ubuntu --remote-root /home/ubuntu/aicas-semi --port 19121 --threads 4 --ubatch-size 1024 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --ctx-size 4096 --throughput-profile-only --throughput-profile-max-tokens 512 --throughput-profile-prompt 'You are evaluating a vision-language model for latency. Analyze the provided image carefully. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text. Keep the answer factual, ordered, and concise while covering all salient details. If a detail is ambiguous, state the uncertainty instead of inventing it. Describe the image with precise visual evidence and no unsupported assumptions. Mention the layout, objects, colors, lighting, and any readable text.' --prefill-profile-mode summary --sudo-password 123456 --generic-fastpath --overlay-app prefill_190m_qkpipe_20260608_0206_app --decode-overlay-app dec_200m_latest_0609a_app --mtmd-backend-device NPU --decode-npu --npu-text-prefill-dynamic --npu-preload-weights",
+          "host_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/host_logs/20260610T131311Z-fig5a-versavlm-P512_D512.log",
+          "run_dir": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D512",
+          "warmup": [],
+          "measured": [
+            {
+              "prompt_tokens": 588,
+              "completion_tokens": 512,
+              "total_tokens": 1100,
+              "prompt_ms": 16848.127,
+              "decode_ms": 36901.258,
+              "total_ms": 53749.385,
+              "prefill_speed_tps": 34.900021824384396,
+              "decode_speed_tps": 13.874865729509818,
+              "response_text": "The image captures a breathtaking landscape under a dramatic sky. A solitary dirt road cuts through the vast expanse of flat, grassy fields, its edges blurred by the curvature of the horizon. The horizon itself is a stark contrast to the sky, painted in hues of crimson and gold. Above, the sky is painted in hues of crimson and gold, with clouds that mirror the sky's vibrant colors. The image is taken from a distance, allowing the viewer to appreciate the vastness of the landscape. The road, devoid of any discernible objects or characters, serves as a stark contrast to the sky. The image captures the essence of a journey through the open fields, leaving no doubt as to the vastness of the horizon. The image is devoid of any discernible text or identifiable objects. The image is a testament to the vastness of nature, and the endless possibilities that lie beyond our perception. The image is devoid of any discernible text or identifiable objects. The image is a testament to the vastness of nature, and the endless possibilities that lie beyond our perception. The image is devoid of any discernible text or identifiable objects. The image is devoid of any discernible objects or identifiable text. The image is devoid of any discernible text or identifiable objects. The image is a testament to the vastness of nature, and the endless possibilities that lie beyond our perception. The image is a reminder that there is always more to discover, always more to explore, and always more to discover. The image is a reminder that there is always more to explore, always more to discover, and always more to explore. The image is a reminder that there is always more to explore, always more to discover, and always more to explore. The image is a testament to the vastness of the universe, and the endless possibilities that lie beyond our perception. The is no4400888884ability48888888888888-ADQUAL_ANDIFALIFALIFALYALIFABLAIONBERIFAAS444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+              "metrics_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/throughput_metrics_profile.json",
+              "mtmd_prefill_summary_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D512/results/mtmd_prefill_summary.json",
+              "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D512/server_profile.log",
+              "run_index": 1,
+              "is_warmup": false,
+              "image_ms": 6170.613,
+              "text_prefill_ms": 10564.922,
+              "prefill_split_residual_ms": 112.59199999999873,
+              "prefill_split_source": "mtmd.mmproj.encode_us + mtmd.mmproj.merged_decode_us",
+              "mtmd_prefill_summary": {
+                "prefill_total_us": 16848127,
+                "prompt_tokens_processed": 588,
+                "mmproj": {
+                  "has_media": true,
+                  "merged_prefill": true,
+                  "text_tokens": 524,
+                  "media_tokens": 64,
+                  "image_chunk_count": 1,
+                  "encode_us": 6170613,
+                  "merged_decode_us": 10564922,
+                  "total_chunk_us": 6170613
+                }
+              }
+            }
+          ],
+          "summary": {
+            "image_ms": 6170.613,
+            "text_prefill_ms": 10564.922,
+            "prefill_ms": 16848.127,
+            "decode_ms": 36901.258,
+            "total_ms": 53749.385,
+            "prefill_split_residual_ms": 112.59199999999873,
+            "tokens_prompt_actual": 588,
+            "tokens_decode_actual": 512
+          },
+          "path_verification": {
+            "system": "versavlm",
+            "server_bin": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server",
+            "server_log_path": "/home/gugugu/work/llama.cpp-kv260-20260407/outputs/fig5_e2e_latency/latest/runs/20260610T131311Z-fig5a-versavlm-P512_D512/server_profile.log",
+            "server_bin_file": "/home/gugugu/work/llama.cpp-kv260-20260407/build-kv260-semi/bin/llama-server: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=8e6deb60f2c190776da91fd7941ef32fc447674d, for GNU/Linux 5.15.0, with debug_info, not stripped",
+            "log_contains_npu": true,
+            "log_contains_cpu_backend": false,
+            "log_contains_npu_backend": true
+          }
+        }
+      }
+    }
+  }
+}

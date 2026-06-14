@@ -29,7 +29,7 @@ Ensure your total response is expansive, rigorously detailed, logically sequence
 # reported in microwatts (uW). The exact hwmonN index can vary across images;
 # override with --power_path if needed (use --list_hwmon to enumerate).
 DEFAULT_POWER_PATH = "/sys/class/hwmon/hwmon2/power1_input"
-DEFAULT_MAX_TOKENS = 128
+DEFAULT_MAX_TOKENS = 1024
 
 
 def parse_args():
@@ -221,11 +221,16 @@ def main():
         ]
 
         sampler = PowerSampler(args.power_path, args.sample_hz, unit_scale)
+        print(
+            f"[energy] Starting measurement: image={args.image}, max_tokens={args.max_tokens}, "
+            f"sample_hz={args.sample_hz}, power_path={args.power_path}",
+            flush=True,
+        )
         sampler.start()
         # Allow the sampler thread to settle before triggering inference.
         time.sleep(0.5)
 
-        print("Triggering inference...")
+        print("[energy] Triggering inference...", flush=True)
         t_start = time.perf_counter()
         response = chat_completion(
             base_url=args.base_url,
@@ -238,6 +243,7 @@ def main():
             timeout=args.request_timeout,
         )
         t_end = time.perf_counter()
+        print("[energy] Inference completed; stopping sampler", flush=True)
 
         sampler.stop()
         sampler.join()

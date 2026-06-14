@@ -85,6 +85,9 @@ enum {
     KV260_STREAM_GEMV_F_ENABLE_ACT_SCALE = 1u << 0,
     KV260_STREAM_GEMV_F_KV_COL_SCALE = 1u << 1,
     KV260_STREAM_GEMV_F_UNIT_WEIGHT_SCALE = 1u << 2,
+    KV260_STREAM_GEMV_F_KV_QUANT = 1u << 3,
+    KV260_STREAM_GEMV_F_KV_IS_V = 1u << 4,
+    KV260_STREAM_GEMV_F_ENABLE_ACT_SCALE2 = 1u << 5,
 };
 
 typedef struct kv260_stream_gemv_desc {
@@ -108,18 +111,29 @@ typedef struct kv260_stream_gemv_desc {
     uint16_t position;
     uint16_t group_count;
     uint32_t act_group_stride_bytes;
+    const void * act_scale2_ptr;
 } kv260_stream_gemv_desc;
+
+typedef struct kv260_stream_kv_scale_result {
+    uint16_t values[5];
+    uint8_t count;
+    uint8_t seq;
+    uint8_t valid;
+    uint8_t reserved;
+} kv260_stream_kv_scale_result;
 
 static_assert(offsetof(kv260_stream_gemv_desc, rope_lut_ptr) == 40, "decode stream ABI drift");
 static_assert(offsetof(kv260_stream_gemv_desc, weight_row_tile_stride_bytes) == 48, "decode stream ABI drift");
 static_assert(offsetof(kv260_stream_gemv_desc, weight_capacity_tokens) == 52, "decode stream ABI drift");
 static_assert(offsetof(kv260_stream_gemv_desc, output_precision) == 64, "decode stream ABI drift");
 static_assert(offsetof(kv260_stream_gemv_desc, act_group_stride_bytes) == 92, "decode stream ABI drift");
-static_assert(sizeof(kv260_stream_gemv_desc) == 96, "decode stream ABI drift");
+static_assert(offsetof(kv260_stream_gemv_desc, act_scale2_ptr) == 96, "decode stream ABI drift");
+static_assert(sizeof(kv260_stream_gemv_desc) == 104, "decode stream ABI drift");
 
 extern "C" int npu_open(npu_device ** out_dev, const char * dev_path);
 extern "C" void npu_close(npu_device * dev);
 extern "C" int npu_stream_gemv_run(npu_device * dev, const kv260_stream_gemv_desc * desc, uint32_t timeout_ms);
+extern "C" int npu_stream_kv_scale_read(npu_device * dev, int is_v, kv260_stream_kv_scale_result * out) __attribute__((weak));
 
 extern "C" bool ggml_backend_npu_text_log8pv_attention(
         const int8_t * q,

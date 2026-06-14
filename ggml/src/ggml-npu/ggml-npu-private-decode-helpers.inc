@@ -100,6 +100,325 @@ static float npu_decode_read_packed_fp16(const uint8_t * ptr) {
     return ggml_fp16_to_fp32(value);
 }
 
+static const char * npu_decode_act_scale_stats_file() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ACT_SCALE_STATS_FILE");
+    return value != nullptr && value[0] != '\0' ? value : nullptr;
+}
+
+static bool npu_decode_act_scale_stats_requested(int32_t layer_id, int32_t position) {
+    if (npu_decode_act_scale_stats_file() == nullptr) {
+        return false;
+    }
+    const char * layer = std::getenv("AICAS_TEXT_DECODE_ACT_SCALE_STATS_LAYER");
+    if (layer != nullptr && layer[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(layer, &end, 10);
+        if (end == layer || *end != '\0' || parsed != layer_id) {
+            return false;
+        }
+    }
+    const char * pos = std::getenv("AICAS_TEXT_DECODE_ACT_SCALE_STATS_POSITION");
+    if (pos != nullptr && pos[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(pos, &end, 10);
+        if (end == pos || *end != '\0' || parsed != position) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int32_t npu_decode_parse_blk_layer_id(const char * op_name) {
+    if (op_name == nullptr) {
+        return -1;
+    }
+    const char * blk = std::strstr(op_name, "blk.");
+    if (blk == nullptr) {
+        return -1;
+    }
+    blk += 4;
+    char * end = nullptr;
+    const long parsed = std::strtol(blk, &end, 10);
+    if (end == blk || parsed < 0 || parsed > std::numeric_limits<int32_t>::max()) {
+        return -1;
+    }
+    return static_cast<int32_t>(parsed);
+}
+
+static std::string npu_decode_json_escape(const char * value) {
+    std::string out;
+    const char * s = value != nullptr ? value : "";
+    for (; *s != '\0'; ++s) {
+        switch (*s) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += *s; break;
+        }
+    }
+    return out;
+}
+
+struct npu_decode_value_stats {
+    uint32_t count = 0;
+    double min = std::numeric_limits<double>::infinity();
+    double max = -std::numeric_limits<double>::infinity();
+    double abs_min_nonzero = std::numeric_limits<double>::infinity();
+    double abs_max = 0.0;
+    double sum = 0.0;
+    std::vector<double> values;
+};
+
+struct npu_decode_fp16_class_counts {
+    uint32_t zero = 0;
+    uint32_t subnormal = 0;
+    uint32_t normal = 0;
+    uint32_t inf_nan = 0;
+};
+
+static void npu_decode_stats_add(npu_decode_value_stats & stats, double value) {
+    stats.count += 1;
+    stats.min = std::min(stats.min, value);
+    stats.max = std::max(stats.max, value);
+    stats.sum += value;
+    const double abs_value = std::fabs(value);
+    stats.abs_max = std::max(stats.abs_max, abs_value);
+    if (abs_value != 0.0) {
+        stats.abs_min_nonzero = std::min(stats.abs_min_nonzero, abs_value);
+    }
+    stats.values.push_back(value);
+}
+
+static uint16_t npu_decode_fp16_bits_from_float(float value) {
+    const ggml_fp16_t bits = ggml_fp32_to_fp16(value);
+    return static_cast<uint16_t>(bits);
+}
+
+static void npu_decode_fp16_class_add(npu_decode_fp16_class_counts & counts, uint16_t bits) {
+    const uint16_t exp = static_cast<uint16_t>((bits >> 10) & 0x1fu);
+    const uint16_t mant = static_cast<uint16_t>(bits & 0x03ffu);
+    if ((bits & 0x7fffu) == 0) {
+        counts.zero += 1;
+    } else if (exp == 0) {
+        counts.subnormal += 1;
+    } else if (exp == 0x1fu) {
+        counts.inf_nan += 1;
+    } else {
+        GGML_UNUSED(mant);
+        counts.normal += 1;
+    }
+}
+
+static double npu_decode_stats_percentile(std::vector<double> sorted, double pct) {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+    std::sort(sorted.begin(), sorted.end());
+    const double pos = (static_cast<double>(sorted.size() - 1u) * pct) / 100.0;
+    const size_t lo = static_cast<size_t>(std::floor(pos));
+    const size_t hi = static_cast<size_t>(std::ceil(pos));
+    if (lo == hi) {
+        return sorted[lo];
+    }
+    const double alpha = pos - static_cast<double>(lo);
+    return sorted[lo] * (1.0 - alpha) + sorted[hi] * alpha;
+}
+
+static void npu_decode_write_stats_json(std::ofstream & out, const char * name, const npu_decode_value_stats & stats) {
+    const double abs_min = std::isfinite(stats.abs_min_nonzero) ? stats.abs_min_nonzero : 0.0;
+    out << ",\"" << name << "\":{"
+        << "\"count\":" << stats.count
+        << ",\"min\":" << (stats.count != 0 ? stats.min : 0.0)
+        << ",\"max\":" << (stats.count != 0 ? stats.max : 0.0)
+        << ",\"mean\":" << (stats.count != 0 ? stats.sum / static_cast<double>(stats.count) : 0.0)
+        << ",\"sum\":" << stats.sum
+        << ",\"abs_min_nonzero\":" << abs_min
+        << ",\"abs_max\":" << stats.abs_max
+        << ",\"p50\":" << npu_decode_stats_percentile(stats.values, 50.0)
+        << ",\"p95\":" << npu_decode_stats_percentile(stats.values, 95.0)
+        << ",\"p99\":" << npu_decode_stats_percentile(stats.values, 99.0)
+        << "}";
+}
+
+static void npu_decode_write_class_json(std::ofstream & out, const char * name, const npu_decode_fp16_class_counts & counts) {
+    out << ",\"" << name << "\":{"
+        << "\"zero\":" << counts.zero
+        << ",\"subnormal\":" << counts.subnormal
+        << ",\"normal\":" << counts.normal
+        << ",\"inf_nan\":" << counts.inf_nan
+        << "}";
+}
+
+static void npu_decode_dump_act_scale_stats_vectors(
+        const char * label,
+        const char * op_name,
+        int32_t layer_id,
+        int32_t position,
+        const std::vector<float> & act,
+        const std::vector<float> & scale1,
+        const std::vector<float> & scale2) {
+    if (!npu_decode_act_scale_stats_requested(layer_id, position) || act.empty()) {
+        return;
+    }
+    npu_decode_value_stats act_stats;
+    npu_decode_value_stats scale1_stats;
+    npu_decode_value_stats scale2_stats;
+    npu_decode_value_stats prod1_stats;
+    npu_decode_value_stats prod2_stats;
+    npu_decode_fp16_class_counts prod1_class;
+    npu_decode_fp16_class_counts prod2_class;
+
+    for (size_t i = 0; i < act.size(); ++i) {
+        const float a = act[i];
+        const float s1 = i < scale1.size() ? scale1[i] : 1.0f;
+        const float s2 = i < scale2.size() ? scale2[i] : 1.0f;
+        const float p1 = a * s1;
+        const uint16_t p1_bits = npu_decode_fp16_bits_from_float(p1);
+        const float p1_fp16 = ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(p1_bits));
+        const float p2 = p1_fp16 * s2;
+        const uint16_t p2_bits = npu_decode_fp16_bits_from_float(p2);
+        const float p2_fp16 = ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(p2_bits));
+        npu_decode_stats_add(act_stats, a);
+        npu_decode_stats_add(scale1_stats, s1);
+        if (!scale2.empty()) {
+            npu_decode_stats_add(scale2_stats, s2);
+        }
+        npu_decode_stats_add(prod1_stats, p1_fp16);
+        npu_decode_stats_add(prod2_stats, p2_fp16);
+        npu_decode_fp16_class_add(prod1_class, p1_bits);
+        npu_decode_fp16_class_add(prod2_class, p2_bits);
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    std::ofstream out(npu_decode_act_scale_stats_file(), std::ios::app);
+    if (!out.good()) {
+        return;
+    }
+    out << "{\"schema\":\"aicas_decode_act_scale_stats.v1\""
+        << ",\"label\":\"" << npu_decode_json_escape(label).c_str() << "\""
+        << ",\"op_name\":\"" << npu_decode_json_escape(op_name).c_str() << "\""
+        << ",\"layer\":" << layer_id
+        << ",\"position\":" << position
+        << ",\"elems\":" << act.size();
+    npu_decode_write_stats_json(out, "act", act_stats);
+    npu_decode_write_stats_json(out, "scale1", scale1_stats);
+    if (!scale2.empty()) {
+        npu_decode_write_stats_json(out, "scale2", scale2_stats);
+    }
+    npu_decode_write_stats_json(out, "prod1_fp16", prod1_stats);
+    npu_decode_write_stats_json(out, "prod2_fp16", prod2_stats);
+    npu_decode_write_class_json(out, "prod1_fp16_class", prod1_class);
+    npu_decode_write_class_json(out, "prod2_fp16_class", prod2_class);
+    out << "}\n";
+}
+
+static void npu_decode_dump_act_scale_stats_packed(
+        const char * label,
+        const char * op_name,
+        int32_t layer_id,
+        int32_t position,
+        const npu_decode_gemv_layout & layout,
+        uint32_t k,
+        const void * act_ptr,
+        const void * scale1_ptr,
+        const void * scale2_ptr = nullptr) {
+    if (!npu_decode_act_scale_stats_requested(layer_id, position) || act_ptr == nullptr) {
+        return;
+    }
+    std::vector<float> act;
+    std::vector<float> scale1;
+    std::vector<float> scale2;
+    act.reserve(k);
+    scale1.reserve(k);
+    if (scale2_ptr != nullptr) {
+        scale2.reserve(k);
+    }
+    const uint8_t * act_base = static_cast<const uint8_t *>(act_ptr);
+    const uint8_t * scale1_base = static_cast<const uint8_t *>(scale1_ptr);
+    const uint8_t * scale2_base = static_cast<const uint8_t *>(scale2_ptr);
+    for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
+        for (uint32_t lane = 0; lane < NPU_DECODE_GEMV_K_TILE; ++lane) {
+            const uint32_t idx = col_tile * NPU_DECODE_GEMV_K_TILE + lane;
+            if (idx >= k) {
+                continue;
+            }
+            const uint32_t off = col_tile * NPU_DECODE_GEMV_ACT_TILE_BYTES + lane * sizeof(ggml_fp16_t);
+            act.push_back(npu_decode_read_packed_fp16(act_base + off));
+            scale1.push_back(scale1_base != nullptr ? npu_decode_read_packed_fp16(scale1_base + off) : 1.0f);
+            if (scale2_base != nullptr) {
+                scale2.push_back(npu_decode_read_packed_fp16(scale2_base + off));
+            }
+        }
+    }
+    npu_decode_dump_act_scale_stats_vectors(label, op_name, layer_id, position, act, scale1, scale2);
+}
+
+static void npu_decode_dump_source_act_scale_stats(
+        const char * label,
+        const char * op_name,
+        int32_t layer_id,
+        int32_t position,
+        const npu_decode_gemv_layout & layout,
+        const void * act_data,
+        int act_type,
+        int64_t act_nb0,
+        int64_t act_nb1,
+        const uint8_t * scale_packed,
+        uint32_t k,
+        int64_t col = 0) {
+    if (!npu_decode_act_scale_stats_requested(layer_id, position) || act_data == nullptr) {
+        return;
+    }
+    std::vector<float> act;
+    std::vector<float> scale1;
+    act.reserve(k);
+    scale1.reserve(k);
+    for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
+        for (uint32_t lane = 0; lane < NPU_DECODE_GEMV_K_TILE; ++lane) {
+            const uint32_t idx = col_tile * NPU_DECODE_GEMV_K_TILE + lane;
+            if (idx >= k) {
+                continue;
+            }
+            const uint32_t off = col_tile * NPU_DECODE_GEMV_ACT_TILE_BYTES + lane * sizeof(ggml_fp16_t);
+            act.push_back(npu_decode_read_typed_f32(act_data, act_type, col * act_nb1 + idx * act_nb0));
+            scale1.push_back(scale_packed != nullptr ? npu_decode_read_packed_fp16(scale_packed + off) : 1.0f);
+        }
+    }
+    npu_decode_dump_act_scale_stats_vectors(label, op_name, layer_id, position, act, scale1, {});
+}
+
+static void npu_decode_dump_grouped_act_scale_stats(
+        const char * label,
+        const char * op_name,
+        int32_t layer_id,
+        int32_t position,
+        const void * act_ptr,
+        uint32_t group_count,
+        uint32_t group_stride_bytes,
+        const void * scale_ptr,
+        uint32_t elems) {
+    if (!npu_decode_act_scale_stats_requested(layer_id, position) || act_ptr == nullptr || scale_ptr == nullptr) {
+        return;
+    }
+    const uint8_t * act_base = static_cast<const uint8_t *>(act_ptr);
+    const uint8_t * scale_base = static_cast<const uint8_t *>(scale_ptr);
+    std::vector<float> act;
+    std::vector<float> scale1;
+    act.reserve(static_cast<size_t>(group_count) * elems);
+    scale1.reserve(static_cast<size_t>(group_count) * elems);
+    for (uint32_t group = 0; group < group_count; ++group) {
+        const uint8_t * group_base = act_base + group * group_stride_bytes;
+        for (uint32_t i = 0; i < elems; ++i) {
+            act.push_back(npu_decode_read_packed_fp16(group_base + i * sizeof(ggml_fp16_t)));
+            scale1.push_back(npu_decode_read_packed_fp16(scale_base + i * sizeof(ggml_fp16_t)));
+        }
+    }
+    npu_decode_dump_act_scale_stats_vectors(label, op_name, layer_id, position, act, scale1, {});
+}
+
 static void npu_decode_pack_act_scale(
         void * scale_dst,
         size_t scale_bytes,
@@ -193,6 +512,25 @@ static void npu_decode_pack_activation_slice(
         int64_t col) {
     std::memset(act_dst, 0, act_payload_bytes);
     uint8_t * act = static_cast<uint8_t *>(act_dst);
+    if (act_type == GGML_TYPE_F16 && act_nb0 == static_cast<int64_t>(sizeof(ggml_fp16_t))) {
+        const uint8_t * src_col = static_cast<const uint8_t *>(act_data) + col * act_nb1;
+        for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
+            const int64_t local_idx = static_cast<int64_t>(col_tile) * NPU_DECODE_GEMV_K_TILE;
+            const int64_t in_idx = k_offset + local_idx;
+            if (local_idx >= k_slice || in_idx >= k_total) {
+                continue;
+            }
+            const size_t elems = static_cast<size_t>(
+                    std::min<int64_t>(
+                        NPU_DECODE_GEMV_K_TILE,
+                        std::min<int64_t>(k_slice - local_idx, k_total - in_idx)));
+            std::memcpy(
+                    act + col_tile * NPU_DECODE_GEMV_ACT_TILE_BYTES,
+                    src_col + in_idx * act_nb0,
+                    elems * sizeof(ggml_fp16_t));
+        }
+        return;
+    }
     for (uint32_t col_tile = 0; col_tile < layout.col_tiles; ++col_tile) {
         for (uint32_t lane = 0; lane < NPU_DECODE_GEMV_K_TILE; ++lane) {
             const int64_t local_idx = static_cast<int64_t>(col_tile) * NPU_DECODE_GEMV_K_TILE + lane;
@@ -1423,7 +1761,7 @@ constexpr uint32_t NPU_DECODE_ATTN_KV_HEADS = 5;
 constexpr uint32_t NPU_DECODE_ATTN_GROUP_SIZE = NPU_DECODE_ATTN_Q_HEADS / NPU_DECODE_ATTN_KV_HEADS;
 constexpr uint32_t NPU_DECODE_ATTN_KV_DIM = NPU_DECODE_ATTN_KV_HEADS * NPU_DECODE_ATTN_HEAD_DIM;
 constexpr uint32_t NPU_DECODE_ATTN_CACHE_CAPACITY_TOKENS = 4096;
-constexpr uint32_t NPU_DECODE_ATTN_VISIBLE_WINDOW_TOKENS = 992;
+constexpr uint32_t NPU_DECODE_ATTN_VISIBLE_WINDOW_TOKENS = 960;
 constexpr uint32_t NPU_DECODE_ATTN_KV_HEAD_STRIDE_BYTES = 270336;
 constexpr uint32_t NPU_DECODE_ATTN_NPU_KV_HEAD_STRIDE_BYTES = 65536;
 constexpr uint32_t NPU_DECODE_ATTN_ROW_TILE_ELEMS = 32;
@@ -1465,6 +1803,7 @@ struct npu_decode_attention_layer_cache {
     void * v_cache = nullptr;
     uint32_t converted_len = 0;
     uint32_t last_position = 0;
+    bool has_last_position = false;
 };
 
 struct npu_decode_attention_cache {
@@ -1490,6 +1829,24 @@ static void npu_decode_attention_clear_cache() {
         layer = {};
     }
     cache.layers.clear();
+}
+
+static void npu_decode_attention_zero_cache() {
+    npu_decode_attention_cache & cache = npu_decode_attention_get_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    const size_t layer_bytes =
+        static_cast<size_t>(NPU_DECODE_ATTN_KV_HEADS) * NPU_DECODE_ATTN_KV_HEAD_STRIDE_BYTES;
+    for (auto & layer : cache.layers) {
+        if (layer.k_cache != nullptr) {
+            std::memset(layer.k_cache, 0, layer_bytes);
+        }
+        if (layer.v_cache != nullptr) {
+            std::memset(layer.v_cache, 0, layer_bytes);
+        }
+        layer.converted_len = 0;
+        layer.last_position = 0;
+        layer.has_last_position = false;
+    }
 }
 
 static uint32_t npu_decode_attention_kv_cache_tile_bytes() {
@@ -1787,23 +2144,459 @@ static void npu_decode_attention_append_quant_from_output(
     }
 }
 
-static bool npu_decode_attention_dump_requested(int32_t layer_id) {
+static void npu_decode_attention_append_fp16_projection_to_cache(
+        uint8_t * dst_cache,
+        const uint8_t * output_fp16,
+        uint32_t token,
+        bool transposed_v_layout) {
+    // TODO: replace this CPU quantization path once the stream API exposes the
+    // RTL KV-quant output payload and per-head scale registers. The legacy
+    // split path already had hardware KV quant, but it is intentionally not
+    // reachable through the release npu_stream_gemv_run() API.
+    for (uint32_t head = 0; head < NPU_DECODE_ATTN_KV_HEADS; ++head) {
+        const uint8_t * head_base =
+            output_fp16 + head * NPU_DECODE_ATTN_HEAD_DIM * sizeof(ggml_fp16_t);
+        float values[NPU_DECODE_ATTN_HEAD_DIM] = {};
+        float amax = 0.0f;
+        for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+            ggml_fp16_t bits = 0;
+            std::memcpy(&bits, head_base + dim * sizeof(ggml_fp16_t), sizeof(bits));
+            values[dim] = ggml_fp16_to_fp32(bits);
+            amax = std::max(amax, std::fabs(values[dim]));
+        }
+        const float d = amax / 128.0f;
+        const float id = d != 0.0f ? 1.0f / d : 0.0f;
+        const ggml_fp16_t scale = ggml_fp32_to_fp16(d);
+        npu_decode_attention_store_u16_le(
+                dst_cache + npu_decode_attention_cache_scale_addr(head, token),
+                scale);
+        for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+            int q = static_cast<int>(std::round(values[dim] * id));
+            q = std::max(-127, std::min(127, q));
+            const uint8_t quant = static_cast<uint8_t>(static_cast<int8_t>(q));
+            if (transposed_v_layout) {
+                dst_cache[npu_decode_attention_v_cache_quant_addr(head, token, dim)] = quant;
+            } else {
+                dst_cache[npu_decode_attention_cache_quant_addr(head, token, dim)] = quant;
+            }
+        }
+    }
+}
+
+static bool npu_decode_attention_stream_scale_result_to_regs(
+        const kv260_stream_kv_scale_result & result,
+        npu_decode_attention_kv_scale_regs * regs) {
+    if (regs == nullptr ||
+            result.valid == 0 ||
+            result.count != NPU_DECODE_ATTN_KV_HEADS) {
+        return false;
+    }
+    for (uint32_t head = 0; head < NPU_DECODE_ATTN_KV_HEADS; ++head) {
+        regs->values[head] = result.values[head];
+    }
+    regs->count = result.count;
+    regs->seq = result.seq;
+    regs->valid = true;
+    return true;
+}
+
+static void npu_decode_attention_append_stream_quant_projection_to_cache(
+        uint8_t * dst_cache,
+        const uint8_t * output_i8,
+        uint32_t token,
+        const npu_decode_attention_kv_scale_regs & regs,
+        bool transposed_v_layout) {
+    for (uint32_t head = 0; head < NPU_DECODE_ATTN_KV_HEADS; ++head) {
+        npu_decode_attention_store_u16_le(
+                dst_cache + npu_decode_attention_cache_scale_addr(head, token),
+                regs.values[head]);
+        const uint8_t * src_head = output_i8 + head * NPU_DECODE_ATTN_HEAD_DIM;
+        if (transposed_v_layout) {
+            for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+                dst_cache[npu_decode_attention_v_cache_quant_addr(head, token, dim)] =
+                    src_head[dim];
+            }
+        } else {
+            std::memcpy(
+                    dst_cache + npu_decode_attention_cache_quant_addr(head, token, 0),
+                    src_head,
+                    NPU_DECODE_ATTN_HEAD_DIM);
+        }
+    }
+}
+
+static bool npu_decode_attention_write_stream_quant_projection_to_llama_cache(
+        const ggml_tensor * llama_cache,
+        const uint8_t * output_i8,
+        uint32_t token,
+        const npu_decode_attention_kv_scale_regs & regs) {
+    if (llama_cache == nullptr || output_i8 == nullptr ||
+            llama_cache->data == nullptr ||
+            llama_cache->ne[0] != NPU_DECODE_ATTN_HEAD_DIM ||
+            llama_cache->ne[1] != NPU_DECODE_ATTN_KV_HEADS ||
+            llama_cache->ne[2] <= static_cast<int64_t>(token) ||
+            !regs.valid || regs.count != NPU_DECODE_ATTN_KV_HEADS) {
+        return false;
+    }
+
+    for (uint32_t head = 0; head < NPU_DECODE_ATTN_KV_HEADS; ++head) {
+        const int8_t * src_head =
+            reinterpret_cast<const int8_t *>(output_i8 + head * NPU_DECODE_ATTN_HEAD_DIM);
+        char * dst_head = static_cast<char *>(llama_cache->data) +
+            static_cast<size_t>(head) * llama_cache->nb[1] +
+            static_cast<size_t>(token) * llama_cache->nb[2];
+
+        if (llama_cache->type == GGML_TYPE_Q8_0) {
+            constexpr uint32_t q8_block = 32;
+            npu_decode_attention_block_q8_0 * blocks =
+                reinterpret_cast<npu_decode_attention_block_q8_0 *>(dst_head);
+            for (uint32_t block = 0; block < NPU_DECODE_ATTN_HEAD_DIM / q8_block; ++block) {
+                blocks[block].d = regs.values[head];
+                std::memcpy(
+                        blocks[block].qs,
+                        src_head + block * q8_block,
+                        q8_block);
+            }
+        } else if (llama_cache->type == GGML_TYPE_F16 || llama_cache->type == GGML_TYPE_F32) {
+            const float scale = ggml_fp16_to_fp32(regs.values[head]);
+            for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+                const float value = static_cast<float>(src_head[dim]) * scale;
+                if (llama_cache->type == GGML_TYPE_F16) {
+                    const ggml_fp16_t bits = ggml_fp32_to_fp16(value);
+                    std::memcpy(
+                            dst_head + static_cast<size_t>(dim) * llama_cache->nb[0],
+                            &bits,
+                            sizeof(bits));
+                } else {
+                    std::memcpy(
+                            dst_head + static_cast<size_t>(dim) * llama_cache->nb[0],
+                            &value,
+                            sizeof(value));
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool npu_decode_attention_write_fp16_projection_to_llama_cache(
+        const ggml_tensor * llama_cache,
+        const uint8_t * output_fp16,
+        uint32_t token) {
+    if (llama_cache == nullptr || output_fp16 == nullptr ||
+            llama_cache->data == nullptr ||
+            llama_cache->ne[0] != NPU_DECODE_ATTN_HEAD_DIM ||
+            llama_cache->ne[1] != NPU_DECODE_ATTN_KV_HEADS ||
+            llama_cache->ne[2] <= static_cast<int64_t>(token)) {
+        return false;
+    }
+
+    for (uint32_t head = 0; head < NPU_DECODE_ATTN_KV_HEADS; ++head) {
+        const uint8_t * src_head =
+            output_fp16 + head * NPU_DECODE_ATTN_HEAD_DIM * sizeof(ggml_fp16_t);
+        char * dst_head = static_cast<char *>(llama_cache->data) +
+            static_cast<size_t>(head) * llama_cache->nb[1] +
+            static_cast<size_t>(token) * llama_cache->nb[2];
+
+        if (llama_cache->type == GGML_TYPE_Q8_0) {
+            constexpr uint32_t q8_block = 32;
+            npu_decode_attention_block_q8_0 * blocks =
+                reinterpret_cast<npu_decode_attention_block_q8_0 *>(dst_head);
+            for (uint32_t block = 0; block < NPU_DECODE_ATTN_HEAD_DIM / q8_block; ++block) {
+                float values[q8_block] = {};
+                float amax = 0.0f;
+                for (uint32_t lane = 0; lane < q8_block; ++lane) {
+                    ggml_fp16_t bits = 0;
+                    std::memcpy(
+                            &bits,
+                            src_head + (block * q8_block + lane) * sizeof(ggml_fp16_t),
+                            sizeof(bits));
+                    values[lane] = ggml_fp16_to_fp32(bits);
+                    amax = std::max(amax, std::fabs(values[lane]));
+                }
+                const float d = amax / 127.0f;
+                const float id = d != 0.0f ? 1.0f / d : 0.0f;
+                blocks[block].d = ggml_fp32_to_fp16(d);
+                for (uint32_t lane = 0; lane < q8_block; ++lane) {
+                    int q = static_cast<int>(std::round(values[lane] * id));
+                    q = std::max(-127, std::min(127, q));
+                    blocks[block].qs[lane] = static_cast<int8_t>(q);
+                }
+            }
+        } else if (llama_cache->type == GGML_TYPE_F16) {
+            for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+                std::memcpy(
+                        dst_head + static_cast<size_t>(dim) * llama_cache->nb[0],
+                        src_head + dim * sizeof(ggml_fp16_t),
+                        sizeof(ggml_fp16_t));
+            }
+        } else if (llama_cache->type == GGML_TYPE_F32) {
+            for (uint32_t dim = 0; dim < NPU_DECODE_ATTN_HEAD_DIM; ++dim) {
+                ggml_fp16_t bits = 0;
+                std::memcpy(&bits, src_head + dim * sizeof(ggml_fp16_t), sizeof(bits));
+                const float value = ggml_fp16_to_fp32(bits);
+                std::memcpy(
+                        dst_head + static_cast<size_t>(dim) * llama_cache->nb[0],
+                        &value,
+                        sizeof(value));
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool npu_decode_attention_dump_requested(int32_t layer_id, int32_t position) {
     const char * path = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_DUMP");
     if (path == nullptr || path[0] == '\0') {
         return false;
     }
     const char * layer = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_DUMP_LAYER");
     if (layer == nullptr || layer[0] == '\0') {
-        return layer_id == 0;
+        if (layer_id != 0) {
+            return false;
+        }
+    } else {
+        char * end = nullptr;
+        const long parsed = std::strtol(layer, &end, 10);
+        if (end == layer || *end != '\0' || parsed != layer_id) {
+            return false;
+        }
     }
-    char * end = nullptr;
-    const long parsed = std::strtol(layer, &end, 10);
-    return end != layer && *end == '\0' && parsed == layer_id;
+    const char * pos = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_DUMP_POSITION");
+    if (pos != nullptr && pos[0] != '\0') {
+        char * pos_end = nullptr;
+        const long parsed_pos = std::strtol(pos, &pos_end, 10);
+        if (pos_end == pos || *pos_end != '\0' || parsed_pos != position) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool npu_decode_attention_pre_o_output_enabled() {
     const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_PRE_O");
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_cpu_qkpv_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_CPU_QKPV");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_cpu_qk_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_CPU_QK");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_cpu_pv_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_CPU_PV");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_cpu_pv_fast_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_CPU_PV_FAST");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_qk_split_group_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_QK_SPLIT_GROUP");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static int npu_decode_attention_pv_scale_boost_log2() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_PV_SCALE_BOOST_LOG2");
+    if (value == nullptr || value[0] == '\0') {
+        return 0;
+    }
+    char * end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 0 || parsed > 10) {
+        static bool warned_bad_pv_scale_boost = false;
+        if (!warned_bad_pv_scale_boost) {
+            warned_bad_pv_scale_boost = true;
+            GGML_LOG_WARN(
+                    "%s: ignoring invalid AICAS_TEXT_DECODE_ATTN_NPU_PV_SCALE_BOOST_LOG2=%s; expected 0..10\n",
+                    __func__,
+                    value);
+        }
+        return 0;
+    }
+    return static_cast<int>(parsed);
+}
+
+static bool npu_decode_attention_pv_scale_boost_fold_o_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_PV_SCALE_BOOST_FOLD_O");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_compare_qkpv_requested(int32_t layer_id, int32_t position) {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_COMPARE_QKPV");
+    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    const char * layer = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_COMPARE_QKPV_LAYER");
+    if (layer != nullptr && layer[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(layer, &end, 10);
+        if (end == layer || *end != '\0' || parsed != layer_id) {
+            return false;
+        }
+    } else if (layer_id != 0) {
+        return false;
+    }
+    const char * pos = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_COMPARE_QKPV_POSITION");
+    if (pos != nullptr && pos[0] != '\0') {
+        char * end = nullptr;
+        const long parsed = std::strtol(pos, &end, 10);
+        if (end == pos || *end != '\0' || parsed != position) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool npu_decode_attention_cpu_rope_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_CPU_ROPE");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_hw_kv_quant_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_HW_KV_QUANT");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_rope_input_stats_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_ROPE_STATS");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static bool npu_decode_attention_rope_input_stats_only_enabled() {
+    const char * value = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_ROPE_STATS_ONLY");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static void npu_decode_attention_apply_cpu_rope_fp16(
+        void * data,
+        uint32_t heads,
+        uint32_t position,
+        float rope_freq_base,
+        float rope_freq_scale) {
+    if (data == nullptr) {
+        return;
+    }
+    uint8_t * base = static_cast<uint8_t *>(data);
+    for (uint32_t head = 0; head < heads; ++head) {
+        uint8_t * head_base =
+            base + head * NPU_DECODE_ATTN_HEAD_DIM * sizeof(ggml_fp16_t);
+        for (uint32_t pair = 0; pair < NPU_DECODE_ATTN_HEAD_DIM / 2u; ++pair) {
+            ggml_fp16_t even_bits = 0;
+            ggml_fp16_t odd_bits = 0;
+            std::memcpy(&even_bits, head_base + (2u * pair) * sizeof(ggml_fp16_t), sizeof(even_bits));
+            std::memcpy(&odd_bits, head_base + (2u * pair + 1u) * sizeof(ggml_fp16_t), sizeof(odd_bits));
+            const float even = ggml_fp16_to_fp32(even_bits);
+            const float odd = ggml_fp16_to_fp32(odd_bits);
+            const double inv_freq = std::pow(
+                    static_cast<double>(rope_freq_base),
+                    -2.0 * static_cast<double>(pair) /
+                        static_cast<double>(NPU_DECODE_ATTN_HEAD_DIM));
+            const double theta =
+                static_cast<double>(position) *
+                static_cast<double>(rope_freq_scale) *
+                inv_freq;
+            const float cos_v = static_cast<float>(std::cos(theta));
+            const float sin_v = static_cast<float>(std::sin(theta));
+            const ggml_fp16_t out_even = ggml_fp32_to_fp16(even * cos_v - odd * sin_v);
+            const ggml_fp16_t out_odd = ggml_fp32_to_fp16(even * sin_v + odd * cos_v);
+            std::memcpy(head_base + (2u * pair) * sizeof(ggml_fp16_t), &out_even, sizeof(out_even));
+            std::memcpy(head_base + (2u * pair + 1u) * sizeof(ggml_fp16_t), &out_odd, sizeof(out_odd));
+        }
+    }
+}
+
+static void npu_decode_attention_log_rope_input_stats(
+        const char * op_name,
+        const char * kind,
+        int32_t layer_id,
+        int32_t position,
+        const void * data,
+        uint32_t heads) {
+    if (data == nullptr || heads == 0) {
+        return;
+    }
+    const uint32_t values = heads * NPU_DECODE_ATTN_HEAD_DIM;
+    const uint8_t * base = static_cast<const uint8_t *>(data);
+    double sum_sq = 0.0;
+    double sum_abs = 0.0;
+    float max_abs = 0.0f;
+    uint32_t abs_ge_1 = 0;
+    uint32_t abs_ge_2 = 0;
+    uint32_t abs_ge_4 = 0;
+    uint32_t pair_ge_1 = 0;
+    uint32_t pair_ge_2 = 0;
+    float pair_max = 0.0f;
+
+    for (uint32_t i = 0; i < values; ++i) {
+        ggml_fp16_t bits = 0;
+        std::memcpy(&bits, base + i * sizeof(ggml_fp16_t), sizeof(bits));
+        const float value = ggml_fp16_to_fp32(bits);
+        const float abs_value = std::fabs(value);
+        max_abs = std::max(max_abs, abs_value);
+        sum_abs += abs_value;
+        sum_sq += static_cast<double>(value) * static_cast<double>(value);
+        abs_ge_1 += abs_value >= 1.0f ? 1u : 0u;
+        abs_ge_2 += abs_value >= 2.0f ? 1u : 0u;
+        abs_ge_4 += abs_value >= 4.0f ? 1u : 0u;
+    }
+
+    for (uint32_t head = 0; head < heads; ++head) {
+        const uint8_t * head_base =
+            base + head * NPU_DECODE_ATTN_HEAD_DIM * sizeof(ggml_fp16_t);
+        for (uint32_t pair = 0; pair < NPU_DECODE_ATTN_HEAD_DIM / 2u; ++pair) {
+            ggml_fp16_t even_bits = 0;
+            ggml_fp16_t odd_bits = 0;
+            std::memcpy(&even_bits, head_base + (2u * pair) * sizeof(ggml_fp16_t), sizeof(even_bits));
+            std::memcpy(&odd_bits, head_base + (2u * pair + 1u) * sizeof(ggml_fp16_t), sizeof(odd_bits));
+            const float even = ggml_fp16_to_fp32(even_bits);
+            const float odd = ggml_fp16_to_fp32(odd_bits);
+            const float norm = std::sqrt(even * even + odd * odd);
+            pair_max = std::max(pair_max, norm);
+            pair_ge_1 += norm >= 1.0f ? 1u : 0u;
+            pair_ge_2 += norm >= 2.0f ? 1u : 0u;
+        }
+    }
+
+    const uint32_t pairs = heads * (NPU_DECODE_ATTN_HEAD_DIM / 2u);
+    const double inv_values = values != 0 ? 1.0 / static_cast<double>(values) : 0.0;
+    const double inv_pairs = pairs != 0 ? 1.0 / static_cast<double>(pairs) : 0.0;
+    GGML_LOG_WARN(
+            "%s: rope_input_stats kind=%s layer=%d pos=%d heads=%u values=%u "
+            "max_abs=%.6g mean_abs=%.6g rms=%.6g "
+            "abs_ge_1=%u abs_ge_1_pct=%.2f abs_ge_2=%u abs_ge_2_pct=%.2f abs_ge_4=%u abs_ge_4_pct=%.2f "
+            "pair_max=%.6g pair_ge_1=%u pair_ge_1_pct=%.2f pair_ge_2=%u pair_ge_2_pct=%.2f\n",
+            op_name != nullptr ? op_name : __func__,
+            kind != nullptr ? kind : "?",
+            layer_id,
+            position,
+            heads,
+            values,
+            static_cast<double>(max_abs),
+            sum_abs * inv_values,
+            std::sqrt(sum_sq * inv_values),
+            abs_ge_1,
+            100.0 * static_cast<double>(abs_ge_1) * inv_values,
+            abs_ge_2,
+            100.0 * static_cast<double>(abs_ge_2) * inv_values,
+            abs_ge_4,
+            100.0 * static_cast<double>(abs_ge_4) * inv_values,
+            static_cast<double>(pair_max),
+            pair_ge_1,
+            100.0 * static_cast<double>(pair_ge_1) * inv_pairs,
+            pair_ge_2,
+            100.0 * static_cast<double>(pair_ge_2) * inv_pairs);
 }
 
 static void npu_decode_attention_write_debug_dump(
@@ -1868,6 +2661,118 @@ static void npu_decode_attention_write_debug_dump(
                 seq_len,
                 q_bytes,
                 hdr.cache_bytes);
+    }
+}
+
+static void npu_decode_attention_write_stream_qkpv_dump(
+        const char * op_name,
+        int32_t layer_id,
+        int32_t position,
+        uint32_t seq_len,
+        const void * q_head_fp16,
+        uint32_t q_head_bytes,
+        const void * k_cache,
+        const void * v_cache,
+        const void * qk_compact,
+        uint32_t qk_compact_per_kv_head_bytes,
+        uint32_t qk_compact_all_bytes,
+        const void * prob_padded,
+        uint32_t prob_padded_bytes,
+        const void * pv_heads_fp16,
+        uint32_t pv_heads_bytes,
+        uint32_t score_prob_raw_bytes,
+        uint32_t score_prob_stride_bytes,
+        uint32_t dump_flags) {
+    const char * path = std::getenv("AICAS_TEXT_DECODE_ATTN_NPU_DUMP");
+    if (path == nullptr || path[0] == '\0' ||
+            q_head_fp16 == nullptr || k_cache == nullptr || v_cache == nullptr ||
+            prob_padded == nullptr || pv_heads_fp16 == nullptr) {
+        return;
+    }
+    std::ostringstream filename;
+    filename << path << ".stream.layer" << layer_id << ".pos" << position << ".bin";
+    std::ofstream out(filename.str(), std::ios::binary);
+    if (!out.is_open()) {
+        if (npu_decode_w4a16_debug_log_enabled()) {
+            GGML_LOG_WARN("%s: failed to open stream attention dump %s\n",
+                    op_name != nullptr ? op_name : __func__,
+                    filename.str().c_str());
+        }
+        return;
+    }
+    struct header {
+        char magic[16];
+        uint32_t version;
+        uint32_t layer;
+        uint32_t position;
+        uint32_t seq_len;
+        uint32_t hidden_dim;
+        uint32_t q_heads;
+        uint32_t kv_heads;
+        uint32_t group_size;
+        uint32_t head_dim;
+        uint32_t q_head_stride;
+        uint32_t score_prob_raw_bytes;
+        uint32_t score_prob_stride_bytes;
+        uint32_t q_head_bytes;
+        uint32_t qk_compact_per_kv_head_bytes;
+        uint32_t qk_compact_all_bytes;
+        uint32_t prob_padded_bytes;
+        uint32_t pv_heads_bytes;
+        uint32_t cache_bytes;
+        uint32_t kv_head_stride;
+        uint32_t cache_scale_region;
+        uint32_t v_row_tile_stride_bytes;
+        uint32_t cache_capacity_tokens;
+        uint32_t visible_window_tokens;
+        uint32_t flags;
+    } hdr = {
+        {'A','I','C','A','S','_','A','T','T','N','S','T','R','M','1','\0'},
+        1u,
+        static_cast<uint32_t>(layer_id),
+        static_cast<uint32_t>(position),
+        seq_len,
+        NPU_DECODE_ATTN_HIDDEN_DIM,
+        NPU_DECODE_ATTN_Q_HEADS,
+        NPU_DECODE_ATTN_KV_HEADS,
+        NPU_DECODE_ATTN_GROUP_SIZE,
+        NPU_DECODE_ATTN_HEAD_DIM,
+        q_head_bytes / NPU_DECODE_ATTN_Q_HEADS,
+        score_prob_raw_bytes,
+        score_prob_stride_bytes,
+        q_head_bytes,
+        qk_compact_per_kv_head_bytes,
+        qk_compact_all_bytes,
+        prob_padded_bytes,
+        pv_heads_bytes,
+        NPU_DECODE_ATTN_KV_HEADS * NPU_DECODE_ATTN_KV_HEAD_STRIDE_BYTES,
+        NPU_DECODE_ATTN_KV_HEAD_STRIDE_BYTES,
+        npu_decode_attention_kv_cache_scale_region_bytes(),
+        NPU_DECODE_ATTN_V_ROW_TILE_STRIDE_BYTES,
+        NPU_DECODE_ATTN_CACHE_CAPACITY_TOKENS,
+        NPU_DECODE_ATTN_VISIBLE_WINDOW_TOKENS,
+        dump_flags,
+    };
+    out.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+    out.write(static_cast<const char *>(q_head_fp16), q_head_bytes);
+    out.write(static_cast<const char *>(k_cache), hdr.cache_bytes);
+    out.write(static_cast<const char *>(v_cache), hdr.cache_bytes);
+    if (qk_compact != nullptr && qk_compact_all_bytes != 0) {
+        out.write(static_cast<const char *>(qk_compact), qk_compact_all_bytes);
+    }
+    out.write(static_cast<const char *>(prob_padded), prob_padded_bytes);
+    out.write(static_cast<const char *>(pv_heads_fp16), pv_heads_bytes);
+    if (npu_decode_w4a16_debug_log_enabled()) {
+        GGML_LOG_INFO(
+                "%s: wrote stream attention dump %s seq_len=%u q_head_bytes=%u qk_bytes=%u prob_bytes=%u pv_bytes=%u flags=0x%x\n",
+                op_name != nullptr ? op_name : __func__,
+                filename.str().c_str(),
+                seq_len,
+                q_head_bytes,
+                qk_compact_all_bytes,
+                prob_padded_bytes,
+                pv_heads_bytes,
+                dump_flags);
     }
 }
 
@@ -2104,4 +3009,3 @@ static const ggml_backend_buffer_i npu_buffer_iface = {
     /* .clear         = */ npu_buffer_clear,
     /* .reset         = */ nullptr,
 };
-

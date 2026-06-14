@@ -246,20 +246,38 @@ static bool server_mtmd_cpu_op_profile_enabled() {
     return env != nullptr && env[0] != '\0' && std::string(env) != "0";
 }
 
-static bool server_cpu_profile_mode_aggregate(const char * env_name) {
+enum class server_cpu_profile_mode {
+    detailed,
+    aggregate,
+    semantic,
+};
+
+static server_cpu_profile_mode server_cpu_profile_mode_from_env(const char * env_name) {
     const char * env = std::getenv(env_name);
     if (env == nullptr || env[0] == '\0') {
-        return false;
+        return server_cpu_profile_mode::detailed;
     }
     const std::string value(env);
-    return value == "aggregate" || value == "aggregate_only" || value == "semantic";
+    if (value == "semantic") {
+        return server_cpu_profile_mode::semantic;
+    }
+    if (value == "aggregate" || value == "aggregate_only") {
+        return server_cpu_profile_mode::aggregate;
+    }
+    return server_cpu_profile_mode::detailed;
 }
 
-static void server_backend_cpu_profile_start(bool aggregate) {
-    if (aggregate) {
-        ggml_backend_cpu_profile_start_aggregate();
-    } else {
-        ggml_backend_cpu_profile_start();
+static void server_backend_cpu_profile_start(server_cpu_profile_mode mode) {
+    switch (mode) {
+        case server_cpu_profile_mode::semantic:
+            ggml_backend_cpu_profile_start_semantic();
+            break;
+        case server_cpu_profile_mode::aggregate:
+            ggml_backend_cpu_profile_start_aggregate();
+            break;
+        case server_cpu_profile_mode::detailed:
+            ggml_backend_cpu_profile_start();
+            break;
     }
 }
 
@@ -2383,7 +2401,7 @@ public:
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
             const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
             if (collect_cpu_backend_profile) {
-                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_MTMD_CPU_OP_PROFILE"));
+                server_backend_cpu_profile_start(server_cpu_profile_mode_from_env("LLAMA_MTMD_CPU_OP_PROFILE"));
             }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
@@ -2590,7 +2608,7 @@ public:
             const int64_t encode_start_us = collect_profile ? ggml_time_us() : 0;
             const bool collect_cpu_backend_profile = collect_profile && server_mtmd_cpu_op_profile_enabled();
             if (collect_cpu_backend_profile) {
-                server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_MTMD_CPU_OP_PROFILE"));
+                server_backend_cpu_profile_start(server_cpu_profile_mode_from_env("LLAMA_MTMD_CPU_OP_PROFILE"));
             }
             result = mtmd_encode_chunk(mctx, chunk.get());
             const int64_t encode_us = collect_profile ? (ggml_time_us() - encode_start_us) : 0;
@@ -2682,7 +2700,7 @@ public:
         const bool collect_text_cpu_profile = server_text_cpu_profile_enabled();
         const int64_t text_profile_start_us = collect_text_cpu_profile ? ggml_time_us() : 0;
         if (collect_text_cpu_profile) {
-            server_backend_cpu_profile_start(server_cpu_profile_mode_aggregate("LLAMA_TEXT_CPU_PROFILE_MODE"));
+            server_backend_cpu_profile_start(server_cpu_profile_mode_from_env("LLAMA_TEXT_CPU_PROFILE_MODE"));
         }
         server_scoped_env_var prefill_tail_decode_switch_env(
                 "AICAS_PREFILL_TAIL_DECODE_SWITCH",

@@ -2904,6 +2904,7 @@ struct ggml_cpu_profile_signature {
 struct ggml_cpu_profile_state {
     bool enabled;
     bool aggregate_only;
+    bool semantic_custom_nodes;
     int64_t node_count;
     int64_t duration_us;
     int op_count;
@@ -3150,6 +3151,16 @@ static void ggml_cpu_profile_add_signature(
     sig->bytes += bytes;
 }
 
+static bool ggml_cpu_profile_is_custom_node(const struct ggml_tensor * node) {
+    if (node == NULL) {
+        return false;
+    }
+    return node->op == GGML_OP_CUSTOM ||
+           node->op == GGML_OP_MAP_CUSTOM1 ||
+           node->op == GGML_OP_MAP_CUSTOM2 ||
+           node->op == GGML_OP_MAP_CUSTOM3;
+}
+
 static bool ggml_cpu_profile_enabled(void) {
     return g_cpu_profile.enabled;
 }
@@ -3168,10 +3179,12 @@ static void ggml_cpu_profile_record_node(const struct ggml_tensor * node, int64_
     g_cpu_profile.duration_us += duration_us;
     ggml_cpu_profile_add_aggregate(g_cpu_profile.ops, &g_cpu_profile.op_count, GGML_CPU_PROFILE_MAX_OPS, op_name, duration_us, elements, bytes);
     ggml_cpu_profile_add_aggregate(g_cpu_profile.categories, &g_cpu_profile.category_count, GGML_CPU_PROFILE_MAX_CATEGORIES, category, duration_us, elements, bytes);
-    if (!g_cpu_profile.aggregate_only) {
+    if (!g_cpu_profile.aggregate_only || (g_cpu_profile.semantic_custom_nodes && ggml_cpu_profile_is_custom_node(node))) {
         char node_key[GGML_CPU_PROFILE_NAME_LEN];
         snprintf(node_key, sizeof(node_key), "%s|%s", node->name, op_name);
         ggml_cpu_profile_add_top_node_aggregate(g_cpu_profile.node_names, &g_cpu_profile.node_name_count, GGML_CPU_PROFILE_MAX_NODES, node_key, duration_us, elements, bytes);
+    }
+    if (!g_cpu_profile.aggregate_only) {
         ggml_cpu_profile_add_signature(node, duration_us, elements, bytes);
     }
 }
@@ -3305,19 +3318,24 @@ static void ggml_cpu_profile_json_filtered_aggregates(
     ggml_cpu_profile_json_append("]");
 }
 
-static void ggml_backend_cpu_profile_start_impl(bool aggregate_only) {
+static void ggml_backend_cpu_profile_start_impl(bool aggregate_only, bool semantic_custom_nodes) {
     free(g_cpu_profile.json);
     memset(&g_cpu_profile, 0, sizeof(g_cpu_profile));
     g_cpu_profile.enabled = true;
     g_cpu_profile.aggregate_only = aggregate_only;
+    g_cpu_profile.semantic_custom_nodes = semantic_custom_nodes;
 }
 
 void ggml_backend_cpu_profile_start(void) {
-    ggml_backend_cpu_profile_start_impl(false);
+    ggml_backend_cpu_profile_start_impl(false, false);
 }
 
 void ggml_backend_cpu_profile_start_aggregate(void) {
-    ggml_backend_cpu_profile_start_impl(true);
+    ggml_backend_cpu_profile_start_impl(true, false);
+}
+
+void ggml_backend_cpu_profile_start_semantic(void) {
+    ggml_backend_cpu_profile_start_impl(true, true);
 }
 
 const char * ggml_backend_cpu_profile_stop_json(void) {
@@ -3325,8 +3343,10 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
 
     qsort(g_cpu_profile.ops, (size_t) g_cpu_profile.op_count, sizeof(g_cpu_profile.ops[0]), ggml_cpu_profile_cmp_aggregate);
     qsort(g_cpu_profile.categories, (size_t) g_cpu_profile.category_count, sizeof(g_cpu_profile.categories[0]), ggml_cpu_profile_cmp_aggregate);
-    if (!g_cpu_profile.aggregate_only) {
+    if (!g_cpu_profile.aggregate_only || g_cpu_profile.semantic_custom_nodes) {
         qsort(g_cpu_profile.node_names, (size_t) g_cpu_profile.node_name_count, sizeof(g_cpu_profile.node_names[0]), ggml_cpu_profile_cmp_aggregate);
+    }
+    if (!g_cpu_profile.aggregate_only) {
         qsort(g_cpu_profile.signatures, (size_t) g_cpu_profile.signature_count, sizeof(g_cpu_profile.signatures[0]), ggml_cpu_profile_cmp_signature);
     }
 
@@ -3343,8 +3363,16 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
         "\"node_count\":%" PRId64 ","
         "\"total_us\":%" PRId64 ","
         "\"total_ms\":%.3f,",
-        g_cpu_profile.aggregate_only ? "ggml_cpu_backend_operator_aggregate_profile" : "ggml_cpu_backend_operator_profile",
-        g_cpu_profile.aggregate_only ? " Aggregate mode records only operator/category totals." : "",
+        g_cpu_profile.aggregate_only
+            ? (g_cpu_profile.semantic_custom_nodes
+                ? "ggml_cpu_backend_operator_semantic_profile"
+                : "ggml_cpu_backend_operator_aggregate_profile")
+            : "ggml_cpu_backend_operator_profile",
+        g_cpu_profile.aggregate_only
+            ? (g_cpu_profile.semantic_custom_nodes
+                ? " Semantic mode records operator/category totals plus CUSTOM/MAP_CUSTOM* node names only."
+                : " Aggregate mode records only operator/category totals.")
+            : "",
         g_cpu_profile.node_count,
         g_cpu_profile.duration_us,
         (double) g_cpu_profile.duration_us / 1000.0);
@@ -3353,13 +3381,20 @@ const char * ggml_backend_cpu_profile_stop_json(void) {
     ggml_cpu_profile_json_append(",");
     ggml_cpu_profile_json_aggregates("operator_categories", g_cpu_profile.categories, g_cpu_profile.category_count, 0);
     if (g_cpu_profile.aggregate_only) {
-        ggml_cpu_profile_json_append(",\"top_nodes\":[],\"npu_wrapper_nodes\":[],\"mul_mat_signatures\":[]}");
+        if (g_cpu_profile.semantic_custom_nodes) {
+            ggml_cpu_profile_json_append(",\"top_nodes\":[]");
+            ggml_cpu_profile_json_append(",");
+            ggml_cpu_profile_json_filtered_aggregates("npu_wrapper_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 256, "|CUSTOM", "|MAP_CUSTOM");
+            ggml_cpu_profile_json_append(",\"mul_mat_signatures\":[]}");
+        } else {
+            ggml_cpu_profile_json_append(",\"top_nodes\":[],\"npu_wrapper_nodes\":[],\"mul_mat_signatures\":[]}");
+        }
         return g_cpu_profile.json;
     }
     ggml_cpu_profile_json_append(",");
     ggml_cpu_profile_json_aggregates("top_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 32);
     ggml_cpu_profile_json_append(",");
-    ggml_cpu_profile_json_filtered_aggregates("npu_wrapper_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 128, "|CUSTOM", "|MAP_CUSTOM3");
+    ggml_cpu_profile_json_filtered_aggregates("npu_wrapper_nodes", g_cpu_profile.node_names, g_cpu_profile.node_name_count, 128, "|CUSTOM", "|MAP_CUSTOM");
     ggml_cpu_profile_json_append(",\"mul_mat_signatures\":[");
     for (int i = 0; i < g_cpu_profile.signature_count; ++i) {
         const struct ggml_cpu_profile_signature * sig = &g_cpu_profile.signatures[i];

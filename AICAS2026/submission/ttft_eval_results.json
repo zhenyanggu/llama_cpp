@@ -1,0 +1,96 @@
+{
+  "config_summary": {
+    "server_url": "http://127.0.0.1:8080/v1",
+    "model": "smolvlm2-gguf",
+    "num_images": 2,
+    "num_prompts": 3,
+    "total_cases": 6
+  },
+  "cases": [
+    {
+      "image": "large",
+      "prompt": "short",
+      "prompt_chars": 93,
+      "ttft_ms": 11968.73451600004
+    },
+    {
+      "image": "large",
+      "prompt": "long",
+      "prompt_chars": 1305,
+      "ttft_ms": 14128.346965000219
+    },
+    {
+      "image": "large",
+      "prompt": "xlong",
+      "prompt_chars": 3763,
+      "ttft_ms": 19154.30683300019
+    },
+    {
+      "image": "small",
+      "prompt": "short",
+      "prompt_chars": 93,
+      "ttft_ms": 10341.191898000034
+    },
+    {
+      "image": "small",
+      "prompt": "long",
+      "prompt_chars": 1305,
+      "ttft_ms": 13078.36870400024
+    },
+    {
+      "image": "small",
+      "prompt": "xlong",
+      "prompt_chars": 3763,
+      "ttft_ms": 18127.470212999924
+    }
+  ],
+  "linear_fit": {
+    "per_image": [
+      {
+        "image": "large",
+        "num_points": 3,
+        "slope_ms_per_char": 1.9705949723713951,
+        "intercept_ms": 11693.715887197224,
+        "points": [
+          {
+            "prompt_chars": 93,
+            "ttft_ms": 11968.73451600004
+          },
+          {
+            "prompt_chars": 1305,
+            "ttft_ms": 14128.346965000219
+          },
+          {
+            "prompt_chars": 3763,
+            "ttft_ms": 19154.30683300019
+          }
+        ]
+      },
+      {
+        "image": "small",
+        "num_points": 3,
+        "slope_ms_per_char": 2.1117549581499837,
+        "intercept_ms": 10216.087825329376,
+        "points": [
+          {
+            "prompt_chars": 93,
+            "ttft_ms": 10341.191898000034
+          },
+          {
+            "prompt_chars": 1305,
+            "ttft_ms": 13078.36870400024
+          },
+          {
+            "prompt_chars": 3763,
+            "ttft_ms": 18127.470212999924
+          }
+        ]
+      }
+    ],
+    "aggregate": {
+      "slope_ms_per_char": 2.0411749652606894,
+      "intercept_ms": 10954.9018562633,
+      "num_images_aggregated": 2
+    }
+  }
+}

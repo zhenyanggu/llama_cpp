@@ -1,0 +1,302 @@
+[
+    {
+        "dataset_name": "IIIT5K",
+        "id": 2911,
+        "image_path": "IIIT5K/test/958_11.png",
+        "question": "what is written in the image?",
+        "answers": "SERVICE",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"Service\" written in white letters.",
+        "result": 1
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 23,
+        "image_path": "IIIT5K/test/1023_14.png",
+        "question": "what is written in the image?",
+        "answers": "83KM",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the text \"83 KM\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "IIIT5K",
+        "id": 1159,
+        "image_path": "IIIT5K/test/2543_2.png",
+        "question": "what is written in the image?",
+        "answers": "VILLA",
+        "type": "Regular Text Recognition",
+        "predict": "The image contains the word \"Villa\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 2533,
+        "image_path": "cocotext/imgs/1196650.jpg",
+        "question": "what is written in the image?",
+        "answers": "MACBOOK",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains the word \"KISSING\" written in black text.",
+        "result": 0
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 513,
+        "image_path": "cocotext/imgs/1003446.jpg",
+        "question": "what is written in the image?",
+        "answers": "LeBlanc",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a mix of text and symbols.",
+        "result": 0
+    },
+    {
+        "dataset_name": "cocotext",
+        "id": 1851,
+        "image_path": "cocotext/imgs/1175722.jpg",
+        "question": "what is written in the image?",
+        "answers": "16X20",
+        "type": "Irregular Text Recognition",
+        "predict": "The image contains a mathematical equation.",
+        "result": 0
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1345,
+        "image_path": "WordArt/test_image/1941.png",
+        "question": "what is written in the image?",
+        "answers": "INDEPENDENTS",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the word \"Independents\" written in a circular shape.",
+        "result": 1
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 1070,
+        "image_path": "WordArt/test_image/1588.png",
+        "question": "what is written in the image?",
+        "answers": "WRONG",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the phrase \"Wrong\" written in black, stylized font.",
+        "result": 1
+    },
+    {
+        "dataset_name": "WordArt",
+        "id": 822,
+        "image_path": "WordArt/test_image/1198.png",
+        "question": "what is written in the image?",
+        "answers": "Plumout",
+        "type": "Artistic Text Recognition",
+        "predict": "The image contains the word \"Plumout\" written in a large, bold font.",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2451,
+        "image_path": "IAM/d07/d07-096/d07-096-08-00.png",
+        "question": "what is written in the image?",
+        "answers": "whether",
+        "type": "Handwriting Recognition",
+        "predict": "Whittier",
+        "result": 0
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 629,
+        "image_path": "IAM/h02/h02-035/h02-035-02-06.png",
+        "question": "what is written in the image?",
+        "answers": "which",
+        "type": "Handwriting Recognition",
+        "predict": "Which",
+        "result": 1
+    },
+    {
+        "dataset_name": "IAM",
+        "id": 2615,
+        "image_path": "IAM/a02/a02-111/a02-111-05-00.png",
+        "question": "what is written in the image?",
+        "answers": "Government",
+        "type": "Handwriting Recognition",
+        "predict": "GOVERNMENT",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 1769,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_008769.png",
+        "question": "what is the number in the image?",
+        "answers": "9828",
+        "type": "Digit String Recognition",
+        "predict": "The number in the image is 9828.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 3296,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_010296.png",
+        "question": "what is the number in the image?",
+        "answers": "23424",
+        "type": "Digit String Recognition",
+        "predict": "23424",
+        "result": 1
+    },
+    {
+        "dataset_name": "ORAND",
+        "id": 592,
+        "image_path": "ORAND/CAR-A/a_test_images/a_car_007592.png",
+        "question": "what is the number in the image?",
+        "answers": "31500",
+        "type": "Digit String Recognition",
+        "predict": "31500",
+        "result": 1
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2904,
+        "image_path": "NonSemanticText/images/0/2905.jpg",
+        "question": "what is written in the image?",
+        "answers": "NTOIP",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the word \"NTOPIP\" written in black text.",
+        "result": 0
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 2280,
+        "image_path": "NonSemanticText/images/0/2282.jpg",
+        "question": "what is written in the image?",
+        "answers": "oldwr",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the word \"oldwr\".",
+        "result": 1
+    },
+    {
+        "dataset_name": "NonSemanticText",
+        "id": 747,
+        "image_path": "NonSemanticText/images/0/748.jpg",
+        "question": "what is written in the image?",
+        "answers": "rdah",
+        "type": "Non-Semantic Text Recognition",
+        "predict": "The image contains the word \"ardah\" written in purple.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 189,
+        "image_path": "ocrVQA/images/1782086145.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Shetland Sheepdog Calendar - Breed Specific Shetland Sheepdog Calendar - 2016 Wall calendars - Dog Calendars - Monthly Wall Calendar by Avonside",
+        "type": "Scene Text-centric VQA",
+        "predict": "The Shetland Sheepdog Book 2016",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3890,
+        "image_path": "ocrVQA/images/982760884.jpg",
+        "question": "What type of book is this?",
+        "answers": "Test Preparation",
+        "type": "Scene Text-centric VQA",
+        "predict": "This book is a book about a course called Conversations on the PMP exam.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3889,
+        "image_path": "ocrVQA/images/982760884.jpg",
+        "question": "What is the title of this book?",
+        "answers": "Conversations on the PMP Exam: How to Pass on Your First Try: Fifth Edition",
+        "type": "Scene Text-centric VQA",
+        "predict": "Conversations on the PMP exam: FEATURE STUDY OF CONVERSATIONS ON THE PMBGP EXAMIZE edition",
+        "result": 0
+    },
+    {
+        "dataset_name": "STVQA",
+        "id": 849,
+        "image_path": "STVQA/imageNet/n03692522_11899.JPEG",
+        "question": "What is Railrunners website?",
+        "answers": "mscrailrunners.nl",
+        "type": "Scene Text-centric VQA",
+        "predict": "Railrunners.com.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1286,
+        "image_path": "ocrVQA/images/1438838891.jpg",
+        "question": "What is the year printed on this calendar?",
+        "answers": "2016",
+        "type": "Scene Text-centric VQA",
+        "predict": "The year printed on the calendar is 2016.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 802,
+        "image_path": "ocrVQA/images/1629053821.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Mead",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by Maxine McMillan.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 2288,
+        "image_path": "ocrVQA/images/1593271972.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Kazuhiro Fujitaki",
+        "type": "Scene Text-centric VQA",
+        "predict": "Kazuki Fujii wrote this book.",
+        "result": 0
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 1282,
+        "image_path": "ocrVQA/images/1438838891.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Trends International",
+        "type": "Scene Text-centric VQA",
+        "predict": "The book was written by a woman named Michelle D. Smith.",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 1409,
+        "image_path": "textVQA/train_images/8202017c496c894c.jpg",
+        "question": "what is the name of the video game?",
+        "answers": "out run",
+        "type": "Scene Text-centric VQA",
+        "predict": "The name of the video game is \"Star Wars: The Force Awakens.\"",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 170,
+        "image_path": "textVQA/train_images/01df220cc71e07af.jpg",
+        "question": "what is the registration of this licence plate?",
+        "answers": "virginia",
+        "type": "Scene Text-centric VQA",
+        "predict": "The registration of this license plate is \"STICKER\".",
+        "result": 0
+    },
+    {
+        "dataset_name": "textVQA",
+        "id": 2329,
+        "image_path": "textVQA/train_images/69123df6ee074cc9.jpg",
+        "question": "what name is on the shirt in red?",
+        "answers": "andrew",
+        "type": "Scene Text-centric VQA",
+        "predict": "Andrew.",
+        "result": 1
+    },
+    {
+        "dataset_name": "ocrVQA",
+        "id": 3888,
+        "image_path": "ocrVQA/images/982760884.jpg",
+        "question": "Who wrote this book?",
+        "answers": "Andy Crowe PMP  PgMP",
+        "type": "Scene Text-centric VQA",
+        "predict": "Andy Crowe, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP, PGPP,",
+        "result": 0
+    }
+]

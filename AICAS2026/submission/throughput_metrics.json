@@ -1,0 +1,11 @@
+{
+    "prompt_tokens": 501,
+    "completion_tokens": 8,
+    "total_tokens": 509,
+    "prompt_ms": 16660.728,
+    "decode_ms": 637.841,
+    "total_ms": 17298.569,
+    "prefill_speed_tps": 29.65056508935264,
+    "decode_speed_tps": 12.54231070125627,
+    "response_text": "The painting is a beautiful Landscape."
+}
